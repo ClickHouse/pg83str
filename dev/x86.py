@@ -991,6 +991,7 @@ def finish(c, mnemonic, specs, attrs, ops):
 def gas_text(c, mnemonic, specs, attr, ops, end, osz):
     is_vec_ins = 'vex' in attr or any(s[0] in 'VWHU' for s in specs) or mnemonic in ('vzeroupper',)
     name = mnemonic
+    prefix = ''
     pred = None
     # Predicate pseudo-ops, except eq: the assembler would turn vpcmpeqb into the shorter 0F 74 form.
     if 'pred' in attr and ops and ops[-1].kind == 'Immediate' and 0 < ops[-1].imm < 8:
@@ -1024,7 +1025,9 @@ def gas_text(c, mnemonic, specs, attr, ops, end, osz):
         o.text = t
         texts.append(t)
     if mnemonic in ('call', 'jmp') and ops and ops[0].kind != 'NearBranch':
-        texts = ['*' + texts[0]]
+        texts = ['*' + texts[0].replace('%ds:', '')]
+        if c.seg == 'ds':
+            prefix = 'notrack '  # 3E on an indirect branch is CET's notrack, not a segment
     # size suffix for integer instructions
     suffix = ''
     if not is_vec_ins and 'nosuffix' not in attr and ops:
@@ -1040,7 +1043,6 @@ def gas_text(c, mnemonic, specs, attr, ops, end, osz):
         name = ('rep ' if c.rep else '') + mnemonic
     if mnemonic == 'nop' and ops:
         suffix = SUFFIX[ops[0].size]
-    prefix = ''
     if c.evex and not c.mask and all(o.kind != 'Register' or int(''.join(ch for ch in o.reg[3:] if ch.isdigit()) or 0) < 16 for o in ops if o.reg and o.reg.startswith(('xmm', 'ymm', 'zmm'))):
         prefix = '{evex} '
     if ops and ops[0].kind == 'NearBranch' and ops[0].size == 32 and mnemonic != 'call':
