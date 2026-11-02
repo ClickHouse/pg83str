@@ -1,2 +1,7 @@
 /.build*/
+/libstr
+/post
+/test
+/checks
+/roundtrip
 __pycache__/
