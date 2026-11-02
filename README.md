@@ -19,9 +19,12 @@ be linked into a static libc in place of its string routines.
 - `dispatch.c` — a constructor checks the full feature set of each level and
   copies the right table into `str_table`; the public `str_memcpy` and friends
   jump through it. A libc build renames them: `-Dstr_memcpy=memcpy ...`.
-- `dev/` — the post pass: `x86.py` decodes x86-64 (legacy, VEX, EVEX),
-  `elf.py` reads the objects, `opt.py` rewrites the code, `emit.py` writes it
-  back as assembly, `post.py` drives it over the archives.
+- `dev/` — the post pass, Python only: `x86.py` decodes x86-64 (legacy,
+  VEX, EVEX) into structured instructions, `opt.py` rewrites them,
+  `encode.py` encodes them again from the same tables, `layout.py` lays the
+  sections out (branch relaxation, alignment, relocations), `elf.py` and
+  `elfout.py` read and write the objects and the archive, `post.py` drives
+  it. No assembler, no `ar`.
 - `tst/test.c` — the library against the host C library: all sizes and
   alignments, overlaps, guard pages, random sets, for every level the host
   supports and for the dispatched table. `tst/roundtrip.py` — the decoder and
@@ -35,7 +38,8 @@ cat .build/post/report.txt     # what the post pass changed
 ```
 
 `CC` selects the compiler (clang or gcc); the objects are compiled
-`-fno-pic`, so the post pass sees plain relocations.
+`-fno-pic`, so the post pass sees plain relocations. The pass itself needs
+only Python 3.
 
 ## Post pass
 
@@ -59,8 +63,8 @@ function:
 - `lea` — `lea (a,b),c; add $imm,c` becomes one `lea`.
 
 `post.py --roundtrip --check` without passes must reproduce every object
-instruction for instruction; the CI does that for clang and gcc at every
-optimization level.
+byte for byte (code, relocations, symbols); the CI does that for clang and
+gcc at every optimization level.
 
 ## Results
 

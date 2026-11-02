@@ -42,7 +42,22 @@ import os
 import re
 from dataclasses import dataclass, field
 
+import x86
 from objfile import Ins
+
+
+def refresh(i):
+    """After a rewrite of the structured operands: no encoding hint any more, text regenerated."""
+    i.j['form'] = None
+    i.j['gas'] = x86.format(i.j)
+
+
+def register(name, size):
+    return {'kind': 'Register', 'reg': name, 'size': size, 'implicit': False}
+
+
+def full_vec(name):
+    return 'zmm' + name[3:]
 
 VEC = re.compile(r'%([xy])mm(\d+)\b')
 # VEX mnemonics whose EVEX form has another name.
@@ -209,6 +224,7 @@ def liveness(fn):
 
 def delete(i):
     i.j['gas'] = ''
+    i.j['deleted'] = True
     i.j['regs'] = []
     i.j['mems'] = []
     i.j['flow'] = 'Next'
@@ -218,14 +234,13 @@ def delete(i):
 
 # ---------------------------------------------------------------- fold
 
-LOAD = re.compile(r'^vmovdqu8 (.+),%([xy])mm(\d+)\{%(k\d)\}\{z\}$')
-
-
 def masked_load(i):
-    m = LOAD.match(i.gas)
-    if not m or i.reloc is not None:
+    """vmovdqu8 (mem),%xN{%k}{z}: (memory operand, full register, mask, width letter) or None."""
+    ops = i.j['ops']
+    if i.mnemonic != 'vmovdqu8' or i.reloc is not None or len(ops) != 2 or ops[0]['kind'] != 'Register' or ops[1]['kind'] != 'Memory' \
+            or i.j['op_mask'] == 'none' or not i.j['zeroing'] or not i.gas:
         return None
-    return m.group(1), 'zmm' + m.group(3), m.group(4), m.group(2)
+    return ops[1], full_vec(ops[0]['reg']), i.j['op_mask'], ops[0]['reg'][0]
 
 
 def fold_masked_compares(fn):
@@ -245,11 +260,11 @@ def fold_masked_compares(fn):
                 mem, reg, mask, width = ml
                 loads[reg] = (k, mem, mask, width, {r['full'] for r in i.j['regs'] if r['full'] != reg and r['full'] != mask})
                 continue
-            if i.mnemonic in ('vpcmpb', 'vpcmpub') and i.j['op_mask'] == 'none' and i.reloc is None:
+            if i.mnemonic in ('vpcmpb', 'vpcmpub') and i.j['op_mask'] == 'none' and i.reloc is None and i.gas:
                 ops = i.j['ops']
                 if len(ops) != 4 or ops[1]['kind'] != 'Register' or ops[2]['kind'] != 'Register':
                     continue
-                kreg, first, rm, pred = ops[0]['reg'], 'zmm' + ops[1]['reg'][3:], 'zmm' + ops[2]['reg'][3:], ops[3]['imm']
+                kreg, first, rm, pred = ops[0]['reg'], full_vec(ops[1]['reg']), full_vec(ops[2]['reg']), ops[3]['imm']
                 if first == rm or first not in loads or rm not in loads:
                     continue
                 if loads[first][2] != loads[rm][2]:
@@ -267,10 +282,13 @@ def fold_masked_compares(fn):
                 # The victim must be untouched between its load and the compare, and its address stable.
                 if any(victim in uses(fn.ins[m]) or victim in defs(fn.ins[m]) or addr_regs & defs(fn.ins[m]) for m in range(lk + 1, k)):
                     continue
-                keep_text = '%%%smm%s' % (width, keep[3:])
-                i.j['gas'] = 'vpcmp%s%s %s,%s,%%%s{%%%s}' % (PRED[pred], i.mnemonic[len('vpcmp'):], mem, keep_text, kreg, mask)
+                keep_op = ops[1] if keep == first else ops[2]
+                i.j['ops'] = [ops[0], keep_op, dict(mem), {'kind': 'Immediate', 'imm': pred, 'size': 8, 'signed': False, 'implicit': False}]
+                i.j['ops'][2]['mem'] = dict(mem['mem'])
                 i.j['op_mask'] = mask
+                i.j['zeroing'] = False
                 i.j['regs'] = [r for r in i.j['regs'] if r['full'] != victim] + [{'name': mask, 'full': mask, 'access': 'Read'}]
+                refresh(i)
                 done.append('%s: folded %s into %s' % (fn.name, fn.ins[lk], i.gas))
                 delete(fn.ins[lk])
                 loads.pop(victim)
@@ -278,9 +296,13 @@ def fold_masked_compares(fn):
     return done
 
 
-KAND = re.compile(r'^kand[bwdq] %(k\d),%(k\d),%(k\d)$')
-KTEST = re.compile(r'^ktest([bwdq]) %(k\d),%(k\d)$')
-KOR = re.compile(r'^kor([bwdq]) %(k\d),%(k\d),%(k\d)$')
+def kregs(i, prefix, count):
+    """The mask registers of a k-instruction with that mnemonic prefix and operand count, or None."""
+    ops = i.j['ops']
+    if not i.gas or not i.mnemonic.startswith(prefix) or len(i.mnemonic) != len(prefix) + 1 or len(ops) != count \
+            or any(o['kind'] != 'Register' or o['reg'][0] != 'k' for o in ops):
+        return None
+    return [o['reg'] for o in ops]
 
 
 def drop_subset_ands(fn, b, start, kreg, mask):
@@ -290,16 +312,17 @@ def drop_subset_ands(fn, b, start, kreg, mask):
     preds = predecessors(fn)
     for k in range(start, b.end):
         i = fn.ins[k]
-        m = KAND.match(i.gas)
-        if m and {m.group(1), m.group(2)} == {kreg, mask} and m.group(3) == kreg:
+        m = kregs(i, 'kand', 3)
+        if m and {m[1], m[2]} == {kreg, mask} and m[0] == kreg:   # AT&T order in the text; ops are dst, src1, src2
             done.append('%s: dropped %s' % (fn.name, i))
             delete(i)
             continue
-        mt = KTEST.match(i.gas)
-        if mt and {mt.group(2), mt.group(3)} == {kreg, mask}:
-            i.j['gas'] = 'kortest%s %%%s,%%%s' % (mt.group(1), kreg, kreg)   # ZF is the same; CF differs, only je/jne follow
-            i.j['mnemonic'] = 'kortest' + mt.group(1)
+        mt = kregs(i, 'ktest', 2)
+        if mt and set(mt) == {kreg, mask}:
+            i.j['mnemonic'] = 'kortest' + i.mnemonic[-1]   # ZF is the same; CF differs, only je/jne follow
+            i.j['ops'] = [register(kreg, 64), register(kreg, 64)]
             i.j['regs'] = [{'name': kreg, 'full': kreg, 'access': 'Read'}]
+            refresh(i)
             done.append('%s: ktest -> %s' % (fn.name, i.gas))
             continue
         if kreg in defs(i) or mask in defs(i):
@@ -496,17 +519,18 @@ def rename_vectors(fn):
         regs = {reg for (kk, reg), w in webs.items() if kk == k and w in wide}
         if not regs:
             continue
-        numbers = {int(r[3:]) for r in regs}
-        text = VEC.sub(lambda m: '%%%smm%d' % (m.group(1), int(m.group(2)) + 16) if int(m.group(2)) in numbers else m.group(0), i.gas)
-        head, _, rest = text.partition(' ')
-        if head in EVEX_NAME:
-            text = EVEX_NAME[head] + ' ' + rest
-        i.j['gas'] = text
+        for o in i.j['ops']:
+            if o['kind'] == 'Register' and o['reg'][:3] in ('xmm', 'ymm', 'zmm') and full_vec(o['reg']) in regs:
+                o['reg'] = o['reg'][:3] + str(int(o['reg'][3:]) + 16)
+        if i.mnemonic in EVEX_NAME:
+            i.j['mnemonic'] = EVEX_NAME[i.mnemonic]
+        i.j['encoding'] = 'EVEX'
         for r in i.j['regs']:
             if r['full'] in regs:
                 n = int(re.search(r'\d+', r['name']).group()) + 16
                 r['name'] = re.sub(r'\d+', str(n), r['name'])
                 r['full'] = 'zmm%d' % n
+        refresh(i)
     return ['%s: renamed %d webs to ymm16-31, %d vzeroupper removed' % (fn.name, len(wide), removed)]
 
 
@@ -543,8 +567,10 @@ def hot_tails(fn):
             continue
         fall = fn.ins[fb.start]
         last.j['mnemonic'] = 'j' + INVERT[cc]
+        last.j['cc'] = INVERT[cc]
         last.j['branch_target'] = fall.offset
-        last.j['gas'] = '%s 0x%016X' % (last.j['mnemonic'], fall.offset)
+        last.j['ops'][0]['branch'] = fall.offset
+        refresh(last)
         new_ins.append((b.end, [clone(i) for i in tail]))
         preds[id(tb)].remove(b)
         done.append('%s: %s now falls through into the %d-instruction return tail at %s' % (fn.name, last.j['mnemonic'], len(tail), label_of(tail[0])))
@@ -562,10 +588,6 @@ def hot_tails(fn):
 
 # ---------------------------------------------------------------- lea
 
-LEA = re.compile(r'^leaq (-?0x[0-9A-F]+)?\((%r[a-z0-9]+)(?:,(%r[a-z0-9]+),(\d))?\),(%r[a-z0-9]+)$')
-ADDI = re.compile(r'^addq \$(-?0x[0-9A-F]+),(%r[a-z0-9]+)$')
-
-
 def fold_lea_add(fn):
     """leaq (a,b),c; addq $imm,c -> leaq imm(a,b),c when the flags of the add are dead."""
     done = []
@@ -573,10 +595,11 @@ def fold_lea_add(fn):
         live = [k for k in range(b.start, b.end) if fn.ins[k].gas]
         for k1, k2 in zip(live, live[1:]):
             lea, add = fn.ins[k1], fn.ins[k2]
-            m, n = LEA.match(lea.gas), ADDI.match(add.gas)
-            if not m or not n or n.group(2) != m.group(5):
+            lo, ao = lea.j['ops'], add.j['ops']
+            if not (lea.mnemonic == 'lea' and add.mnemonic == 'add' and lo[0]['size'] == 64 and lo[1]['kind'] == 'Memory' and not lo[1]['mem']['rip_rel']
+                    and ao[0]['kind'] == 'Register' and ao[0]['reg'] == lo[0]['reg'] and ao[1]['kind'] == 'Immediate' and lea.reloc is None and add.reloc is None):
                 continue
-            disp = int(m.group(1) or '0', 16) + int(n.group(1), 16)
+            disp = lo[1]['mem']['disp'] + ao[1]['imm']
             if not -2 ** 31 <= disp < 2 ** 31:
                 continue
             # flags: the add's flags must not be read before being written (next instruction only)
@@ -585,10 +608,10 @@ def fold_lea_add(fn):
                 continue
             if k2 == live[-1]:
                 continue
-            text = ('%s0x%X' % ('-' if disp < 0 else '', abs(disp))) if disp else ''
-            text += '(' + m.group(2) + (',%s,%s' % (m.group(3), m.group(4)) if m.group(3) else '') + '),' + m.group(5)
-            lea.j['gas'] = 'leaq ' + text
-            done.append('%s: %s + %s -> %s' % (fn.name, m.group(0), n.group(0), lea.j['gas']))
+            before = '%s + %s' % (lea.gas, add.gas)
+            lo[1]['mem']['disp'] = disp
+            refresh(lea)
+            done.append('%s: %s -> %s' % (fn.name, before, lea.gas))
             delete(add)
     return done
 
@@ -614,11 +637,9 @@ def thread_jumps(fn):
             last.j['home'] = jmp.home  # the relocation field is measured from the jmp's bytes
             last.j['len'] = jmp.j['len']
             last.j['ops'] = [dict(o) for o in jmp.j['ops']]
-            last.j['branch_target'] = jmp.target
-            last.j['gas'] = '%s 0x%016X' % (last.mnemonic, jmp.target)
-        else:
-            last.j['branch_target'] = jmp.target
-            last.j['gas'] = '%s 0x%016X' % (last.mnemonic, jmp.target)
+        last.j['branch_target'] = jmp.target
+        last.j['ops'][0]['branch'] = jmp.target
+        refresh(last)
         done.append('%s: %s now goes straight to %s' % (fn.name, last.mnemonic, label_of(jmp) if jmp.reloc is None else jmp.reloc.symbol))
     analyze(fn)
     preds = predecessors(fn)
@@ -632,9 +653,22 @@ def thread_jumps(fn):
 
 # ---------------------------------------------------------------- ktest
 
-KORTEST = re.compile(r'^kortest([wd]) %(k\d),%(k\d)$')
-KMOV = re.compile(r'^kmov([wd]) %(k\d),%(e[a-z]+|r\d+d)$')
 FREE_GPRS = ['eax', 'r10d', 'r11d']  # never arguments: safe even where a tail call follows
+
+
+def kortest_of(i):
+    """kortestw/d %k,%k -> (width letter, k) or None."""
+    m = kregs(i, 'kortest', 2)
+    return (i.mnemonic[-1], m[0]) if m and m[0] == m[1] and i.mnemonic[-1] in 'wd' else None
+
+
+def kmov_of(i):
+    """kmovw/d %k,%r32 -> (width letter, k, r32) or None."""
+    ops = i.j['ops']
+    if i.gas and i.mnemonic in ('kmovw', 'kmovd') and len(ops) == 2 and ops[0]['kind'] == 'Register' and ops[1]['kind'] == 'Register' \
+            and ops[0]['size'] == 32 and ops[1]['reg'][0] == 'k':
+        return i.mnemonic[-1], ops[1]['reg'], ops[0]['reg']
+    return None
 
 
 def kortest_to_test(fn):
@@ -651,20 +685,20 @@ def kortest_to_test(fn):
     new_ins = []
     for L in fn.blocks:
         first = next((fn.ins[k] for k in range(L.start, L.end) if fn.ins[k].gas), None)
-        tm = KMOV.match(first.gas) if first is not None else None
+        tm = kmov_of(first) if first is not None else None
         if not tm or not preds[id(L)]:
             continue
-        width, kreg, reg = tm.groups()
+        width, kreg, reg = tm
         plan = []
         for p in preds[id(L)]:
             seq = [fn.ins[k] for k in range(p.start, p.end) if fn.ins[k].gas]
-            if len(seq) >= 3 and KMOV.match(seq[-3].gas) and KMOV.match(seq[-3].gas).group(2, 3) == (kreg, reg) \
-                    and seq[-2].gas == 'testl %%%s,%%%s' % (reg, reg) and seq[-1].flow == 'ConditionalBranch':
+            if len(seq) >= 3 and kmov_of(seq[-3]) and kmov_of(seq[-3])[1:] == (kreg, reg) \
+                    and seq[-2].mnemonic == 'test' and [o['reg'] for o in seq[-2].j['ops']] == [reg, reg] and seq[-1].flow == 'ConditionalBranch':
                 continue  # already in the wanted shape
             if len(seq) >= 2 and seq[-1].flow == 'ConditionalBranch' and seq[-1].mnemonic in ('je', 'jne'):
-                m = KORTEST.match(seq[-2].gas)
-                if m and m.group(2) == m.group(3) == kreg and full_gpr(reg) not in fn.live_after[fn.ins.index(seq[-1])]:
-                    plan.append((seq[-2], seq[-1], m.group(1)))
+                m = kortest_of(seq[-2])
+                if m and m[1] == kreg and full_gpr(reg) not in fn.live_after[fn.ins.index(seq[-1])]:
+                    plan.append((seq[-2], seq[-1], m[0]))
                     continue
             plan = None
             break
@@ -672,10 +706,14 @@ def kortest_to_test(fn):
             continue
         for kt, jcc, kw in plan:
             kt.j['mnemonic'] = 'kmov' + kw
-            kt.j['gas'] = 'kmov%s %%%s,%%%s' % (kw, kreg, reg)
+            kt.j['ops'] = [register(reg, 32), register(kreg, 64)]
+            kt.j['encoding'] = 'VEX'
             kt.j['regs'] = [{'name': reg, 'full': full_gpr(reg), 'access': 'Write'}, {'name': kreg, 'full': kreg, 'access': 'Read'}]
+            refresh(kt)
             test = clone(kt)
-            test.j.update({'mnemonic': 'test', 'gas': 'testl %%%s,%%%s' % (reg, reg), 'regs': [{'name': reg, 'full': full_gpr(reg), 'access': 'Read'}], 'encoding': 'Legacy'})
+            test.j.update({'mnemonic': 'test', 'cc': None, 'ops': [register(reg, 32), register(reg, 32)],
+                           'regs': [{'name': reg, 'full': full_gpr(reg), 'access': 'Read'}], 'encoding': 'Legacy'})
+            refresh(test)
             new_ins.append((fn.ins.index(jcc), [test]))
             done.append('%s: kortest%s %s -> kmov %s; test, for %s' % (fn.name, kw, kreg, reg, label_of(first)))
         done.append('%s: dropped %s, every way in now does it' % (fn.name, first))

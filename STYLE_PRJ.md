@@ -18,5 +18,5 @@ Per-project settings that the shared [STYLE.md](STYLE.md) delegates here.
   table they are collected in.
 - `tst/test.c` is the test driver, not the product, and uses the host C
   library as the reference implementation.
-- `dev/x86.py` is a decoder table: its data lines are long on purpose and are
-  not wrapped.
+- `dev/x86.py` and `dev/encode.py` are instruction tables: their data lines
+  are long on purpose and are not wrapped.

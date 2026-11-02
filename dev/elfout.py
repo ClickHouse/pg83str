@@ -1,0 +1,187 @@
+"""Write a relocatable ELF64 object back: the code sections from their new
+layouts, every other section as it was, symbols with their new values and
+sizes, relocations regenerated for code and remapped for data. Also a GNU ar
+archive writer with a symbol index, so nothing but Python is needed."""
+import struct
+
+import elf
+
+DROP = {'.eh_frame', '.llvm_addrsig', '.symtab', '.strtab', '.shstrtab'}
+
+
+def write_object(src_path, dst_path, layouts, remap):
+    """layouts: {code section name: Layout}; remap(section, old offset) -> new offset."""
+    e = elf.read(src_path)
+    old_index = {s.name: s.index for s in e.sections}
+    kept = []   # old sections that stay, in order
+    for s in e.sections:
+        if s.index == 0 or s.type == 'SHT_RELA' or s.name in DROP or s.name.startswith('.rela'):
+            continue
+        kept.append(s)
+    # new section list: null, kept..., .rela.X for each X with relocations, .symtab, .strtab, .shstrtab
+    names = ['']
+    contents = [b'']
+    headers = [dict(type=0, flags=0, link=0, info=0, align=0, entsize=0)]
+    new_index = {}
+    for s in kept:
+        new_index[s.name] = len(names)
+        names.append(s.name)
+        if s.name in layouts:
+            contents.append(layouts[s.name].data)
+        else:
+            contents.append(s.data if s.type != 'SHT_NOBITS' else b'')
+        headers.append(dict(type=s, flags=s.flags, link=0, info=0, align=s.align, entsize=s.entsize, nobits=s.size if s.type == 'SHT_NOBITS' else None))
+    # symbols: drop the ones of dropped sections, renumber, update code values and sizes
+    symbols = []
+    sym_index = {}
+    for n, sym in enumerate(e.symbols):
+        if 0 < sym.shndx < 0xff00:
+            secname = e.sections[sym.shndx].name
+            if secname not in new_index:
+                continue
+            shndx = new_index[secname]
+            value, size = sym.value, sym.size
+            if secname in layouts:
+                value = remap(secname, sym.value)
+                if sym.type == 'STT_FUNC' or size:
+                    size = remap(secname, sym.value + sym.size) - value
+        else:
+            shndx = sym.shndx
+            value, size = sym.value, sym.size
+        sym_index[n] = len(symbols)
+        symbols.append((sym.name, value, size, sym.type, sym.bind, shndx))
+    strtab = bytearray(b'\0')
+    name_offset = {}
+    for name, *_ in symbols:
+        if name and name not in name_offset:
+            name_offset[name] = len(strtab)
+            strtab += name.encode() + b'\0'
+    symtab = bytearray()
+    first_global = len(symbols)
+    for n, (name, value, size, type_, bind, shndx) in enumerate(symbols):
+        t = {'STT_NOTYPE': 0, 'STT_OBJECT': 1, 'STT_FUNC': 2, 'STT_SECTION': 3, 'STT_FILE': 4}.get(type_, int(type_[4:]) if type_.startswith('STT_') and type_[4:].isdigit() else 0)
+        b = {'STB_LOCAL': 0, 'STB_GLOBAL': 1, 'STB_WEAK': 2}[bind]
+        if b != 0 and n < first_global:
+            first_global = n
+        symtab += struct.pack('<IBBHQQ', name_offset.get(name, 0), (b << 4) | t, 0, shndx, value, size)
+    # relocations
+    rela = {}
+    for s in kept:
+        entries = []
+        if s.name in layouts:
+            for off, type_, symname, is_section, addend in layouts[s.name].relocs:
+                entries.append((off, type_, symname, is_section, addend))
+        else:
+            for r in e.relocs.get(s.index, []):
+                sym = e.symbols[r.symbol]
+                is_section = sym.type == 'STT_SECTION'
+                symname = e.sections[sym.shndx].name if is_section else sym.name
+                addend = r.addend
+                if is_section and symname in layouts:
+                    addend = remap(symname, addend)
+                entries.append((r.offset, r.type, symname, is_section, addend))
+        if entries:
+            rela[s.name] = entries
+    by_name = {}
+    for n, (name, value, size, type_, bind, shndx) in enumerate(symbols):
+        if type_ == 'STT_SECTION':
+            by_name[('section', names[shndx])] = n
+        elif name:
+            by_name.setdefault(name, n)
+    type_codes = {v: k for k, v in elf.RELOC_TYPES.items()}
+    symtab_index = len(names) + len(rela)
+    for secname, entries in rela.items():
+        body = bytearray()
+        for off, type_, symname, is_section, addend in sorted(entries):
+            symi = by_name[('section', symname)] if is_section else by_name[symname]
+            body += struct.pack('<QQq', off, (symi << 32) | type_codes[type_], addend)
+        names.append('.rela' + secname)
+        contents.append(bytes(body))
+        headers.append(dict(type=4, flags=0x40, link=symtab_index, info=new_index[secname], align=8, entsize=24))
+    names.append('.symtab'); contents.append(bytes(symtab)); headers.append(dict(type=2, flags=0, link=symtab_index + 1, info=first_global, align=8, entsize=24))
+    names.append('.strtab'); contents.append(bytes(strtab)); headers.append(dict(type=3, flags=0, link=0, info=0, align=1, entsize=0))
+    shstrtab = bytearray(b'\0')
+    name_pos = []
+    for name in names:
+        name_pos.append(len(shstrtab) if name else 0)
+        if name:
+            shstrtab += name.encode() + b'\0'
+    shstr_pos = len(shstrtab)
+    shstrtab += b'.shstrtab\0'
+    names.append('.shstrtab'); contents.append(bytes(shstrtab)); headers.append(dict(type=3, flags=0, link=0, info=0, align=1, entsize=0))
+    name_pos.append(shstr_pos)
+    # file layout
+    out = bytearray(64)
+    offsets = []
+    for n, (content, h) in enumerate(zip(contents, headers)):
+        align = max(h['align'], 1) if n else 1
+        while len(out) % align:
+            out.append(0)
+        offsets.append(len(out))
+        if h.get('nobits') is None:
+            out += content
+    while len(out) % 8:
+        out.append(0)
+    shoff = len(out)
+    for n, h in enumerate(headers):
+        type_ = h['type']
+        if not isinstance(type_, int):   # a kept original section
+            s = type_
+            type_ = {'SHT_PROGBITS': 1, 'SHT_NOBITS': 8, 'SHT_NOTE': 7, 'SHT_INIT_ARRAY': 14, 'SHT_FINI_ARRAY': 15, 'SHT_X86_64_UNWIND': 0x70000001}.get(s.type, int(s.type[4:]) if s.type[4:].isdigit() else 1)
+        size = h['nobits'] if h.get('nobits') is not None else len(contents[n])
+        out += struct.pack('<IIQQQQIIQQ', name_pos[n], type_, h['flags'], 0, offsets[n] if n else 0, size, h['link'], h['info'], h['align'], h['entsize'])
+    ident = b'\x7fELF' + bytes([2, 1, 1, 0]) + bytes(8)
+    struct.pack_into('<16sHHIQQQIHHHHHH', out, 0, ident, 1, 62, 1, 0, 0, shoff, 0, 64, 0, 0, 64, len(headers), len(headers) - 1)
+    with open(dst_path, 'wb') as f:
+        f.write(out)
+
+
+def write_archive(path, members):
+    """GNU ar with a symbol index. members: [(name, bytes)]; the defined global symbols come from each member's ELF."""
+    import tempfile, os
+    symbols = []   # (name, member index)
+    for n, (name, data) in enumerate(members):
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(data)
+            tmp = f.name
+        try:
+            e = elf.read(tmp)
+        finally:
+            os.unlink(tmp)
+        for sym in e.symbols:
+            if sym.bind in ('STB_GLOBAL', 'STB_WEAK') and sym.shndx != 0 and sym.name:
+                symbols.append((sym.name, n))
+    long_names = bytearray()
+    member_names = []
+    for name, _ in members:
+        if len(name) > 15:
+            member_names.append('/%d' % len(long_names))
+            long_names += name.encode() + b'/\n'
+        else:
+            member_names.append(name + '/')
+
+    def header(name, size):
+        return ('%-16s%-12d%-6d%-6d%-8s%-10d`\n' % (name, 0, 0, 0, '644', size)).encode()
+
+    def padded(data):
+        return data + (b'\n' if len(data) % 2 else b'')
+
+    # offsets: magic, symbol table member, long names member, then the members
+    body_members = [padded(data) for _, data in members]
+    symtab_size = 4 + 4 * len(symbols) + sum(len(n) + 1 for n, _ in symbols)
+    pos = 8 + 60 + (symtab_size + symtab_size % 2)
+    if long_names:
+        pos += 60 + len(long_names) + len(long_names) % 2
+    member_pos = []
+    for data in body_members:
+        member_pos.append(pos)
+        pos += 60 + len(data)
+    symtab = struct.pack('>I', len(symbols)) + b''.join(struct.pack('>I', member_pos[m]) for _, m in symbols) + b''.join(n.encode() + b'\0' for n, _ in symbols)
+    out = bytearray(b'!<arch>\n')
+    out += header('/', len(symtab)) + padded(symtab)
+    if long_names:
+        out += header('//', len(long_names)) + padded(bytes(long_names))
+    for mname, data, (_, raw) in zip(member_names, body_members, members):
+        out += header(mname, len(raw)) + data
+    with open(path, 'wb') as f:
+        f.write(out)

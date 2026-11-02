@@ -480,7 +480,7 @@ for op, m in {0x30: 'kshiftr', 0x32: 'kshiftl'}.items():
 
 class Ctx:
     __slots__ = ('code', 'base', 'pos', 'start', 'prefixes', 'rex', 'seg', 'opsize', 'rep', 'vex', 'evex', 'W', 'vvvv', 'L', 'pp',
-                 'mask', 'zero', 'bcast', 'R', 'X', 'B', 'R2', 'V2', 'modrm', 'map', 'opcode', 'mnemonic', 'attrs')
+                 'mask', 'zero', 'bcast', 'R', 'X', 'B', 'R2', 'V2', 'modrm', 'map', 'opcode', 'mnemonic', 'attrs', 'pfx', 'vex2', 'lock')
 
     def __init__(self, code, base, pos):
         self.code, self.base, self.pos, self.start = code, base, pos, pos
@@ -491,6 +491,9 @@ class Ctx:
         self.mask, self.zero, self.bcast = 0, False, False
         self.R = self.X = self.B = self.R2 = self.V2 = 0
         self.modrm = None
+        self.pfx = ''      # mandatory prefix of the table entry ('' , '66', 'f3', 'f2')
+        self.vex2 = False
+        self.lock = False
 
     def byte(self):
         if self.pos >= len(self.code):
@@ -518,7 +521,7 @@ def parse_prefixes(c):
         elif b in (0xf2, 0xf3):
             c.rep = b
         elif b == 0xf0:
-            pass
+            c.lock = True
         elif b in SEG:
             c.seg = SEG[b]
         elif b == 0x67:
@@ -601,41 +604,9 @@ def decode_memory(c, mod, rm, size, disp8_scale=1):
         disp_pos = c.pos - c.start
         disp = c.imm(32)
     o = Operand('Memory', size=size)
-    o.mem = {'base': base, 'index': index, 'scale': scale, 'disp': disp, 'rip_rel': rip_rel}
+    o.mem = {'base': base, 'index': index, 'scale': scale, 'disp': disp, 'rip_rel': rip_rel, 'disp_size': 8 if mod == 1 else 32 if (mod == 2 or disp_pos is not None) else 0}
     o.field_pos = disp_pos
     return o
-
-
-def mem_text(c, o, end):
-    """AT&T text of a memory operand; also sets o.literal to the displacement text (for relocation patching)."""
-    m = o.mem
-    seg = ('%%%s:' % c.seg) if c.seg else ''
-    if m['rip_rel']:
-        o.literal = '0x%X' % ((end + m['disp']) & 0xffffffffffffffff)
-        return seg + o.literal
-    d = m['disp']
-    if m['base'] is None and m['index'] is None:
-        o.literal = ('0x%X' % (d & 0xffffffff) if d >= 0 else '-0x%X' % -d)
-        return seg + o.literal
-    s = seg
-    if d:
-        o.literal = ('0x%X' % d) if d > 0 else ('-0x%X' % -d)
-        s += o.literal
-    else:
-        o.literal = ''
-    s += '('
-    if m['base']:
-        s += '%' + m['base']
-    if m['index']:
-        s += ',%%%s,%d' % (m['index'], m['scale'])
-    s += ')'
-    return s
-
-
-def imm_text(val, size, signed):
-    if signed or val < 0:
-        return ('$0x%X' % val) if val >= 0 else ('$-0x%X' % -val)
-    return '$0x%X' % (val & ((1 << size) - 1))
 
 
 def vec_width(c):
@@ -748,6 +719,7 @@ def lookup(c):
     """Find the table entry; consumes opcode bytes (and ModRM for groups). Returns (mnemonic, specs, attrs)."""
     if c.vex or c.evex:
         pfx = ['', '66', 'f3', 'f2'][c.pp]
+        c.pfx = pfx
         for w in (c.W, '*'):
             e = VEX.get((c.map, c.opcode, pfx, w))
             if e is None:
@@ -791,12 +763,14 @@ def lookup(c):
         if op == 0x01:
             b = c.byte()
             if b == 0xd0:
+                c.opcode = 0x01d0   # two-byte opcode 0F 01 D0
                 return 'xgetbv', [], 'nosuffix regs=rcx:R,rax:W,rdx:W'
             raise DecodeError('unknown 0F 01 %02x' % b)
         if op == 0x1e:
             # F3 0F 1E FA/FB: endbr64/endbr32 (-fcf-protection); anything else is a reserved nop
             if pfx == 'f3' and c.pos < len(c.code) and c.code[c.pos] in (0xfa, 0xfb):
                 c.rep = None
+                c.pfx = 'f3'
                 return ('endbr64' if c.byte() == 0xfa else 'endbr32'), [], 'nosuffix'
             return 'nop', ['Ev'], 'acc=A'
         if op == 0xba:
@@ -809,6 +783,8 @@ def lookup(c):
             mod, reg, rm = modrm_fields(c)
             m = TWO_GROUPS[op][reg]
             if m:
+                c.pfx = '66'
+                c.opsize = False
                 return m, ['Udq', 'Ib'], 'acc=RW,R'
     for key in ((op, pfx), (op, '*')):
         e = table.get(key)
@@ -818,6 +794,8 @@ def lookup(c):
                 c.opsize = False
             if key[1] in ('f3', 'f2'):
                 c.rep = None
+            if key[1] != '*':
+                c.pfx = key[1]
             return e
     raise DecodeError('unknown opcode 0F %s%02x' % ({1: '', 2: '38 ', 3: '3A '}[c.map], op))
 
@@ -829,6 +807,7 @@ def decode_one(code, base, pos):
     if b in (0xc4, 0xc5) :
         c.vex = True
         if b == 0xc5:
+            c.vex2 = True
             p = c.byte()
             c.R = (~p >> 7) & 1
             c.vvvv = (~p >> 3) & 15
@@ -882,10 +861,11 @@ def finish(c, mnemonic, specs, attrs, ops):
     end = c.base + c.pos
     off = c.base + c.start
     length = c.pos - c.start
-    # mnemonic adjustments
-    if 'cc' in attr:
-        mnemonic += CC[c.opcode & 15]
     osz = opsize_bits(c)
+    cc = CC[c.opcode & 15] if 'cc' in attr else None
+    if cc:
+        mnemonic += cc
+    # mnemonic aliases by operand size / W (the encoder maps them back, see ALIASES)
     if mnemonic == 'cbw':
         mnemonic = {16: 'cbtw', 32: 'cwtl', 64: 'cltq'}[osz]
     elif mnemonic == 'cwd':
@@ -898,8 +878,6 @@ def finish(c, mnemonic, specs, attrs, ops):
         mnemonic = mnemonic[:-1] + 'q'
     elif mnemonic == 'mov' and ops and ops[1].kind == 'Immediate' and ops[1].size == 64:
         mnemonic = 'movabs'
-    elif mnemonic == 'nop' and ops:
-        pass
     # accesses
     for k, o in enumerate(ops):
         a = acc[k] if acc and k < len(acc) else ('RW' if k == 0 else 'R')
@@ -907,7 +885,6 @@ def finish(c, mnemonic, specs, attrs, ops):
     # EVEX merge-masking makes the destination read-modify-write
     if c.evex and c.mask and not c.zero and ops and ops[0].kind == 'Register' and 'kdst' not in attr and ops[0].access == W:
         ops[0].access = RW
-    # register / memory access lists
     regs = []
     mems = []
 
@@ -952,101 +929,133 @@ def finish(c, mnemonic, specs, attrs, ops):
             mems.append({'base': 'rsp', 'index': 'none', 'scale': 1, 'disp': 0, 'size': 8, 'access': R})
     if c.evex and c.mask:
         add_reg('k%d' % c.mask, R)
-    if c.rep and mnemonic in ('movsb', 'movsw', 'movsl', 'movsq', 'stosb', 'stosw', 'stosl', 'stosq'):
+    string_op = mnemonic in ('movsb', 'movsw', 'movsl', 'movsq', 'stosb', 'stosw', 'stosl', 'stosq')
+    if c.rep and string_op:
         add_reg('rcx', RW)
-    # flow
     flow = next((a[5:] for a in attr if a.startswith('flow=')), 'Next')
     target = None
     for o in ops:
         if o.kind == 'NearBranch':
             target = (end + o.imm) & 0xffffffffffffffff
             o.target = target
-    # text
-    text = gas_text(c, mnemonic, specs, attr, ops, end, osz)
-    j = {'offset': off, 'len': length, 'bytes': c.code[c.start:c.pos].hex(), 'mnemonic': mnemonic, 'gas': text,
-         'encoding': 'EVEX' if c.evex else 'VEX' if c.vex else 'Legacy',
-         'op_mask': 'k%d' % c.mask if c.evex and c.mask else 'none', 'zeroing': bool(c.evex and c.zero), 'flow': flow}
-    if target is not None:
-        j['branch_target'] = target
+    indirect = mnemonic in ('call', 'jmp') and ops and ops[0].kind != 'NearBranch'
+    # the structured operands
     jops = []
+    imm_size = disp_size = 0
     for o in ops:
-        if o.implicit:
-            continue
         if o.kind == 'Register':
-            jops.append({'kind': 'Register', 'reg': o.reg})
+            jops.append({'kind': 'Register', 'reg': o.reg, 'size': o.size, 'implicit': o.implicit})
         elif o.kind == 'Memory':
             m = o.mem
-            jops.append({'kind': 'Memory', 'mem': {'base': m['base'] or 'none', 'index': m['index'] or 'none', 'scale': m['scale'], 'disp': m['disp'], 'size': o.size // 8, 'rip_rel': m['rip_rel']},
-                         'field_pos': o.field_pos, 'literal': o.literal})
+            jops.append({'kind': 'Memory', 'mem': {'base': m['base'] or 'none', 'index': m['index'] or 'none', 'scale': m['scale'], 'disp': m['disp'],
+                                                    'size': o.size // 8, 'rip_rel': m['rip_rel'], 'seg': c.seg if not (indirect and c.seg == 'ds') else None},
+                         'field_pos': o.field_pos})
+            disp_size = 0 if o.field_pos is None else 32 if (m['rip_rel'] or (m['base'] is None and m['index'] is None)) else m['disp_size']
         elif o.kind == 'Immediate':
-            jops.append({'kind': 'Immediate', 'imm': o.imm, 'field_pos': o.field_pos, 'literal': o.literal})
+            signed = 'imm8s' in attr or (o.size == 32 and osz == 64) or o.size == 64
+            jops.append({'kind': 'Immediate', 'imm': o.imm, 'size': o.size, 'signed': signed, 'implicit': o.implicit, 'field_pos': o.field_pos})
+            if not o.implicit:
+                imm_size = o.size
         elif o.kind == 'NearBranch':
-            jops.append({'kind': 'NearBranch', 'branch': o.target, 'field_pos': o.field_pos, 'literal': o.literal})
-    j['ops'] = jops
-    j['regs'] = regs
-    j['mems'] = mems
+            jops.append({'kind': 'NearBranch', 'branch': o.target, 'size': o.size, 'field_pos': o.field_pos})
+            imm_size = o.size
+    j = {'offset': off, 'len': length, 'bytes': c.code[c.start:c.pos].hex(), 'mnemonic': mnemonic, 'cc': cc,
+         'encoding': 'EVEX' if c.evex else 'VEX' if c.vex else 'Legacy',
+         'op_mask': 'k%d' % c.mask if c.evex and c.mask else 'none', 'zeroing': bool(c.evex and c.zero), 'bcast': bool(c.evex and c.bcast),
+         'rep': ('repne' if c.rep == 0xf2 else 'rep') if c.rep and string_op else None,
+         'lock': c.lock, 'notrack': bool(indirect and c.seg == 'ds'), 'flow': flow,
+         'form': {'map': c.map, 'opcode': c.opcode, 'pfx': c.pfx, 'W': c.W, 'L': c.L, 'vex2': c.vex2,
+                  'encoding': 'EVEX' if c.evex else 'VEX' if c.vex else 'Legacy', 'imm': imm_size, 'disp': disp_size, 'rex': c.rex is not None},
+         'ops': jops, 'regs': regs, 'mems': mems}
+    if target is not None:
+        j['branch_target'] = target
+    j['gas'] = format(j)
     return j
 
 
-def gas_text(c, mnemonic, specs, attr, ops, end, osz):
-    is_vec_ins = 'vex' in attr or any(s[0] in 'VWHU' for s in specs) or mnemonic in ('vzeroupper',)
+# ---------------------------------------------------------------- text
+
+NOSUFFIX = {'cbtw', 'cwtl', 'cltq', 'cwtd', 'cltd', 'cqto', 'cpuid', 'xgetbv', 'ret', 'leave', 'int3', 'ud2', 'hlt', 'syscall',
+            'endbr64', 'endbr32', 'movslq', 'prefetch', 'nop', 'pause', 'vzeroupper',
+            'movsb', 'movsw', 'movsl', 'movsq', 'stosb', 'stosw', 'stosl', 'stosq'}
+
+
+def is_vector_reg(name):
+    return name.startswith(('xmm', 'ymm', 'zmm')) or (name.startswith('k') and name[1:].isdigit())
+
+
+def reg_text(o):
+    return '%' + o['reg']
+
+
+def mem_text(m, end=None):
+    """AT&T text of a memory operand. end: the instruction's end offset, to print a rip-relative target as a number."""
+    seg = ('%%%s:' % m['seg']) if m.get('seg') else ''
+    d = m['disp']
+    if m['rip_rel']:
+        return seg + ('0x%X(%%rip)' % ((end + d) & 0xffffffffffffffff) if end is not None else ('%d(%%rip)' % d))
+    if m['base'] in (None, 'none') and m['index'] in (None, 'none'):
+        return seg + ('0x%X' % (d & 0xffffffff) if d >= 0 else '-0x%X' % -d)
+    s = seg + (('0x%X' % d) if d > 0 else ('-0x%X' % -d) if d < 0 else '')
+    s += '('
+    if m['base'] not in (None, 'none'):
+        s += '%' + m['base']
+    if m['index'] not in (None, 'none'):
+        s += ',%%%s,%d' % (m['index'], m['scale'])
+    return s + ')'
+
+
+def imm_text(o):
+    val, size = o['imm'], o['size']
+    if o.get('signed') or val < 0:
+        return ('$0x%X' % val) if val >= 0 else ('$-0x%X' % -val)
+    return '$0x%X' % (val & ((1 << size) - 1))
+
+
+def format(j):
+    """AT&T text from the structured instruction."""
+    mnemonic, ops = j['mnemonic'], j['ops']
     name = mnemonic
-    prefix = ''
     pred = None
-    # Predicate pseudo-ops, except eq: the assembler would turn vpcmpeqb into the shorter 0F 74 form.
-    if 'pred' in attr and ops and ops[-1].kind == 'Immediate' and 0 < ops[-1].imm < 8:
-        pred = ops[-1].imm
-        name = 'vpcmp' + PRED[pred] + mnemonic[len('vpcmp'):]   # vpcmpb -> vpcmpneqb, vpcmpub -> vpcmpnequb
+    if mnemonic.startswith('vpcmp') and len(ops) == 4 and ops[-1]['kind'] == 'Immediate' and 0 <= ops[-1]['imm'] < 8 and mnemonic[5:] in ('b', 'ub', 'w', 'uw', 'd', 'ud', 'q', 'uq'):
+        pred = ops[-1]['imm']
+        name = 'vpcmp' + PRED[pred] + mnemonic[5:]
     texts = []
     for k, o in enumerate(ops):
-        if o.implicit:
+        if o.get('implicit'):
             continue
-        if 'pred' in attr and k == len(ops) - 1 and pred is not None:
+        if pred is not None and k == len(ops) - 1:
             continue
-        if o.kind == 'Register':
-            t = '%' + o.reg
-            if k == 0 and c.evex and c.mask and ('kdst' in attr or True):
-                t += '{%%k%d}' % c.mask
-                if c.zero:
-                    t += '{z}'
-        elif o.kind == 'Memory':
-            t = mem_text(c, o, end)
-            if k == 0 and c.evex and c.mask:
-                t += '{%%k%d}' % c.mask
-            if c.evex and c.bcast and o.kind == 'Memory':
-                t += '{1to%d}' % (vec_width(c) // (64 if c.W else 32))
-        elif o.kind == 'Immediate':
-            signed = 'imm8s' in attr or (o.size == 32 and osz == 64) or o.size == 64
-            t = imm_text(o.imm, o.size, signed)
-            o.literal = t[1:]
-        elif o.kind == 'NearBranch':
-            t = '0x%016X' % o.target
-            o.literal = t
-        o.text = t
+        if o['kind'] == 'Register':
+            t = reg_text(o)
+        elif o['kind'] == 'Memory':
+            t = mem_text(o['mem'], j['offset'] + j['len'])
+            if j.get('bcast'):
+                t += '{1to%d}' % (o['mem']['size'] * 8 // (64 if j['form'] and j['form']['W'] else 32))
+        elif o['kind'] == 'Immediate':
+            t = imm_text(o)
+        else:
+            t = '0x%X' % o['branch']
+        if k == 0 and j['op_mask'] != 'none':
+            t += '{%%%s}' % j['op_mask']
+            if j['zeroing']:
+                t += '{z}'
         texts.append(t)
-    if mnemonic in ('call', 'jmp') and ops and ops[0].kind != 'NearBranch':
-        texts = ['*' + texts[0].replace('%ds:', '')]
-        if c.seg == 'ds':
-            prefix = 'notrack '  # 3E on an indirect branch is CET's notrack, not a segment
-    # size suffix for integer instructions
+    if mnemonic in ('call', 'jmp') and ops and ops[0]['kind'] != 'NearBranch':
+        texts = ['*' + texts[0]]
     suffix = ''
-    if not is_vec_ins and 'nosuffix' not in attr and ops:
-        sizes = [o.size for o in ops if o.kind in ('Register', 'Memory') and not o.implicit and o.size]
-        if mnemonic in ('movzb', 'movzw', 'movsb', 'movsw'):
-            suffix = SUFFIX[ops[0].size]
+    vector = any(o['kind'] == 'Register' and is_vector_reg(o['reg']) for o in ops) or mnemonic.startswith('v')
+    if not vector and mnemonic not in NOSUFFIX and not j.get('cc') and ops:
+        sizes = [o['size'] if o['kind'] == 'Register' else o['mem']['size'] * 8 for o in ops if o['kind'] in ('Register', 'Memory') and not o.get('implicit')]
+        if mnemonic in ('movzb', 'movzw', 'movsb', 'movsw') and len(ops) == 2 and ops[0]['kind'] == 'Register':
+            suffix = SUFFIX[ops[0]['size']]
         elif mnemonic in ('call', 'jmp', 'push', 'pop'):
             suffix = 'q'
-        elif sizes:
+        elif sizes and sizes[0]:
             suffix = SUFFIX[sizes[0]]
-    if mnemonic in ('movsb', 'movsw', 'movsl', 'movsq', 'stosb', 'stosw', 'stosl', 'stosq') and not ops:
-        suffix = ''
-        name = ('rep ' if c.rep else '') + mnemonic
     if mnemonic == 'nop' and ops:
-        suffix = SUFFIX[ops[0].size]
-    if c.evex and not c.mask and all(o.kind != 'Register' or int(''.join(ch for ch in o.reg[3:] if ch.isdigit()) or 0) < 16 for o in ops if o.reg and o.reg.startswith(('xmm', 'ymm', 'zmm'))):
-        prefix = '{evex} '
-    if ops and ops[0].kind == 'NearBranch' and ops[0].size == 32 and mnemonic != 'call':
-        prefix = '{disp32} '  # keep the compiler's long form: otherwise relaxation differences cascade through the layout
+        suffix = SUFFIX[ops[0]['mem']['size'] * 8 if ops[0]['kind'] == 'Memory' else ops[0]['size']]
+    prefix = ('lock ' if j.get('lock') else '') + ('notrack ' if j.get('notrack') else '') + ((j['rep'] + ' ') if j.get('rep') else '')
     text = prefix + name + suffix
     if texts:
         text += ' ' + ','.join(reversed(texts))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The decoder and emitter against the compiler: every unit at -O0..-O3 is
-decoded, emitted as assembly and assembled again; the instruction sequence
+decoded, laid out and written again; code bytes, relocations and symbols
 must be identical. If an objdump is available, instruction boundaries are
 checked against it as well.
 
@@ -56,7 +56,7 @@ def main():
                         if ours != ref:
                             print('%s %s %s: instruction boundaries differ from %s' % (level, unit, s.name, tool))
                             failures += 1
-        r = subprocess.run([sys.executable, str(ROOT / 'dev/post.py'), '--cc', args.cc, '--roundtrip', '--check', '--out', str(where / 'post'), *map(str, objects)],
+        r = subprocess.run([sys.executable, str(ROOT / 'dev/post.py'), '--roundtrip', '--check', '--out', str(where / 'post'), *map(str, objects)],
                            capture_output=True, text=True)
         sys.stdout.write(''.join('%s %s' % (level, line) for line in r.stdout.splitlines(True)))
         if r.returncode:
