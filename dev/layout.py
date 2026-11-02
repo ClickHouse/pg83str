@@ -130,13 +130,9 @@ def layout(obj, section, instructions, func_align=None):
                 items.append(('pad', blob))
                 off += pad
                 continue
-            rel = None
-            size = None
-            if id(i) in internal:
-                size = bsize[id(i)]
-                target = offsets.get(internal[id(i)])
-                rel = 0 if target is None else target - (off + branch_length(i, size))
-            b, fields = encode.encode(i.j, rel, size)
+            # sizing pass: lengths only, the displacements come once every target is placed
+            size = bsize.get(id(i))
+            b, fields = encode.encode(i.j, None, size)
             encoded[id(i)] = (off, b, fields)
             items.append(('ins', i))
             off += len(b)
