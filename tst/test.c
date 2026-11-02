@@ -13,8 +13,18 @@
 
 #include "common.h"
 
+/* Every call goes through junk(): the unused argument registers hold garbage, so
+   a function that reads an argument it was not given (a tail call's second
+   argument prepared on the wrong path, say) cannot pass by luck. */
+static inline int junk(void)
+{
+    __asm__ volatile("movq $0x5a5a5a5a5a5a5a5a, %%rsi\n\tmovq $0x5a5a5a5a5a5a5a5a, %%rdx\n\tmovq $0x5a5a5a5a5a5a5a5a, %%rcx" ::: "rsi", "rdx", "rcx");
+    return 0;
+}
+#define T (junk(), Table)
+
 /* Every check goes through T; main runs the whole suite once per table. */
-static const struct str_table *T;
+static const struct str_table *Table;
 
 static size_t checks;
 static const char *phase = "start";
@@ -283,12 +293,12 @@ int main(void)
     int supported = str_table.memcpy == v4_table.memcpy ? 4 : str_table.memcpy == v3_table.memcpy ? 3
                   : str_table.strspn == v2_table.strspn ? 2 : 1;
     for (int i = 0; i < supported; i++) {
-        T = tables[i];
+        Table = tables[i];
         printf("%s: ", names[i]);
         checks = 0;
         suite();
     }
-    T = &str_table;
+    Table = &str_table;
     printf("dispatched: ");
     checks = 0;
     suite();

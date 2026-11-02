@@ -356,9 +356,14 @@ TAIL_MAX = 4
 clone_counter = [0]
 
 
-def clone(i):
+def clone(i, before=False):
+    """A new instruction made from i. before=True: it is inserted in front of an original
+    instruction and belongs to it, so a label on that instruction moves to the clone
+    (a copy restored before a use, a zero register at the entry). Otherwise the clone
+    belongs to what precedes it (a duplicated tail after a jump)."""
     j = copy.deepcopy(i.j)
     j['home'] = i.home
+    j['before'] = before
     clone_counter[0] += 1
     j['offset'] = (1 << 40) + clone_counter[0] * 16  # unique, never a label
     return Ins(j, i.reloc)
@@ -641,7 +646,7 @@ def zero_compares(fn):
         refresh(cmp)
         done.append('%s: %s + vptestnmb -> %s' % (fn.name, load.gas, cmp.gas))
         delete(load)
-    zero = clone(fn.ins[0])
+    zero = clone(fn.ins[0], before=True)
     xz = 'xmm%d' % z
     zero.j.update({'mnemonic': 'vpxord', 'cc': None, 'ops': [register(xz, 128), register(xz, 128), register(xz, 128)], 'op_mask': 'none', 'zeroing': False,
                    'bcast': False, 'rep': None, 'lock': False, 'notrack': False, 'flow': 'Next', 'encoding': 'EVEX', 'mems': [],
@@ -784,9 +789,14 @@ def sink_copies(fn):
                         r['name'] = gpr_alias(r['name'], A)
                         r['full'] = A
                 refresh(i)
+        # self-moves left by the renaming (mov %rsi,%rdi with rsi now rdi) go away
+        for k in sorted(region):
+            i = fn.ins[k]
+            if i.gas and i.mnemonic == 'mov' and len(i.j['ops']) == 2 and all(o['kind'] == 'Register' for o in i.j['ops']) and i.j['ops'][0]['reg'] == i.j['ops'][1]['reg']:
+                delete(i)
         new_ins = []
         for k in sorted(inserts, reverse=True):
-            copy_ = clone(mov)
+            copy_ = clone(mov, before=True)
             copy_.j.pop('branch_target', None)
             refresh(copy_)
             new_ins.append((k, [copy_]))

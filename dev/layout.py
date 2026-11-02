@@ -107,16 +107,18 @@ def layout(obj, section, instructions, func_align=None):
         if id(i) in internal:
             form = i.j.get('form')
             bsize[id(i)] = form['imm'] if form and form.get('imm') in (8, 32) else 8
-    # a run of new instructions right before a function's first original one belongs to the function:
-    # its symbol must point at them (a pass put something at the entry)
+    # new instructions marked 'before' belong to the original instruction after them: its
+    # label (and a function symbol) must point at the first of them
     leading = set()
     run = []
     for i in instructions:
-        if i.offset != i.home and i.gas:
+        if i.offset != i.home and i.gas and i.j.get('before'):
             run.append(i)
         elif i.offset == i.home:
-            if i.offset in func_starts and run:
+            if run:
                 leading.add(id(run[0]))
+            run = []
+        else:
             run = []
     jcc_align = os.environ.get('POST_JCC_ALIGN', '1') == '1'
     offsets = {}
@@ -129,10 +131,19 @@ def layout(obj, section, instructions, func_align=None):
         pending = None   # where the function started, when new instructions came first
         live = [i for i in instructions if i.gas]
         following = {id(a): b for a, b in zip(live, live[1:])}
+        leads_function = set()
+        run_start = None
+        for i in instructions:
+            if id(i) in leading:
+                run_start = id(i)
+            if i.offset == i.home:
+                if i.offset in func_starts and run_start is not None:
+                    leads_function.add(run_start)
+                run_start = None
         for i in instructions:
             if id(i) in placed_as_pair:
                 continue
-            starts_function = (i.offset in func_starts and i.offset == i.home) or id(i) in leading
+            starts_function = (i.offset in func_starts and i.offset == i.home and id(i) not in leading) or id(i) in leads_function
             if starts_function and func_align:
                 pad = (-off) % (1 << func_align)
                 if pad:

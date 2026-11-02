@@ -19,6 +19,7 @@ static inline __mmask16 low_mask(size_t n) { return (__mmask16)_bzhi_u32(0xfffff
 static inline __m128i mload16(const void *p, __mmask16 k) { return _mm_maskz_loadu_epi8(k, p); }
 static inline void mstore16(void *p, __mmask16 k, __m128i v) { _mm_mask_storeu_epi8(p, k, v); }
 static inline __m256i load256(const void *p) { return _mm256_loadu_si256((const __m256i *)p); }
+static inline __mmask32 low_mask32(size_t n) { return (__mmask32)_bzhi_u32(0xffffffffu, (unsigned)n); }
 /* Bits up to and including the lowest set bit of m (m != 0): the bytes of a
    string through its terminator, given the NUL compare mask. One blsmsk. */
 static inline unsigned through_first(unsigned m) { return m ^ (m - 1); }
@@ -99,13 +100,12 @@ static void *v4_memset(void *dst, int c, size_t n)
 static int v4_memcmp(const void *pa, const void *pb, size_t n)
 {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
-    if (n <= 16) {
-        __mmask16 k = low_mask(n); /* n == 0 loads nothing */
-        unsigned m = _mm_mask_cmpneq_epu8_mask(k, mload16(a, k), mload16(b, k));
+    if (n <= 32) {
+        /* one masked 256-bit compare for everything up to 32 bytes; n == 0 loads nothing */
+        __mmask32 k = low_mask32(n);
+        unsigned m = _mm256_mask_cmpneq_epu8_mask(k, _mm256_maskz_loadu_epi8(k, a), _mm256_maskz_loadu_epi8(k, b));
         return m ? byte_diff(a, b, ctz(m)) : 0;
     }
-    if (n <= 32)
-        return memcmp_17_32(a, b, n);
     if (n <= 64)
         return memcmp_33_64(a, b, n);
     return v3_memcmp_large(a, b, n);
@@ -115,9 +115,11 @@ static int v4_memcmp(const void *pa, const void *pb, size_t n)
 static int v4_strcmp(const char *left, const char *right)
 {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
+    /* (A masked equal-and-nonzero compare with "inc, test" instead of the kor was
+       tried: 5% faster at 5 bytes on Skylake-SP, 14% slower at 25 bytes on Zen 5.) */
+    /* One 16-byte block: a 32-byte one was 17-26% slower at 5 bytes (two 256-bit
+       mask compares), a second 16-byte block here slower at 25 than the tail's 32. */
     if (both_in_page(a, b, 16)) {
-        /* (A masked equal-and-nonzero compare with "inc, test" instead of the kor was
-           tried: 5% faster at 5 bytes on Skylake-SP, 14% slower at 25 bytes on Zen 5.) */
         __m128i x = load16(a);
         unsigned m = _mm_cmpneq_epu8_mask(x, load16(b)) | _mm_cmpeq_epi8_mask(x, _mm_setzero_si128());
         if (m)
