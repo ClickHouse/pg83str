@@ -1,0 +1,346 @@
+/*
+ * common.h: shared helpers and short paths for the string library.
+ *
+ * Included by v1.c, v3.c and v4.c. Everything here is SSE2 and compiles under
+ * each file's own -march, so the same short path is emitted once per level.
+ *
+ * Memory safety rules, every function obeys them:
+ *   - the page size is 4096 B; an aligned 16- or 32-byte load never crosses
+ *     a page, so it may be issued whenever its first byte is readable;
+ *   - an unaligned load is issued only after checking that it stays inside
+ *     the page, or when it lies entirely inside [p, p+n);
+ *   - groups of aligned loads are issued only when the whole group lies in
+ *     one page (a 128-byte aligned group always does);
+ *   - reads may extend past a NUL but never past the page that holds it;
+ *   - stores never touch bytes outside [dst, dst+n).
+ */
+#ifndef STR_COMMON_H
+#define STR_COMMON_H
+#include <stddef.h>
+#include <stdint.h>
+#include <immintrin.h>
+
+#define PAGE_SIZE 4096
+#define PAGE_MASK (PAGE_SIZE - 1)
+
+/* Copies and fills of at least REP_THRESHOLD bytes use rep movsb/stosb when
+   the CPU reports ERMS; below it vector loops win on every host measured. */
+#define REP_THRESHOLD 4096
+
+typedef unsigned char u8;
+
+#define NOINLINE __attribute__((noinline))
+
+/* One implementation of every function. Each level defines its table; dispatch.c
+   copies the one matching the CPU into str_table, and the public str_* functions
+   jump through it. */
+struct str_table {
+    void *(*memcpy)(void *, const void *, size_t);
+    void *(*memmove)(void *, const void *, size_t);
+    void *(*memset)(void *, int, size_t);
+    int (*memcmp)(const void *, const void *, size_t);
+    size_t (*strlen)(const char *);
+    char *(*strcpy)(char *, const char *);
+    char *(*strcat)(char *, const char *);
+    int (*strcmp)(const char *, const char *);
+    size_t (*strspn)(const char *, const char *);
+    size_t (*strcspn)(const char *, const char *);
+};
+extern const struct str_table v1_table, v2_table, v3_table, v4_table;
+extern struct str_table str_table;
+
+/* The baseline level by name: dispatch.c initializes str_table with it
+   statically, so calls before the constructor ran are safe. */
+void *v1_memcpy(void *, const void *, size_t);
+void *v1_memmove(void *, const void *, size_t);
+void *v1_memset(void *, int, size_t);
+int v1_memcmp(const void *, const void *, size_t);
+size_t v1_strlen(const char *);
+char *v1_strcpy(char *, const char *);
+char *v1_strcat(char *, const char *);
+int v1_strcmp(const char *, const char *);
+size_t v1_strspn(const char *, const char *);
+size_t v1_strcspn(const char *, const char *);
+
+/* Set by dispatch.c from cpuid; zero (no rep) without a dispatcher. */
+extern unsigned char str_cpu_erms;
+
+/* Kernels shared across levels. */
+size_t v1_strspn_table(const u8 *s, const u8 *set);
+size_t v1_strcspn_table(const u8 *s, const u8 *set);
+size_t v1_find_byte_or_nul(const u8 *s, u8 c);
+size_t v1_skip_byte(const u8 *s, u8 c);
+void *v3_copy_large(u8 *d, const u8 *s, size_t n);
+void *v3_fill_large(u8 *d, int c, size_t n);
+int v3_memcmp_large(const u8 *a, const u8 *b, size_t n);
+int v3_strcmp_tail(const u8 *a, const u8 *b);
+size_t v3_strlen_tail(const u8 *a, const u8 *s);
+void *v3_strcpy_long(u8 *d, const u8 *s);
+size_t v2_strspn(const char *s, const char *set);
+size_t v2_strcspn(const char *s, const char *set);
+
+/* -------------------------------------------------------------- basics */
+
+static inline size_t page_left(const void *p)
+{
+    return PAGE_SIZE - ((uintptr_t)p & PAGE_MASK);
+}
+
+static inline const u8 *align_down(const void *p, size_t a)
+{
+    return (const u8 *)((uintptr_t)p & ~(uintptr_t)(a - 1));
+}
+
+/* True when `bytes` bytes from both a and b stay inside their pages.
+   Conservative: the OR can exceed the limit when each offset alone passes. */
+static inline int both_in_page(const void *a, const void *b, size_t bytes)
+{
+    return (((uintptr_t)a | (uintptr_t)b) & PAGE_MASK) <= PAGE_SIZE - bytes;
+}
+
+static inline __m128i load16(const void *p) { return _mm_loadu_si128((const __m128i *)p); }
+static inline __m128i load16a(const void *p) { return _mm_load_si128((const __m128i *)p); }
+static inline void store16(void *p, __m128i v) { _mm_storeu_si128((__m128i *)p, v); }
+static inline void store16a(void *p, __m128i v) { _mm_store_si128((__m128i *)p, v); }
+static inline uint64_t load64(const void *p) { uint64_t v; __builtin_memcpy(&v, p, 8); return v; }
+static inline void store64(void *p, uint64_t v) { __builtin_memcpy(p, &v, 8); }
+static inline uint32_t load32(const void *p) { uint32_t v; __builtin_memcpy(&v, p, 4); return v; }
+static inline void store32(void *p, uint32_t v) { __builtin_memcpy(p, &v, 4); }
+static inline uint16_t load16b(const void *p) { uint16_t v; __builtin_memcpy(&v, p, 2); return v; }
+static inline void store16b(void *p, uint16_t v) { __builtin_memcpy(p, &v, 2); }
+
+static inline unsigned mask16(__m128i v) { return (unsigned)_mm_movemask_epi8(v); }
+static inline unsigned zero_mask16(__m128i v) { return mask16(_mm_cmpeq_epi8(v, _mm_setzero_si128())); }
+static inline unsigned eq_mask16(__m128i a, __m128i b) { return mask16(_mm_cmpeq_epi8(a, b)); }
+static inline unsigned ne_mask16(__m128i a, __m128i b) { return eq_mask16(a, b) ^ 0xffffu; }
+/* Bit i set when a[i] != b[i] or a[i] == 0. */
+static inline unsigned diff_or_zero_mask16(__m128i a, __m128i b) { return ne_mask16(a, b) | zero_mask16(a); }
+static inline __m128i splat16(int c) { return _mm_set1_epi8((char)c); }
+static inline unsigned ctz(unsigned m) { return (unsigned)__builtin_ctz(m); }
+static inline int byte_diff(const u8 *a, const u8 *b, size_t i) { return (int)a[i] - (int)b[i]; }
+
+static inline void rep_movsb(u8 *d, const u8 *s, size_t n)
+{
+    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+}
+
+static inline void rep_stosb(u8 *d, int c, size_t n)
+{
+    __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
+}
+
+static inline int overlap_backward(const u8 *d, const u8 *s, size_t n)
+{
+    return d > s && d < s + n;
+}
+
+/* Hide "returns its argument" from the compiler: otherwise it reuses the
+   argument after a call instead of the result, which costs a saved register
+   and prevents the wrappers from tail-calling the kernels. */
+#define RETURN_OPAQUE(p) do { void *r_ = (p); __asm__("" : "+r"(r_)); return r_; } while (0)
+
+/* ------------------------------------------------------- short copy/fill */
+
+/* n <= 32. Every load happens before every store, so overlap is fine. */
+static inline void copy_small(u8 *d, const u8 *s, size_t n)
+{
+    if (n >= 16) {
+        __m128i x = load16(s), y = load16(s + n - 16);
+        store16(d, x);
+        store16(d + n - 16, y);
+    } else if (n >= 8) {
+        uint64_t x = load64(s), y = load64(s + n - 8);
+        store64(d, x);
+        store64(d + n - 8, y);
+    } else if (n >= 4) {
+        uint32_t x = load32(s), y = load32(s + n - 4);
+        store32(d, x);
+        store32(d + n - 4, y);
+    } else if (n >= 2) {
+        uint16_t x = load16b(s);
+        u8 y = s[n - 1];
+        store16b(d, x);
+        d[n - 1] = y;
+    } else if (n) {
+        d[0] = s[0];
+    }
+}
+
+/* 33..64: all loads first, then all stores, overlap-safe. */
+static inline void copy_33_64(u8 *d, const u8 *s, size_t n)
+{
+    __m128i x0 = load16(s), x1 = load16(s + 16), x2 = load16(s + n - 32), x3 = load16(s + n - 16);
+    store16(d, x0);
+    store16(d + 16, x1);
+    store16(d + n - 32, x2);
+    store16(d + n - 16, x3);
+}
+
+/* n <= 32. */
+static inline void fill_small(u8 *d, __m128i v, size_t n)
+{
+    uint64_t q = (uint64_t)_mm_cvtsi128_si64(v);
+    if (n >= 16) {
+        store16(d, v);
+        store16(d + n - 16, v);
+    } else if (n >= 8) {
+        store64(d, q);
+        store64(d + n - 8, q);
+    } else if (n >= 4) {
+        store32(d, (uint32_t)q);
+        store32(d + n - 4, (uint32_t)q);
+    } else if (n >= 2) {
+        store16b(d, (uint16_t)q);
+        d[n - 1] = (u8)q;
+    } else if (n) {
+        d[0] = (u8)q;
+    }
+}
+
+/* 33..64. */
+static inline void fill_33_64(u8 *d, __m128i v, size_t n)
+{
+    store16(d, v);
+    store16(d + 16, v);
+    store16(d + n - 32, v);
+    store16(d + n - 16, v);
+}
+
+/* --------------------------------------------------------- short compare */
+
+/* n <= 16. A 16-byte load is taken only when both pointers have room in
+   their pages; bit 16 bounds the search without a variable shift. */
+static inline int memcmp_le16(const u8 *a, const u8 *b, size_t n)
+{
+    if (n == 0)
+        return 0;
+    if (both_in_page(a, b, 16)) {
+        unsigned i = ctz(ne_mask16(load16(a), load16(b)) | 0x10000u);
+        return i < n ? byte_diff(a, b, i) : 0;
+    }
+    for (size_t i = 0; i < n; i++)
+        if (a[i] != b[i])
+            return byte_diff(a, b, i);
+    return 0;
+}
+
+/* 17..32: two overlapping blocks. */
+static inline int memcmp_17_32(const u8 *a, const u8 *b, size_t n)
+{
+    unsigned m = ne_mask16(load16(a), load16(b));
+    if (m)
+        return byte_diff(a, b, ctz(m));
+    m = ne_mask16(load16(a + n - 16), load16(b + n - 16));
+    return m ? byte_diff(a, b, n - 16 + ctz(m)) : 0;
+}
+
+/* 33..64: four blocks, two from each end. */
+static inline int memcmp_33_64(const u8 *a, const u8 *b, size_t n)
+{
+    unsigned m = ne_mask16(load16(a), load16(b));
+    if (m)
+        return byte_diff(a, b, ctz(m));
+    m = ne_mask16(load16(a + 16), load16(b + 16));
+    if (m)
+        return byte_diff(a, b, 16 + ctz(m));
+    m = ne_mask16(load16(a + n - 32), load16(b + n - 32));
+    if (m)
+        return byte_diff(a, b, n - 32 + ctz(m));
+    m = ne_mask16(load16(a + n - 16), load16(b + n - 16));
+    return m ? byte_diff(a, b, n - 16 + ctz(m)) : 0;
+}
+
+/* First 16 bytes of strcmp when both strings have room in their pages.
+   Returns 1 with the answer in *result, else 0 with the pointers advanced. */
+static inline int strcmp_block16(const u8 **pa, const u8 **pb, int *result)
+{
+    const u8 *a = *pa, *b = *pb;
+    if (!both_in_page(a, b, 16))
+        return 0;
+    unsigned m = diff_or_zero_mask16(load16(a), load16(b));
+    if (m) {
+        *result = byte_diff(a, b, ctz(m));
+        return 1;
+    }
+    *pa = a + 16;
+    *pb = b + 16;
+    return 0;
+}
+
+/* Compare byte by byte up to the nearer page end. Returns 1 with the answer
+   in *result, or 0 with both pointers advanced to the page boundary. */
+static inline int strcmp_to_page_end(const u8 **pa, const u8 **pb, int *result)
+{
+    const u8 *a = *pa, *b = *pb;
+    size_t n = page_left(a), k = page_left(b);
+    if (n > k)
+        n = k;
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] != b[i]) {
+            *result = byte_diff(a, b, i);
+            return 1;
+        }
+        if (!a[i]) {
+            *result = 0;
+            return 1;
+        }
+    }
+    *pa = a + n;
+    *pb = b + n;
+    return 0;
+}
+
+/* ------------------------------------------------------------- short NUL */
+
+/* First 64 bytes of strlen with aligned blocks; the first block is aligned
+   down to cover s and its mask is shifted by the misalignment. Returns the
+   length, or SIZE_MAX with *next = the 16-aligned address 64 bytes on. */
+static inline size_t strlen_prefix64(const u8 *s, const u8 **next)
+{
+    const u8 *a = align_down(s, 16);
+    unsigned m = zero_mask16(load16a(a)) >> ((uintptr_t)s & 15);
+    if (m)
+        return ctz(m);
+    for (int k = 1; k < 4; k++) {
+        a += 16;
+        m = zero_mask16(load16a(a));
+        if (m)
+            return (size_t)(a - s) + ctz(m);
+    }
+    *next = a + 16;
+    return SIZE_MAX;
+}
+
+/* ---------------------------------------------------------- long strcpy */
+
+/* One pass over a string that has no NUL before the 16-byte boundary after s
+   (the caller checked the first block). Each aligned source block is tested
+   for NUL before the previous one is stored, and the last 16 bytes of the
+   string are copied as one overlapping pair, as in FreeBSD's stpcpy. */
+static inline void *strcpy_long16(u8 *d, const u8 *s)
+{
+    const u8 *a = align_down(s, 16) + 16;
+    __m128i next = load16a(a); /* aligned: never crosses a page */
+    unsigned m = zero_mask16(next);
+    if (m) {
+        copy_small(d, s, (size_t)(a - s) + ctz(m) + 1); /* at most 32 bytes */
+        RETURN_OPAQUE(d);
+    }
+    store16(d, load16(s)); /* [s, s+16) lies within the two blocks just checked */
+    size_t off = (size_t)(a - s);
+    for (;;) {
+        __m128i block = next;
+        a += 16;
+        next = load16a(a);
+        m = zero_mask16(next);
+        store16(d + off, block);
+        off += 16;
+        if (m)
+            break;
+    }
+    const u8 *nul = a + ctz(m);
+    store16(d + (nul - s) - 15, load16(nul - 15)); /* the string is longer than 16 here */
+    RETURN_OPAQUE(d);
+}
+
+#endif
