@@ -136,6 +136,8 @@ def main():
     args = p.parse_args()
     if args.passes:
         os.environ['POST_PASSES'] = args.passes
+    if args.roundtrip:
+        os.environ['POST_JCC_ALIGN'] = '0'   # reproduce the object, do not improve its layout
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     lines = []
