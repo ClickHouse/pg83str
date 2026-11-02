@@ -31,6 +31,14 @@ prove the rewrites safe:
   ktest    kortest k,k; je/jne L  ->  kmov k,r; test r,r; je/jne L with a free
            GPR r, and when L begins with the same kmov k,r on every way in,
            that kmov goes away: test+jcc fuse, kortest+jcc do not.
+  lea      lea (a,b),c; add $imm,c -> lea imm(a,b),c.
+  copy     mov A,B at the entry (the ABI shuffle): reads of B become reads of A
+           where both are unchanged, the copy moves to the places that still
+           need B. Measured neutral (the copy is eliminated at rename anyway).
+  zcmp     load + vptestnmb -> vpcmpeqb against a zeroed register; off, see
+           zero_compares.
+The layout (layout.py) keeps branches and fused compare+branch pairs off
+32-byte boundaries (the Skylake JCC erratum); POST_JCC_ALIGN=0 turns it off.
 
 Passes are selected by POST_PASSES (comma list, default all) for A/B runs.
 
@@ -43,6 +51,7 @@ import re
 from dataclasses import dataclass, field
 
 import x86
+from encode import HIGH8
 from objfile import Ins
 
 
@@ -586,6 +595,209 @@ def hot_tails(fn):
     return done
 
 
+# ---------------------------------------------------------------- zcmp
+
+LOADS = {'vmovdqu', 'vmovdqa', 'vmovdqu8', 'vmovdqu16', 'vmovdqu32', 'vmovdqu64', 'vmovdqa32', 'vmovdqa64', 'vmovups', 'vmovaps'}
+
+
+def zero_compares(fn):
+    """vmovdqu (m),X; vptestnmb X,X,K with X dead afterwards -> vpcmpeqb (m),Z,K with Z a
+    register zeroed once at the entry (a zero idiom, free): one fused uop instead of two.
+    Z is a ymm16-31 register the function never touches. Off by default: measured
+    neutral on Zen 5 and 20% slower on Skylake-SP (strlen at 5 bytes, 5 runs), so the
+    memory-operand compare does not fuse the way the separate load does there."""
+    done = []
+    used = {int(o['reg'][3:]) for i in fn.ins for o in i.j['ops'] if i.gas and o['kind'] == 'Register' and o['reg'][:3] in ('xmm', 'ymm', 'zmm')}
+    z = next((n for n in range(16, 32) if n not in used), None)
+    if z is None:
+        return done
+    sites = []
+    for b in fn.blocks:
+        live = [k for k in range(b.start, b.end) if fn.ins[k].gas]
+        for k1, k2 in zip(live, live[1:]):
+            load, cmp = fn.ins[k1], fn.ins[k2]
+            lo, co = load.j['ops'], cmp.j['ops']
+            if not (load.mnemonic in LOADS and len(lo) == 2 and lo[0]['kind'] == 'Register' and lo[1]['kind'] == 'Memory' and load.reloc is None
+                    and load.j['op_mask'] == 'none' and cmp.mnemonic == 'vptestnmb' and cmp.j['op_mask'] == 'none' and cmp.reloc is None
+                    and len(co) == 3 and co[1]['kind'] == 'Register' and co[2]['kind'] == 'Register' and co[1]['reg'] == co[2]['reg'] == lo[0]['reg']):
+                continue
+            if full_vec(lo[0]['reg']) in fn.live_after[k2]:
+                continue
+            sites.append((load, cmp))
+    if not sites:
+        return done
+    width = {'xmm': 128, 'ymm': 256}
+    for load, cmp in sites:
+        x = load.j['ops'][0]['reg']
+        zreg = x[:3] + str(z)
+        mem = dict(load.j['ops'][1])
+        mem['mem'] = dict(mem['mem'])
+        cmp.j['mnemonic'] = 'vpcmpb'
+        cmp.j['ops'] = [cmp.j['ops'][0], register(zreg, width[x[:3]]), mem, {'kind': 'Immediate', 'imm': 0, 'size': 8, 'signed': False, 'implicit': False}]
+        cmp.j['regs'] = [r for r in cmp.j['regs'] if r['full'] != full_vec(x)] + [{'name': zreg, 'full': 'zmm%d' % z, 'access': 'Read'}] \
+            + [{'name': r['name'], 'full': r['full'], 'access': 'Read'} for r in load.j['regs'] if r['access'] == 'Read' and not is_vec(r['full'])]
+        cmp.j['mems'] = list(load.j['mems'])
+        cmp.j['encoding'] = 'EVEX'
+        refresh(cmp)
+        done.append('%s: %s + vptestnmb -> %s' % (fn.name, load.gas, cmp.gas))
+        delete(load)
+    zero = clone(fn.ins[0])
+    xz = 'xmm%d' % z
+    zero.j.update({'mnemonic': 'vpxord', 'cc': None, 'ops': [register(xz, 128), register(xz, 128), register(xz, 128)], 'op_mask': 'none', 'zeroing': False,
+                   'bcast': False, 'rep': None, 'lock': False, 'notrack': False, 'flow': 'Next', 'encoding': 'EVEX', 'mems': [],
+                   'regs': [{'name': xz, 'full': 'zmm%d' % z, 'access': 'Write'}]})
+    zero.j.pop('branch_target', None)
+    zero.reloc = None
+    refresh(zero)
+    # at the entry, after any endbr64
+    at = 1 if fn.ins[0].mnemonic == 'endbr64' else 0
+    fn.ins[at:at] = [zero]
+    done.append('%s: %s at the entry' % (fn.name, zero.gas))
+    return done
+
+
+# ---------------------------------------------------------------- copy
+
+def gpr_alias(name, full):
+    """The register of the same width as name within the full register full."""
+    for table in (x86.R64, x86.R32, x86.R16, x86.R8):
+        if name in table:
+            return table[x86.R64.index(full)]
+    return None
+
+
+def sink_copies(fn):
+    """mov A,B at the entry block: B's reads on the paths where neither changes
+    become reads of A, the copy itself moves to the points that still need B
+    (A overwritten while B is live, B read implicitly, B live into a block the
+    copy does not dominate). The hot path usually needs none."""
+    done = []
+    entry = fn.blocks[0]
+    block_of = {}
+    for b in fn.blocks:
+        for k in range(b.start, b.end):
+            block_of[k] = b
+    preds = predecessors(fn)
+    for m in range(entry.start, entry.end):
+        mov = fn.ins[m]
+        o = mov.j['ops']
+        if not (mov.gas and mov.mnemonic == 'mov' and mov.reloc is None and len(o) == 2 and o[0]['kind'] == 'Register' and o[1]['kind'] == 'Register'
+                and o[0]['size'] == 64 and o[1]['size'] == 64 and o[0]['reg'] in x86.R64 and o[1]['reg'] in x86.R64 and o[0]['reg'] != o[1]['reg']):
+            continue
+        B, A = o[0]['reg'], o[1]['reg']
+        if A in ('rsp', 'rbp') or B in ('rsp', 'rbp'):
+            continue   # the frame: rsp moves at every push and pop
+        # the region: instructions after the copy on every path until A or B changes, in blocks the copy dominates
+        region = set()      # instruction indices
+        ends = {}           # index -> 'A' (A written; B may need restoring before) | 'B' (B written)
+        implicit = set()    # indices that read B without naming it: restore before
+        bad = False
+        work = [(entry, m + 1)]
+        seen_blocks = set()
+        while work and not bad:
+            b, start = work.pop()
+            k = start
+            stop = None
+            while k < b.end:
+                i = fn.ins[k]
+                if not i.gas:
+                    k += 1
+                    continue
+                reads_b = [r for r in i.j['regs'] if r['full'] == B and r['access'] in READS]
+                # renamable only when every access to B is an explicit pure read (register or address)
+                pure = all(r['access'] == 'Read' for r in i.j['regs'] if r['full'] == B) \
+                    and all(not op.get('implicit') for op in i.j['ops'] if op['kind'] == 'Register' and x86.gpr_full(op['reg']) == B) \
+                    and not any(r['name'] == B for r in i.j['regs'] if r['full'] == B and r['name'] not in [op['reg'] for op in i.j['ops'] if op['kind'] == 'Register']
+                                and not any(op['kind'] == 'Memory' and B in (op['mem']['base'], op['mem']['index']) for op in i.j['ops']))
+                if reads_b and not pure:
+                    implicit.add(k)
+                if any(op['kind'] == 'Register' and op['reg'] in HIGH8 and x86.gpr_full(op['reg']) in (A, B) for op in i.j['ops']):
+                    bad = True
+                    break
+                writes_a = any(r['full'] == A and r['access'] in WRITES for r in i.j['regs'])
+                writes_b = any(r['full'] == B and r['access'] in WRITES for r in i.j['regs'])
+                region.add(k)
+                if i.flow in ('Call', 'IndirectCall'):
+                    bad = True   # calls clobber both
+                    break
+                if writes_a or writes_b:
+                    ends[k] = 'B' if writes_b else 'A'
+                    stop = k
+                    break
+                k += 1
+            if bad or stop is not None:
+                continue
+            if b.end < len(fn.ins) or True:
+                for s in b.succ:
+                    if id(s) in seen_blocks:
+                        continue
+                    if any(p is not entry and (id(p) not in seen_blocks and p is not b) for p in preds[id(s)]):
+                        # a way in that does not come through the region: B may not equal A there
+                        continue
+                    seen_blocks.add(id(s))
+                    work.append((s, s.start))
+        if bad or not region:
+            continue
+        region_blocks = {id(block_of[k]) for k in region}
+        # where must B be restored?
+        inserts = set()
+        for k in region:
+            i = fn.ins[k]
+            if k in implicit:
+                inserts.add(k)
+            if ends.get(k) == 'A' and B in fn.live_after[k]:
+                inserts.add(k)
+            if B in exit_live(i):
+                inserts.add(k)
+        for b in fn.blocks:
+            if id(b) not in region_blocks:
+                continue
+            last = b.end - 1
+            if last in region and last not in ends:
+                for s in b.succ:
+                    if id(s) not in region_blocks and B in s.live_in:
+                        inserts.add(last if fn.ins[last].flow != 'Next' else b.end)
+        if len(inserts) > 3:
+            continue
+        # rewrite the reads
+        for k in sorted(region):
+            i = fn.ins[k]
+            if k in implicit:
+                continue   # B is restored right before it
+            if any(r['full'] == B and r['access'] != 'Read' for r in i.j['regs']):
+                continue   # writes B: nothing to rename
+            changed = False
+            for op in i.j['ops']:
+                if op['kind'] == 'Register' and x86.gpr_full(op['reg']) == B and not op.get('implicit'):
+                    op['reg'] = gpr_alias(op['reg'], A)
+                    changed = True
+                elif op['kind'] == 'Memory':
+                    if op['mem']['base'] == B:
+                        op['mem']['base'] = A
+                        changed = True
+                    if op['mem']['index'] == B:
+                        op['mem']['index'] = A
+                        changed = True
+            if changed:
+                for r in i.j['regs']:
+                    if r['full'] == B and r['access'] == 'Read':
+                        r['name'] = gpr_alias(r['name'], A)
+                        r['full'] = A
+                refresh(i)
+        new_ins = []
+        for k in sorted(inserts, reverse=True):
+            copy_ = clone(mov)
+            copy_.j.pop('branch_target', None)
+            refresh(copy_)
+            new_ins.append((k, [copy_]))
+        for k, clones in new_ins:
+            fn.ins[k:k] = clones
+        done.append('%s: %s moved from the entry to %d place(s)' % (fn.name, mov.gas, len(inserts)))
+        delete(mov)
+        return done   # one copy per function per pass; the next pass run sees a fresh CFG
+    return done
+
+
 # ---------------------------------------------------------------- lea
 
 def fold_lea_add(fn):
@@ -731,9 +943,9 @@ def optimize(obj, ins, evex, section='.text'):
     """evex: the unit is compiled for AVX-512VL, so ymm16-31 and masked memory operands exist.
     section: the code section the instructions came from (-ffunction-sections puts each function in its own)."""
     report = []
-    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,lea').split(',')
+    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,lea,copy').split(',')
     if not evex:  # layout passes apply to every level; the mask/EVEX ones only to v4
-        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea')]
+        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy')]
     functions = split_functions(obj, ins, section)
     for fn in functions:
         analyze(fn)
@@ -750,13 +962,17 @@ def optimize(obj, ins, evex, section='.text'):
                 report += thread_jumps(fn)
             elif name == 'lea':
                 report += fold_lea_add(fn)
+            elif name == 'zcmp':
+                report += zero_compares(fn)
+            elif name == 'copy':
+                report += sink_copies(fn)
             elif name == 'rename':
                 report += rename_vectors(fn)
             elif name:
                 raise ValueError('unknown pass ' + name)
             analyze(fn)
     # Rebuild the instruction list: functions may have grown or shrunk.
-    starts = {fn.ins[0].offset: fn for fn in functions}
+    starts = {fn.lo: fn for fn in functions}   # keyed by the original start: a pass may have put a new instruction first
     inside = {i.offset for fn in functions for i in fn.ins}
     out = []
     for i in ins:

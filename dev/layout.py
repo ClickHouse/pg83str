@@ -31,6 +31,9 @@ def nops(n):
     return out + (bytes.fromhex(NOPS[n]) if n else b'')
 
 
+FUSIBLE = {'cmp', 'test', 'add', 'sub', 'and', 'inc', 'dec'}
+
+
 def branch_length(i, size):
     if size == 8:
         return 2
@@ -104,23 +107,44 @@ def layout(obj, section, instructions, func_align=None):
         if id(i) in internal:
             form = i.j.get('form')
             bsize[id(i)] = form['imm'] if form and form.get('imm') in (8, 32) else 8
+    # a run of new instructions right before a function's first original one belongs to the function:
+    # its symbol must point at them (a pass put something at the entry)
+    leading = set()
+    run = []
+    for i in instructions:
+        if i.offset != i.home and i.gas:
+            run.append(i)
+        elif i.offset == i.home:
+            if i.offset in func_starts and run:
+                leading.add(id(run[0]))
+            run = []
+    jcc_align = os.environ.get('POST_JCC_ALIGN', '1') == '1'
     offsets = {}
     encoded = {}
     while True:
         off = 0
         offsets = {}
         items = []
+        placed_as_pair = set()
+        pending = None   # where the function started, when new instructions came first
+        live = [i for i in instructions if i.gas]
+        following = {id(a): b for a, b in zip(live, live[1:])}
         for i in instructions:
-            if i.offset == i.home:
-                offsets.setdefault(i.offset, off)
-            if not i.gas:
+            if id(i) in placed_as_pair:
                 continue
-            if func_align and i.offset in func_starts and i.offset == i.home:
+            starts_function = (i.offset in func_starts and i.offset == i.home) or id(i) in leading
+            if starts_function and func_align:
                 pad = (-off) % (1 << func_align)
                 if pad:
                     items.append(('pad', nops(pad)))
                     off += pad
-                    offsets[i.offset] = off
+            if id(i) in leading:
+                pending = off
+            if i.offset == i.home:
+                offsets.setdefault(i.offset, pending if pending is not None else off)
+                pending = None
+            if not i.gas:
+                continue
             if i.offset in padding:
                 k, original = padding[i.offset]
                 if k is None:
@@ -133,9 +157,26 @@ def layout(obj, section, instructions, func_align=None):
             # sizing pass: lengths only, the displacements come once every target is placed
             size = bsize.get(id(i))
             b, fields = encode.encode(i.j, None, size)
-            encoded[id(i)] = (off, b, fields)
-            items.append(('ins', i))
-            off += len(b)
+            # Skylake-era JCC erratum: a branch, or a flag-setting instruction fused with the
+            # branch after it, must not cross or end on a 32-byte boundary, else the decoded
+            # instruction cache cannot hold it. Pad up to the boundary in front of it.
+            unit = [(i, b, fields)]
+            nxt = following.get(id(i))
+            if jcc_align and i.mnemonic in FUSIBLE and nxt is not None and nxt.flow == 'ConditionalBranch' and id(nxt) not in padding:
+                nb, nf = encode.encode(nxt.j, None, bsize.get(id(nxt)))
+                unit.append((nxt, nb, nf))
+            if jcc_align and (unit[-1][0].flow in ('ConditionalBranch', 'UnconditionalBranch', 'Call', 'Return', 'IndirectBranch', 'IndirectCall')):
+                length = sum(len(x[1]) for x in unit)
+                if length <= 32 and (off // 32 != (off + length - 1) // 32 or (off + length) % 32 == 0):
+                    pad = (-off) % 32
+                    items.append(('pad', nops(pad)))
+                    off += pad
+            for u, ub, uf in unit:
+                encoded[id(u)] = (off, ub, uf)
+                items.append(('ins', u))
+                off += len(ub)
+                if u is not i:
+                    placed_as_pair.add(id(u))
         offsets.setdefault(old_end, off)
         # every target known now: check the short branches and the final displacements
         grown = False

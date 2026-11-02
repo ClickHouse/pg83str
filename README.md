@@ -61,6 +61,14 @@ function:
   `kortest k,k; jcc`, the `kortest` becomes `kmov k,r; test r,r` (fused with
   the branch) and the block's `kmov` goes away.
 - `lea` — `lea (a,b),c; add $imm,c` becomes one `lea`.
+- `copy` — the ABI copy at the entry (`mov %rdi,%rsi` kept for a tail call)
+  moves to the paths that need it; the hot path reads the original register.
+- The layout keeps branches and fused compare+branch pairs off 32-byte
+  boundaries (the Skylake JCC erratum).
+
+Tried and left off: `vpcmpeqb (mem),zero,k` in place of load + `vptestnmb`
+is 20% slower on Skylake-SP (`zcmp`); a `kor` hoisted above `kortest` costs
+40% on `strcmp`.
 
 `post.py --roundtrip --check` without passes must reproduce every object
 byte for byte (code, relocations, symbols); the CI does that for clang and
@@ -70,10 +78,13 @@ gcc at every optimization level.
 
 Against glibc's own implementations, geometric mean of time per call over
 the ten functions at sizes 5, 25, 125, … weighted 1/size: 0.85× on Zen 5,
-0.82× on Skylake-SP, 0.82× on Broadwell-EP (lower is faster). The post pass
-is worth 14% on `strlen` at 5 bytes on Zen 5 and 28% on Skylake-SP, 29% on
-`memcmp` at 5 bytes and 12% on `strcpy` on Skylake-SP, and nothing slower
-anywhere, measured A/B in one process with both copies aligned alike.
+0.83× on Skylake-SP, 0.84× on Broadwell-EP (lower is faster). In one
+process, medians of five runs, our code against the compiler's and against
+glibc at 5 bytes: `strlen` 0.86/1.00 on Zen 5 and 0.63/1.00 on Skylake-SP,
+`memcmp` 1.00/1.00 and 0.75/1.00, `strcpy` 1.00/1.00 and 0.89/0.62,
+`strcat` 1.00/0.59 and 0.97/0.86. What is left behind glibc sits at 125
+bytes and beyond, in the AVX2 kernels of level v3 that every level above
+falls back to.
 
 ## License
 
