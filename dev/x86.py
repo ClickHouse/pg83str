@@ -793,6 +793,12 @@ def lookup(c):
             if b == 0xd0:
                 return 'xgetbv', [], 'nosuffix regs=rcx:R,rax:W,rdx:W'
             raise DecodeError('unknown 0F 01 %02x' % b)
+        if op == 0x1e:
+            # F3 0F 1E FA/FB: endbr64/endbr32 (-fcf-protection); anything else is a reserved nop
+            if pfx == 'f3' and c.pos < len(c.code) and c.code[c.pos] in (0xfa, 0xfb):
+                c.rep = None
+                return ('endbr64' if c.byte() == 0xfa else 'endbr32'), [], 'nosuffix'
+            return 'nop', ['Ev'], 'acc=A'
         if op == 0xba:
             mod, reg, rm = modrm_fields(c)
             m = [None, None, None, None, 'bt', 'bts', 'btr', 'btc'][reg]
