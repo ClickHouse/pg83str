@@ -41,6 +41,9 @@ def main():
     p.add_argument('--out', default=str(ROOT / '.build/coverage'))
     p.add_argument('--cc', default=os.environ.get('CC', 'gcc'))
     p.add_argument('--gcov', default=os.environ.get('GCOV', 'gcov'))
+    p.add_argument('--nm', default=os.environ.get('NM', 'nm'))
+    p.add_argument('--glibc-shims', action='store_true', default=bool(os.environ.get('COVERAGE_GLIBC_SHIMS')),
+                   help='the gcov runtime of a glibc toolchain linked against musl: define the glibc-only names it wants')
     p.add_argument('--cppflags', default=os.environ.get('COVERAGE_CPPFLAGS', ''))
     p.add_argument('--ldflags', default=os.environ.get('COVERAGE_LDFLAGS', ''))
     p.add_argument('--min', type=float, default=100.0, help='required percent of lines and of branches')
@@ -58,19 +61,35 @@ def main():
             o = obj / (unit + '.o')
             run([*cc, *cppflags, '-I', str(ROOT), *CFLAGS, *march, '-c', str(ROOT / (unit + '.c')), '-o', str(o)])
             objects.append(o)
+            if unit == 'dispatch':
+                continue
+            # the *_jcc twins the Skylake-SP configuration names come from the post pass,
+            # which has no part here: the unit compiled once more with its global
+            # functions renamed; the counters of both copies add up line by line
+            names = [line.split()[-1] for line in subprocess.check_output([a.nm, '-g', '--defined-only', str(o)], text=True).splitlines()
+                     if len(line.split()) == 3 and line.split()[1] == 'T']
+            twin = obj / (unit + '-jcc.o')
+            run([*cc, *cppflags, '-I', str(ROOT), *CFLAGS, *march, *['-D%s=%s_jcc' % (n, n) for n in names],
+                 '-c', str(ROOT / (unit + '.c')), '-o', str(twin)])
+            objects.append(twin)
         test = obj / 'test'
-        run([*cc, *cppflags, '-I', str(ROOT), '-O1', '-Wall', '-c', str(ROOT / 'tst/test.c'), '-o', str(obj / 'test.o')])
-        run([*cc, '-o', str(test), str(obj / 'test.o'), *map(str, objects), '--coverage', *ldflags])
+        if a.glibc_shims:
+            (obj / 'shims.c').write_text('#include <stdlib.h>\nlong __isoc23_strtol(const char *s, char **e, int b) { return strtol(s, e, b); }\n')
+            run([*cc, *cppflags, '-O1', '-c', str(obj / 'shims.c'), '-o', str(obj / 'shims.o')])
+            objects.append(obj / 'shims.o')
+        run([*cc, *cppflags, '-I', str(ROOT), '-O1', '-fno-pic', '-fno-pie', '-Wall', '-c', str(ROOT / 'tst/test.c'), '-o', str(obj / 'test.o')])
+        run([*cc, '-no-pie', '-o', str(test), str(obj / 'test.o'), *map(str, objects), '--coverage', *ldflags])
         for f in obj.glob('*.gcda'):
             f.unlink()
         run([str(test)], stdout=open(out / 'test.txt', 'w'))
     # gcov, JSON: one record per source file the object includes
     lines = defaultdict(dict)      # file -> line -> count
     branches = defaultdict(dict)   # file -> (line, index) -> count
-    for unit in UNITS:
-        o = obj / (unit + '.o')
-        run([a.gcov, '--json-format', '--branch-probabilities', '--stdout', '-o', str(obj), str(o)], stdout=open(obj / (unit + '.json'), 'w'), stderr=subprocess.DEVNULL)
-        data = json.load(open(obj / (unit + '.json')))
+    for o in sorted(obj.glob('*.o')):
+        if not o.with_suffix('.gcda').exists():   # the test, the shims
+            continue
+        run([a.gcov, '--json-format', '--branch-probabilities', '--stdout', '-o', str(obj), str(o)], stdout=open(o.with_suffix('.json'), 'w'), stderr=subprocess.DEVNULL)
+        data = json.load(open(o.with_suffix('.json')))
         for f in data['files']:
             name = Path(f['file']).name
             if name not in SOURCES:
