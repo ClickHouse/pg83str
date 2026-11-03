@@ -1,9 +1,7 @@
 /*
- * v1.c: the string library for baseline x86-64 (SSE2 only).
- *
- * Compile with -march=x86-64. Also home of the kernels shared with the higher
- * levels: table-driven strspn/strcspn, single-byte scans, and the ERMS flag.
- * Functions are v1_*; the table at the end is what dispatch.c selects.
+ * sse2.c: every primitive for baseline x86-64 (SSE2 only), the set str_table
+ * starts as. Compile with -march=x86-64. Also home of what the other files
+ * share: table-driven strspn/strcspn, single-byte scans, and the ERMS flag.
  *
  * Semantics are the plain C library ones: a string is a byte sequence up to
  * the first NUL, comparisons use unsigned char, no locale, no Unicode.
@@ -15,8 +13,8 @@ unsigned char str_cpu_erms;
 
 /* ------------------------------------------------------------ NUL scans */
 
-/* a is 16-aligned, at least 64 bytes past s; nothing before a is NUL. */
-static size_t strlen_tail(const u8 *a, const u8 *s)
+/* a is 16-aligned, s <= a, no NUL in [s, a). */
+size_t strlen_tail_sse2(const u8 *a, const u8 *s)
 {
     for (;;) {
         unsigned m = zero_mask16(load16a(a));
@@ -26,15 +24,15 @@ static size_t strlen_tail(const u8 *a, const u8 *s)
     }
 }
 
-size_t v1_strlen(const char *str)
+size_t strlen_sse2(const char *str)
 {
     const u8 *s = (const u8 *)str, *next = 0;
     size_t n = strlen_prefix64(s, &next);
-    return n != SIZE_MAX ? n : strlen_tail(next, s);
+    return n != SIZE_MAX ? n : str_table.strlen_tail(next, s);
 }
 
 /* First index i with s[i] == c or s[i] == 0, aligned 16-byte blocks. */
-size_t v1_find_byte_or_nul(const u8 *s, u8 c)
+size_t find_byte_or_nul_sse2(const u8 *s, u8 c)
 {
     __m128i needle = splat16(c);
     const u8 *a = align_down(s, 16);
@@ -52,7 +50,7 @@ size_t v1_find_byte_or_nul(const u8 *s, u8 c)
 }
 
 /* First index i with s[i] != c (a NUL counts as different). */
-size_t v1_skip_byte(const u8 *s, u8 c)
+size_t skip_byte_sse2(const u8 *s, u8 c)
 {
     __m128i needle = splat16(c);
     const u8 *a = align_down(s, 16);
@@ -124,7 +122,7 @@ static void *copy_backward(u8 *d, const u8 *s, size_t n)
 }
 
 /* n > 64. */
-static void *copy_large(u8 *d, const u8 *s, size_t n)
+void * copy_large_sse2(u8 *d, const u8 *s, size_t n)
 {
     if (n <= 128) {
         __m128i x0 = load16(s), x1 = load16(s + 16), x2 = load16(s + 32), x3 = load16(s + 48);
@@ -159,18 +157,19 @@ static inline void *copy(void *dst, const void *src, size_t n)
     else if (n <= 64)
         copy_33_64(d, s, n);
     else
-        return copy_large(d, s, n);
+        return str_table.copy_large(d, s, n);
     return dst;
 }
 
-void *v1_memcpy(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
-void *v1_memmove(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
+void *memcpy_sse2(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
+void *memmove_sse2(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
 
 /* ------------------------------------------------------------------ fill */
 
 /* n > 64. */
-static void *fill_large(u8 *d, int c, __m128i v, size_t n)
+void * fill_large_sse2(u8 *d, int c, size_t n)
 {
+    __m128i v = splat16(c);
     if (n <= 128) {
         store16(d, v);
         store16(d + 16, v);
@@ -207,7 +206,7 @@ static void *fill_large(u8 *d, int c, __m128i v, size_t n)
     RETURN_OPAQUE(d);
 }
 
-void *v1_memset(void *dst, int c, size_t n)
+void *memset_sse2(void *dst, int c, size_t n)
 {
     u8 *d = (u8 *)dst;
     __m128i v = splat16(c);
@@ -216,14 +215,14 @@ void *v1_memset(void *dst, int c, size_t n)
     else if (n <= 64)
         fill_33_64(d, v, n);
     else
-        return fill_large(d, c, v, n);
+        return str_table.fill_large(d, c, n);
     return dst;
 }
 
 /* --------------------------------------------------------------- compare */
 
 /* n > 64: 16-byte blocks, then one overlapping block at the end. */
-static int memcmp_large(const u8 *a, const u8 *b, size_t n)
+int memcmp_large_sse2(const u8 *a, const u8 *b, size_t n)
 {
     size_t i = 0;
     while (i + 16 < n) {
@@ -236,7 +235,7 @@ static int memcmp_large(const u8 *a, const u8 *b, size_t n)
     return m ? byte_diff(a, b, n - 16 + ctz(m)) : 0;
 }
 
-int v1_memcmp(const void *pa, const void *pb, size_t n)
+int memcmp_sse2(const void *pa, const void *pb, size_t n)
 {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
     if (n <= 16)
@@ -245,12 +244,12 @@ int v1_memcmp(const void *pa, const void *pb, size_t n)
         return memcmp_17_32(a, b, n);
     if (n <= 64)
         return memcmp_33_64(a, b, n);
-    return memcmp_large(a, b, n);
+    return str_table.memcmp_large(a, b, n);
 }
 
 /* 16-byte blocks while both pointers have room in their pages, otherwise
    byte by byte up to the nearer page end. */
-static int strcmp_tail(const u8 *a, const u8 *b)
+int strcmp_tail_sse2(const u8 *a, const u8 *b)
 {
     int result;
     for (;;) {
@@ -266,23 +265,23 @@ static int strcmp_tail(const u8 *a, const u8 *b)
     }
 }
 
-int v1_strcmp(const char *left, const char *right)
+int strcmp_sse2(const char *left, const char *right)
 {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
     int result;
     if (strcmp_block16(&a, &b, &result))
         return result;
-    return strcmp_tail(a, b);
+    return str_table.strcmp_tail(a, b);
 }
 
 /* ---------------------------------------------------------- strcpy/strcat */
 
-static NOINLINE void *strcpy_long(u8 *d, const u8 *s)
+void * strcpy_long_sse2(u8 *d, const u8 *s)
 {
     return strcpy_long16(d, s);
 }
 
-char *v1_strcpy(char *dst, const char *src)
+char *strcpy_sse2(char *dst, const char *src)
 {
     const u8 *s = (const u8 *)src;
     u8 *d = (u8 *)dst;
@@ -293,12 +292,12 @@ char *v1_strcpy(char *dst, const char *src)
         copy_small(d, s, ctz(m) + 1);
         return dst;
     }
-    return strcpy_long(d, s);
+    return str_table.strcpy_long(d, s);
 }
 
-char *v1_strcat(char *dst, const char *src)
+char *strcat_sse2(char *dst, const char *src)
 {
-    v1_strcpy(dst + v1_strlen(dst), src);
+    str_table.strcpy(dst + str_table.strlen(dst), src);
     return dst;
 }
 
@@ -315,7 +314,7 @@ static inline void table_build(u8 table[256], const u8 *set)
         table[*set] = 1;
 }
 
-size_t v1_strspn_table(const u8 *s, const u8 *set)
+size_t strspn_table_sse2(const u8 *s, const u8 *set)
 {
     u8 table[256] __attribute__((aligned(16)));
     table_build(table, set);
@@ -337,7 +336,7 @@ size_t v1_strspn_table(const u8 *s, const u8 *set)
     return (c0 & c1) == 0 ? count + c0 : count + 2 + c2;
 }
 
-size_t v1_strcspn_table(const u8 *s, const u8 *set)
+size_t strcspn_table_sse2(const u8 *s, const u8 *set)
 {
     u8 table[256] __attribute__((aligned(16)));
     table_build(table, set);
@@ -359,27 +358,23 @@ size_t v1_strcspn_table(const u8 *s, const u8 *set)
     return (c0 | c1) != 0 ? count + 1 - c0 : count + 3 - c2;
 }
 
-size_t v1_strspn(const char *str, const char *accept)
+size_t strspn_sse2(const char *str, const char *accept)
 {
     const u8 *s = (const u8 *)str, *set = (const u8 *)accept;
     if (!set[0])
         return 0;
     if (!set[1])
-        return v1_skip_byte(s, set[0]);
-    return v1_strspn_table(s, set);
+        return skip_byte_sse2(s, set[0]);
+    return strspn_table_sse2(s, set);
 }
 
-size_t v1_strcspn(const char *str, const char *reject)
+size_t strcspn_sse2(const char *str, const char *reject)
 {
     const u8 *s = (const u8 *)str, *set = (const u8 *)reject;
     if (!set[0])
-        return v1_strlen(str);
+        return str_table.strlen(str);
     if (!set[1])
-        return v1_find_byte_or_nul(s, set[0]);
-    return v1_strcspn_table(s, set);
+        return find_byte_or_nul_sse2(s, set[0]);
+    return strcspn_table_sse2(s, set);
 }
 
-const struct str_table v1_table = {
-    v1_memcpy, v1_memmove, v1_memset, v1_memcmp, v1_strlen,
-    v1_strcpy, v1_strcat, v1_strcmp, v1_strspn, v1_strcspn,
-};

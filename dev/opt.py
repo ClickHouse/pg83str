@@ -7,9 +7,9 @@ instructions, function by function, with a small CFG and register liveness to
 prove the rewrites safe:
 
   rename   in a function where no vector register is live at entry and every
-           instruction touching a 256-bit register has an EVEX form, rename the
-           register webs (def-use connected components) that contain a ymm
-           access to 16-31 and drop vzeroupper: nothing dirties the upper
+           instruction touching a 256- or 512-bit register has an EVEX form,
+           rename the register webs (def-use connected components) that
+           contain a ymm or zmm access to 16-31 and drop vzeroupper: nothing dirties the upper
            halves of ymm0-15 any more, which is exactly the condition under
            which the compiler would not have emitted it. Webs that only ever
            use xmm stay VEX-encoded (shorter) - xmm writes do not dirty state.
@@ -515,7 +515,7 @@ def rename_vectors(fn):
     # webs with a 256-bit access are the ones that dirty the upper state
     wide = set()
     for (k, reg), w in webs.items():
-        if any(r['full'] == reg and r['name'].startswith('ymm') for r in fn.ins[k].j['regs']):
+        if any(r['full'] == reg and r['name'].startswith(('ymm', 'zmm')) for r in fn.ins[k].j['regs']):
             wide.add(w)
     if not wide:
         return []

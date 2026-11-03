@@ -5,20 +5,36 @@
 
 Permissively licensed string and memory functions for x86-64: `memcpy`,
 `memmove`, `memset`, `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`,
-`strspn`, `strcspn`. Written in C with the `immintrin.h` intrinsics, one
-translation unit per ISA level, dispatched once by `cpuid`, and then
+`strspn`, `strcspn`. Written in C with the `immintrin.h` intrinsics,
+dispatched once by `cpuid` through one table of primitives, and then
 rewritten after the compiler by a small post-pass over the objects. Meant to
 be linked into a static libc in place of its string routines.
 
+## Model
+
+One global `str_table` holds every primitive: the ten public functions and
+the kernels they hand the long cases to (`copy_large`, `fill_large`,
+`memcmp_large`, `strlen_tail`, `strcmp_tail`, `strcpy_long`). An
+implementation is a plain function named by what it does and how
+(`strlen_evex512`, `copy_large_avx2`, `strcpy_long_sse2`); it runs its own
+hot path and, when it needs another primitive, calls it through the table:
+`strcat` is `str_table.strlen` plus `str_table.strcpy`, a 64-byte `strlen`
+first block continues in `str_table.strlen_tail`, `memmove` without overlap
+is `str_table.memcpy`. So the slots compose in any mix, and `dispatch.c`
+names a complete table per class of host: 256-bit AVX-512 first blocks over
+the AVX2 kernels on Skylake-SP, 512-bit ones on Zen 4 and later, SSE4.2
+`strspn`/`strcspn` everywhere above the baseline.
+
 ## Layout
 
-- `v1.c`, `v2.c`, `v3.c`, `v4.c` — the library at x86-64, x86-64-v2 (SSE4.2),
-  x86-64-v3 (AVX2) and x86-64-v4 (AVX-512VL/BW). Each file is compiled with
-  its own `-march` and exports a table of its functions. `common.h` holds the
-  short paths (up to 64 bytes) and helpers they share.
-- `dispatch.c` — a constructor checks the full feature set of each level and
-  copies the right table into `str_table`; the public `str_memcpy` and friends
-  jump through it. A libc build renames them: `-Dstr_memcpy=memcpy ...`.
+- `sse2.c`, `sse42.c`, `avx2.c`, `evex.c`, `evex512.c` — the implementations,
+  split by the `-march` they need: x86-64, x86-64-v2 (SSE4.2), x86-64-v3
+  (AVX2), x86-64-v4 at 256 bits and at 512 bits. `common.h` holds the table,
+  the short paths (up to 64 bytes) and the helpers they share.
+- `dispatch.c` — the configurations, one complete table each, and `str_host()`
+  from `cpuid`; a constructor copies the host's configuration into
+  `str_table`, and the public `str_memcpy` and friends jump through it. A
+  libc build renames them: `-Dstr_memcpy=memcpy ...`.
 - `dev/` — the post pass, Python only: `x86.py` decodes x86-64 (legacy,
   VEX, EVEX) into structured instructions, `opt.py` rewrites them,
   `encode.py` encodes them again from the same tables, `layout.py` lays the
@@ -26,9 +42,9 @@ be linked into a static libc in place of its string routines.
   `elfout.py` read and write the objects and the archive, `post.py` drives
   it. No assembler, no `ar`.
 - `tst/test.c` — the library against the host C library: all sizes and
-  alignments, overlaps, guard pages, random sets, for every level the host
-  supports and for the dispatched table. `tst/roundtrip.py` — the decoder and
-  emitter against the compiler at -O0…-O3.
+  alignments, overlaps, guard pages, random sets, for every configuration the
+  host can run and for the dispatched one. `tst/roundtrip.py` — the decoder
+  and emitter against the compiler at -O0…-O3.
 
 ## Build
 
@@ -83,8 +99,8 @@ process, medians of five runs, our code against the compiler's and against
 glibc at 5 bytes: `strlen` 0.86/1.00 on Zen 5 and 0.63/1.00 on Skylake-SP,
 `memcmp` 1.00/1.00 and 0.75/1.00, `strcpy` 1.00/1.00 and 0.89/0.62,
 `strcat` 1.00/0.59 and 0.97/0.86. What is left behind glibc sits at 125
-bytes and beyond, in the AVX2 kernels of level v3 that every level above
-falls back to.
+bytes and beyond, in the AVX2 kernels that every configuration above AVX2
+still uses.
 
 ## License
 

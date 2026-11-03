@@ -1,10 +1,9 @@
 /*
- * v3.c: the string library for x86-64-v3 (AVX2, BMI2, SSE4.2 and friends).
+ * avx2.c: the primitives for x86-64-v3 (AVX2, BMI2, SSE4.2 and friends).
  *
  * Compile with -march=x86-64-v3. Short paths come from common.h; inputs
- * longer than 64 bytes use 32-byte kernels defined here. strspn and strcspn
- * come from v2. The kernels are exported as v3_* for v4.c; the table at the
- * end is what dispatch.c selects.
+ * longer than 64 bytes go through the table to the kernels, whose 32-byte
+ * versions are defined here and serve the AVX-512 first blocks as well.
  */
 #include "common.h"
 
@@ -17,12 +16,17 @@ static inline __m256i eq_zero(__m256i v) { return _mm256_cmpeq_epi8(v, _mm256_se
 
 /* ------------------------------------------------------------ NUL scans */
 
-/* a is 16-aligned, at least 64 bytes past s; nothing before a is NUL.
-   Single 32-byte blocks up to a 128-byte boundary, then four per iteration:
+/* a is 16-aligned, s <= a, no NUL in [s, a). The 32-byte block around a is
+   checked with the bytes before a masked off (they may lie before s); then
+   single 32-byte blocks up to a 128-byte boundary, then four per iteration:
    a 128-aligned group never crosses a page. */
-size_t v3_strlen_tail(const u8 *a, const u8 *s)
+size_t strlen_tail_avx2(const u8 *a, const u8 *s)
 {
-    a = align_down(a, 32); /* at most 16 bytes back, still past s */
+    const u8 *start = align_down(a, 32);
+    unsigned first = mask256(eq_zero(load256a(start))) >> (a - start);
+    if (first)
+        return (size_t)(a - s) + ctz(first);
+    a = start + 32;
     while ((uintptr_t)a & 127) {
         unsigned m = mask256(eq_zero(load256a(a)));
         if (m)
@@ -45,18 +49,18 @@ size_t v3_strlen_tail(const u8 *a, const u8 *s)
     }
 }
 
-static size_t v3_strlen(const char *str)
+size_t strlen_avx2(const char *str)
 {
     const u8 *s = (const u8 *)str, *next = 0;
     size_t n = strlen_prefix64(s, &next);
-    return n != SIZE_MAX ? n : v3_strlen_tail(next, s);
+    return n != SIZE_MAX ? n : str_table.strlen_tail(next, s);
 }
 
 /* ------------------------------------------------------------------ copy */
 
 /* n > 64. Head and tail vectors are loaded first and stored last, so an
    aligned loop may clobber source bytes only after they were consumed. */
-void *v3_copy_large(u8 *d, const u8 *s, size_t n)
+void * copy_large_avx2(u8 *d, const u8 *s, size_t n)
 {
     if (n <= 128) {
         __m256i x0 = load256(s), x1 = load256(s + 32), y0 = load256(s + n - 64), y1 = load256(s + n - 32);
@@ -134,17 +138,17 @@ static inline void *copy(void *dst, const void *src, size_t n)
     else if (n <= 64)
         copy_33_64(d, s, n);
     else
-        return v3_copy_large(d, s, n);
+        return str_table.copy_large(d, s, n);
     return dst;
 }
 
-static void *v3_memcpy(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
-static void *v3_memmove(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
+void *memcpy_avx2(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
+void *memmove_avx2(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
 
 /* ------------------------------------------------------------------ fill */
 
 /* n > 64. */
-void *v3_fill_large(u8 *d, int c, size_t n)
+void * fill_large_avx2(u8 *d, int c, size_t n)
 {
     __m256i v = _mm256_set1_epi8((char)c);
     if (n <= 128) {
@@ -190,7 +194,7 @@ void *v3_fill_large(u8 *d, int c, size_t n)
     RETURN_OPAQUE(d);
 }
 
-static void *v3_memset(void *dst, int c, size_t n)
+void *memset_avx2(void *dst, int c, size_t n)
 {
     u8 *d = (u8 *)dst;
     if (n <= 32)
@@ -198,7 +202,7 @@ static void *v3_memset(void *dst, int c, size_t n)
     else if (n <= 64)
         fill_33_64(d, splat16(c), n);
     else
-        return v3_fill_large(d, c, n);
+        return str_table.fill_large(d, c, n);
     return dst;
 }
 
@@ -222,7 +226,7 @@ static inline int pair_differs(const u8 *a, const u8 *b, size_t o1, size_t o2, i
    left, and one covering the last 64 bytes. Overlap is harmless: bytes before
    a block's start were already verified, so the first mismatch is found in
    address order. */
-int v3_memcmp_large(const u8 *a, const u8 *b, size_t n)
+int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n)
 {
     int result;
     size_t i = 0;
@@ -238,7 +242,7 @@ int v3_memcmp_large(const u8 *a, const u8 *b, size_t n)
     return 0;
 }
 
-static int v3_memcmp(const void *pa, const void *pb, size_t n)
+int memcmp_avx2(const void *pa, const void *pb, size_t n)
 {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
     if (n <= 16)
@@ -247,7 +251,7 @@ static int v3_memcmp(const void *pa, const void *pb, size_t n)
         return memcmp_17_32(a, b, n);
     if (n <= 64)
         return memcmp_33_64(a, b, n);
-    return v3_memcmp_large(a, b, n);
+    return str_table.memcmp_large(a, b, n);
 }
 
 /* Bit i set when a[i] and b[i] are equal and a[i] is not NUL. */
@@ -258,7 +262,7 @@ static inline __m256i same_and_nonzero(__m256i x, __m256i y)
 
 /* Four 32-byte blocks per iteration while both pointers have 128 bytes left
    in their pages, single blocks near a page end, bytes at the very end. */
-int v3_strcmp_tail(const u8 *a, const u8 *b)
+int strcmp_tail_avx2(const u8 *a, const u8 *b)
 {
     int result;
     /* One block alone first: strings of a few dozen bytes end here without
@@ -299,13 +303,13 @@ int v3_strcmp_tail(const u8 *a, const u8 *b)
     }
 }
 
-static int v3_strcmp(const char *left, const char *right)
+int strcmp_avx2(const char *left, const char *right)
 {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
     int result;
     if (strcmp_block16(&a, &b, &result))
         return result;
-    return v3_strcmp_tail(a, b);
+    return str_table.strcmp_tail(a, b);
 }
 
 /* ---------------------------------------------------------- strcpy/strcat */
@@ -314,7 +318,7 @@ static int v3_strcmp(const char *left, const char *right)
    boundary after s (the caller checked that block). Each aligned source block
    is tested before the previous one is stored; the last 32 bytes of the string
    go out as one overlapping store. Exported for v4. */
-void *v3_strcpy_long(u8 *d, const u8 *s)
+void * strcpy_long_avx2(u8 *d, const u8 *s)
 {
     const u8 *a = align_down(s, 16) + 16; /* everything before a is nonzero */
     if ((uintptr_t)a & 31) {
@@ -356,10 +360,10 @@ void *v3_strcpy_long(u8 *d, const u8 *s)
 
 static NOINLINE void *strcpy_long(u8 *d, const u8 *s)
 {
-    return v3_strcpy_long(d, s);
+    return str_table.strcpy_long(d, s);
 }
 
-static char *v3_strcpy(char *dst, const char *src)
+char *strcpy_avx2(char *dst, const char *src)
 {
     const u8 *s = (const u8 *)src;
     u8 *d = (u8 *)dst;
@@ -373,13 +377,9 @@ static char *v3_strcpy(char *dst, const char *src)
     return strcpy_long(d, s);
 }
 
-static char *v3_strcat(char *dst, const char *src)
+char *strcat_avx2(char *dst, const char *src)
 {
-    v3_strcpy(dst + v3_strlen(dst), src);
+    str_table.strcpy(dst + str_table.strlen(dst), src);
     return dst;
 }
 
-const struct str_table v3_table = {
-    v3_memcpy, v3_memmove, v3_memset, v3_memcmp, v3_strlen,
-    v3_strcpy, v3_strcat, v3_strcmp, v2_strspn, v2_strcspn, /* SSE4.2 level */
-};

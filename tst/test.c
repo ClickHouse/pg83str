@@ -287,19 +287,20 @@ static void suite(void)
 
 int main(void)
 {
-    /* dispatch.c already picked the best table; levels above it would SIGILL here */
-    const struct str_table *tables[] = {&v1_table, &v2_table, &v3_table, &v4_table};
-    const char *names[] = {"v1", "v2", "v3", "v4"};
-    int supported = str_table.memcpy == v4_table.memcpy ? 4 : str_table.memcpy == v3_table.memcpy ? 3
-                  : str_table.strspn == v2_table.strspn ? 2 : 1;
-    for (int i = 0; i < supported; i++) {
-        Table = tables[i];
-        printf("%s: ", names[i]);
+    /* every configuration the host runs, then the host's own choice */
+    unsigned host = str_host();
+    for (unsigned i = 0; i < str_nconfigs; i++) {
+        if (str_configs[i].needs & ~host)
+            continue;
+        str_table = str_configs[i].table;
+        Table = &str_table;
+        printf("%s: ", str_configs[i].name);
         checks = 0;
         suite();
     }
+    str_dispatch();
     Table = &str_table;
-    printf("dispatched: ");
+    printf("dispatched (%s): ", str_choose()->name);
     checks = 0;
     suite();
     return 0;

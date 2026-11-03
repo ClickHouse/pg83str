@@ -13,9 +13,9 @@ Per-project settings that the shared [STYLE.md](STYLE.md) delegates here.
 ## Deviations
 
 - The code is C, not C++, and follows the C library it replaces: functions,
-  variables and types are `snake_case`; the per-level entry points carry the
-  level as a prefix (`v1_strlen`, `v4_memcpy`), which is the name of the
-  table they are collected in.
+  variables and types are `snake_case`; an implementation of a primitive is
+  named by the primitive and the instruction set it uses as a suffix
+  (`strlen_evex512`, `copy_large_avx2`), the slot of `str_table` it fills.
 - `tst/test.c` is the test driver, not the product, and uses the host C
   library as the reference implementation.
 - `dev/x86.py` and `dev/encode.py` are instruction tables: their data lines

@@ -1,11 +1,8 @@
 /*
- * v2.c: the x86-64-v2 level (SSE4.2 on top of SSE2).
- *
- * Compile with -march=x86-64-v2. The only functions that gain from this level
- * are strspn and strcspn: sets of up to 16 bytes are matched with one
- * pcmpistri per text block, sets of 17..32 with two pcmpistrm; longer sets
- * use the v1 table. Everything else in v2_table is v1; v3 and v4 take these
- * two from here.
+ * sse42.c: strspn and strcspn with SSE4.2, the only primitives that gain from
+ * it. Compile with -march=x86-64-v2. Sets of up to 16 bytes are matched with
+ * one pcmpistri per text block, sets of 17..32 with two pcmpistrm; longer
+ * sets use the SSE2 table scan.
  */
 #include "common.h"
 
@@ -65,7 +62,7 @@ static inline const u8 *after_head(const u8 *s, size_t valid)
    16; the Z flag reports a NUL inside the text block. */
 #define CSPN_MODE (_SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT)
 
-static size_t strspn_sse42(const u8 *s, __m128i set)
+static size_t strspn_pcmpistri(const u8 *s, __m128i set)
 {
     size_t valid;
     __m128i head = load_head16(s, &valid);
@@ -87,7 +84,7 @@ static inline unsigned cspn_index(__m128i set, __m128i text)
     return i;
 }
 
-static size_t strcspn_sse42(const u8 *s, __m128i set)
+static size_t strcspn_pcmpistri(const u8 *s, __m128i set)
 {
     size_t valid;
     __m128i head = load_head16(s, &valid);
@@ -135,7 +132,7 @@ static inline unsigned spn2_index(__m128i set1, __m128i set2, __m128i text)
     return m ? ctz(m) : 16;
 }
 
-static size_t strspn_sse42_32(const u8 *s, __m128i set1, __m128i set2)
+static size_t strspn_pcmpistrm32(const u8 *s, __m128i set1, __m128i set2)
 {
     size_t valid;
     __m128i head = load_head16(s, &valid);
@@ -162,7 +159,7 @@ static inline unsigned cspn2_index(__m128i set1, __m128i set2, __m128i text)
     return 16;
 }
 
-static size_t strcspn_sse42_32(const u8 *s, __m128i set1, __m128i set2)
+static size_t strcspn_pcmpistrm32(const u8 *s, __m128i set1, __m128i set2)
 {
     size_t valid;
     __m128i head = load_head16(s, &valid);
@@ -176,39 +173,35 @@ static size_t strcspn_sse42_32(const u8 *s, __m128i set1, __m128i set2)
     }
 }
 
-size_t v2_strspn(const char *str, const char *accept)
+size_t strspn_sse42(const char *str, const char *accept)
 {
     const u8 *s = (const u8 *)str, *set = (const u8 *)accept;
     __m128i set1, set2;
     if (!set[0])
         return 0;
     if (!set[1])
-        return v1_skip_byte(s, set[0]);
+        return skip_byte_sse2(s, set[0]);
     if (load_set16(set, &set1))
-        return strspn_sse42(s, set1);
+        return strspn_pcmpistri(s, set1);
     set1 = load16(set); /* 16 non-NUL bytes: page-safe, see load_set16 */
     if (load_set_second16(set, &set2))
-        return strspn_sse42_32(s, set1, set2);
-    return v1_strspn_table(s, set);
+        return strspn_pcmpistrm32(s, set1, set2);
+    return strspn_table_sse2(s, set);
 }
 
-size_t v2_strcspn(const char *str, const char *reject)
+size_t strcspn_sse42(const char *str, const char *reject)
 {
     const u8 *s = (const u8 *)str, *set = (const u8 *)reject;
     __m128i set1, set2;
     if (!set[0])
-        return v1_strlen(str);
+        return str_table.strlen(str);
     if (!set[1])
-        return v1_find_byte_or_nul(s, set[0]);
+        return find_byte_or_nul_sse2(s, set[0]);
     if (load_set16(set, &set1))
-        return strcspn_sse42(s, set1);
+        return strcspn_pcmpistri(s, set1);
     set1 = load16(set);
     if (load_set_second16(set, &set2))
-        return strcspn_sse42_32(s, set1, set2);
-    return v1_strcspn_table(s, set);
+        return strcspn_pcmpistrm32(s, set1, set2);
+    return strcspn_table_sse2(s, set);
 }
 
-const struct str_table v2_table = {
-    v1_memcpy, v1_memmove, v1_memset, v1_memcmp, v1_strlen,
-    v1_strcpy, v1_strcat, v1_strcmp, v2_strspn, v2_strcspn,
-};

@@ -1,8 +1,8 @@
 /*
  * common.h: shared helpers and short paths for the string library.
  *
- * Included by v1.c, v3.c and v4.c. Everything here is SSE2 and compiles under
- * each file's own -march, so the same short path is emitted once per level.
+ * Included by every implementation file. Everything here is SSE2 and compiles
+ * under each file's own -march, so the same short path is emitted once per file.
  *
  * Memory safety rules, every function obeys them:
  *   - the page size is 4096 B; an aligned 16- or 32-byte load never crosses
@@ -31,9 +31,11 @@ typedef unsigned char u8;
 
 #define NOINLINE __attribute__((noinline))
 
-/* One implementation of every function. Each level defines its table; dispatch.c
-   copies the one matching the CPU into str_table, and the public str_* functions
-   jump through it. */
+/* The one table of primitives: the public functions and the kernels they hand
+   the long cases to. Every implementation does its own hot path and reaches
+   any other primitive only through this table, so dispatch.c can fill the
+   slots from cpuid with any mix: a 64-byte first block can continue in a
+   64-byte tail on one machine and in a 32-byte one on another. */
 struct str_table {
     void *(*memcpy)(void *, const void *, size_t);
     void *(*memmove)(void *, const void *, size_t);
@@ -45,39 +47,90 @@ struct str_table {
     int (*strcmp)(const char *, const char *);
     size_t (*strspn)(const char *, const char *);
     size_t (*strcspn)(const char *, const char *);
+    /* kernels; the contracts every implementation keeps: */
+    void *(*copy_large)(u8 *d, const u8 *s, size_t n);         /* n > 64, any overlap */
+    void *(*fill_large)(u8 *d, int c, size_t n);               /* n > 64 */
+    int (*memcmp_large)(const u8 *a, const u8 *b, size_t n);   /* n > 64 */
+    size_t (*strlen_tail)(const u8 *a, const u8 *s);           /* a 16-aligned, s <= a, no NUL in [s, a) */
+    int (*strcmp_tail)(const u8 *a, const u8 *b);              /* any pointers */
+    void *(*strcpy_long)(u8 *d, const u8 *s);                  /* no NUL before the 16-byte boundary after s */
 };
-extern const struct str_table v1_table, v2_table, v3_table, v4_table;
 extern struct str_table str_table;
 
-/* The baseline level by name: dispatch.c initializes str_table with it
-   statically, so calls before the constructor ran are safe. */
-void *v1_memcpy(void *, const void *, size_t);
-void *v1_memmove(void *, const void *, size_t);
-void *v1_memset(void *, int, size_t);
-int v1_memcmp(const void *, const void *, size_t);
-size_t v1_strlen(const char *);
-char *v1_strcpy(char *, const char *);
-char *v1_strcat(char *, const char *);
-int v1_strcmp(const char *, const char *);
-size_t v1_strspn(const char *, const char *);
-size_t v1_strcspn(const char *, const char *);
+/* What the host runs well, as bits of str_host(); dispatch.c picks a
+   configuration from them. STR_ZMM: 512-bit registers cost nothing extra. */
+enum { STR_SSE42 = 1, STR_AVX2 = 2, STR_AVX512 = 4, STR_ZMM = 8 };
+unsigned str_host(void);
+/* The configurations dispatch.c chooses from, by name; the test runs every
+   one whose needs the host meets. */
+struct str_config {
+    const char *name;
+    unsigned needs;
+    struct str_table table;
+};
+extern const struct str_config str_configs[];
+extern const unsigned str_nconfigs;
+const struct str_config *str_choose(void);   /* the configuration for this host */
+void str_dispatch(void);                     /* str_table = str_choose()->table */
 
-/* Set by dispatch.c from cpuid; zero (no rep) without a dispatcher. */
+/* sse2.c: every primitive, the baseline the table starts as */
+void *memcpy_sse2(void *, const void *, size_t);
+void *memmove_sse2(void *, const void *, size_t);
+void *memset_sse2(void *, int, size_t);
+int memcmp_sse2(const void *, const void *, size_t);
+size_t strlen_sse2(const char *);
+char *strcpy_sse2(char *, const char *);
+char *strcat_sse2(char *, const char *);
+int strcmp_sse2(const char *, const char *);
+size_t strspn_sse2(const char *, const char *);
+size_t strcspn_sse2(const char *, const char *);
+void *copy_large_sse2(u8 *d, const u8 *s, size_t n);
+void *fill_large_sse2(u8 *d, int c, size_t n);
+int memcmp_large_sse2(const u8 *a, const u8 *b, size_t n);
+size_t strlen_tail_sse2(const u8 *a, const u8 *s);
+int strcmp_tail_sse2(const u8 *a, const u8 *b);
+void *strcpy_long_sse2(u8 *d, const u8 *s);
+size_t strspn_table_sse2(const u8 *s, const u8 *set);
+size_t strcspn_table_sse2(const u8 *s, const u8 *set);
+size_t find_byte_or_nul_sse2(const u8 *s, u8 c);
+size_t skip_byte_sse2(const u8 *s, u8 c);
+/* sse42.c */
+size_t strspn_sse42(const char *, const char *);
+size_t strcspn_sse42(const char *, const char *);
+/* avx2.c */
+void *memcpy_avx2(void *, const void *, size_t);
+void *memmove_avx2(void *, const void *, size_t);
+void *memset_avx2(void *, int, size_t);
+int memcmp_avx2(const void *, const void *, size_t);
+size_t strlen_avx2(const char *);
+char *strcpy_avx2(char *, const char *);
+char *strcat_avx2(char *, const char *);
+int strcmp_avx2(const char *, const char *);
+void *copy_large_avx2(u8 *d, const u8 *s, size_t n);
+void *fill_large_avx2(u8 *d, int c, size_t n);
+int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n);
+size_t strlen_tail_avx2(const u8 *a, const u8 *s);
+int strcmp_tail_avx2(const u8 *a, const u8 *b);
+void *strcpy_long_avx2(u8 *d, const u8 *s);
+/* evex.c: AVX-512 with 256-bit registers */
+void *memcpy_evex(void *, const void *, size_t);
+void *memmove_evex(void *, const void *, size_t);
+void *memset_evex(void *, int, size_t);
+int memcmp_evex(const void *, const void *, size_t);
+size_t strlen_evex(const char *);
+char *strcpy_evex(char *, const char *);
+char *strcat_evex(char *, const char *);
+int strcmp_evex(const char *, const char *);
+/* evex512.c: AVX-512 with 512-bit registers */
+void *memcpy_evex512(void *, const void *, size_t);
+void *memmove_evex512(void *, const void *, size_t);
+void *memset_evex512(void *, int, size_t);
+int memcmp_evex512(const void *, const void *, size_t);
+size_t strlen_evex512(const char *);
+void *fill_large_evex512(u8 *d, int c, size_t n);
+size_t strlen_tail_evex512(const u8 *a, const u8 *s);
+
 extern unsigned char str_cpu_erms;
-
-/* Kernels shared across levels. */
-size_t v1_strspn_table(const u8 *s, const u8 *set);
-size_t v1_strcspn_table(const u8 *s, const u8 *set);
-size_t v1_find_byte_or_nul(const u8 *s, u8 c);
-size_t v1_skip_byte(const u8 *s, u8 c);
-void *v3_copy_large(u8 *d, const u8 *s, size_t n);
-void *v3_fill_large(u8 *d, int c, size_t n);
-int v3_memcmp_large(const u8 *a, const u8 *b, size_t n);
-int v3_strcmp_tail(const u8 *a, const u8 *b);
-size_t v3_strlen_tail(const u8 *a, const u8 *s);
-void *v3_strcpy_long(u8 *d, const u8 *s);
-size_t v2_strspn(const char *s, const char *set);
-size_t v2_strcspn(const char *s, const char *set);
 
 /* -------------------------------------------------------------- basics */
 
