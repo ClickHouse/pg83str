@@ -27,6 +27,9 @@ jobs:
       - name: Show the CPU
         run: lscpu | sed -n '1,24p'
 
+      - name: Style
+        run: python3 dev/style.py --check
+
       - name: Build the library, run the test against every supported level, round-trip the decoder
         env:
           CC: ${{ matrix.cc }}

@@ -64,6 +64,7 @@ struct str_table {
     void *(*copy_huge)(u8 *d, const u8 *s, size_t n);          /* n >= REP_THRESHOLD, no backward overlap */
     void *(*fill_huge)(u8 *d, int c, size_t n);                /* n >= REP_THRESHOLD */
 };
+
 extern struct str_table str_table;
 
 /* What the host runs well, as bits of str_host(); dispatch.c picks a
@@ -80,6 +81,7 @@ struct str_cpuid {
     unsigned ecx81;                                /* cpuid(0x80000001) */
     unsigned xcr0;                                 /* xgetbv(0), 0 without OSXSAVE */
 };
+
 void str_cpuid_read(struct str_cpuid *c);
 unsigned str_host_of(const struct str_cpuid *c);
 const struct str_config *str_choose_for(unsigned host);
@@ -90,6 +92,7 @@ struct str_config {
     unsigned needs;
     struct str_table table;
 };
+
 extern const struct str_config str_configs[];
 extern const unsigned str_nconfigs;
 const struct str_config *str_choose(void);   /* the configuration for this host */
@@ -181,7 +184,6 @@ size_t strlen_tail_evex512(const u8 *a, const u8 *s);
 int strcmp_tail_evex512(const u8 *a, const u8 *b);
 void *strcpy_long_evex512(u8 *d, const u8 *s);
 
-
 /* The same functions laid out by the post pass with the JCC-erratum padding
    (jcc-*.o, see dev/post.py), for Skylake-SP. */
 void *memcpy_evex_jcc(void *, const void *, size_t);
@@ -207,56 +209,105 @@ void *fill_huge_rep_jcc(u8 *d, int c, size_t n);
 
 /* -------------------------------------------------------------- basics */
 
-static inline size_t page_left(const void *p)
-{
+static inline size_t page_left(const void *p) {
     return PAGE_SIZE - ((uintptr_t)p & PAGE_MASK);
 }
 
-static inline const u8 *align_down(const void *p, size_t a)
-{
+static inline const u8 *align_down(const void *p, size_t a) {
     return (const u8 *)((uintptr_t)p & ~(uintptr_t)(a - 1));
 }
 
 /* True when `bytes` bytes from both a and b stay inside their pages.
    Conservative: the OR can exceed the limit when each offset alone passes. */
-static inline int both_in_page(const void *a, const void *b, size_t bytes)
-{
+static inline int both_in_page(const void *a, const void *b, size_t bytes) {
     return (((uintptr_t)a | (uintptr_t)b) & PAGE_MASK) <= PAGE_SIZE - bytes;
 }
 
-static inline __m128i load16(const void *p) { return _mm_loadu_si128((const __m128i *)p); }
-static inline __m128i load16a(const void *p) { return _mm_load_si128((const __m128i *)p); }
-static inline void store16(void *p, __m128i v) { _mm_storeu_si128((__m128i *)p, v); }
-static inline void store16a(void *p, __m128i v) { _mm_store_si128((__m128i *)p, v); }
-static inline uint64_t load64(const void *p) { uint64_t v; __builtin_memcpy(&v, p, 8); return v; }
-static inline void store64(void *p, uint64_t v) { __builtin_memcpy(p, &v, 8); }
-static inline uint32_t load32(const void *p) { uint32_t v; __builtin_memcpy(&v, p, 4); return v; }
-static inline void store32(void *p, uint32_t v) { __builtin_memcpy(p, &v, 4); }
-static inline uint16_t load16b(const void *p) { uint16_t v; __builtin_memcpy(&v, p, 2); return v; }
-static inline void store16b(void *p, uint16_t v) { __builtin_memcpy(p, &v, 2); }
+static inline __m128i load16(const void *p) {
+    return _mm_loadu_si128((const __m128i *)p);
+}
 
-static inline unsigned mask16(__m128i v) { return (unsigned)_mm_movemask_epi8(v); }
-static inline unsigned zero_mask16(__m128i v) { return mask16(_mm_cmpeq_epi8(v, _mm_setzero_si128())); }
-static inline unsigned eq_mask16(__m128i a, __m128i b) { return mask16(_mm_cmpeq_epi8(a, b)); }
-static inline unsigned ne_mask16(__m128i a, __m128i b) { return eq_mask16(a, b) ^ 0xffffu; }
+static inline __m128i load16a(const void *p) {
+    return _mm_load_si128((const __m128i *)p);
+}
+
+static inline void store16(void *p, __m128i v) {
+    _mm_storeu_si128((__m128i *)p, v);
+}
+
+static inline void store16a(void *p, __m128i v) {
+    _mm_store_si128((__m128i *)p, v);
+}
+
+static inline uint64_t load64(const void *p) {
+    uint64_t v;
+    __builtin_memcpy(&v, p, 8);
+    return v;
+}
+
+static inline void store64(void *p, uint64_t v) {
+    __builtin_memcpy(p, &v, 8);
+}
+
+static inline uint32_t load32(const void *p) {
+    uint32_t v;
+    __builtin_memcpy(&v, p, 4);
+    return v;
+}
+
+static inline void store32(void *p, uint32_t v) {
+    __builtin_memcpy(p, &v, 4);
+}
+
+static inline uint16_t load16b(const void *p) {
+    uint16_t v;
+    __builtin_memcpy(&v, p, 2);
+    return v;
+}
+
+static inline void store16b(void *p, uint16_t v) {
+    __builtin_memcpy(p, &v, 2);
+}
+
+static inline unsigned mask16(__m128i v) {
+    return (unsigned)_mm_movemask_epi8(v);
+}
+
+static inline unsigned zero_mask16(__m128i v) {
+    return mask16(_mm_cmpeq_epi8(v, _mm_setzero_si128()));
+}
+
+static inline unsigned eq_mask16(__m128i a, __m128i b) {
+    return mask16(_mm_cmpeq_epi8(a, b));
+}
+
+static inline unsigned ne_mask16(__m128i a, __m128i b) {
+    return eq_mask16(a, b) ^ 0xffffu;
+}
+
 /* Bit i set when a[i] != b[i] or a[i] == 0. */
-static inline unsigned diff_or_zero_mask16(__m128i a, __m128i b) { return ne_mask16(a, b) | zero_mask16(a); }
-static inline __m128i splat16(int c) { return _mm_set1_epi8((char)c); }
-static inline unsigned ctz(unsigned m) { return (unsigned)__builtin_ctz(m); } /* uncoverable: m != 0 by contract, the zero branch is the compiler's */
-static inline int byte_diff(const u8 *a, const u8 *b, size_t i) { return (int)a[i] - (int)b[i]; }
+static inline unsigned diff_or_zero_mask16(__m128i a, __m128i b) {
+    return ne_mask16(a, b) | zero_mask16(a);
+}
 
-static inline void rep_movsb(u8 *d, const u8 *s, size_t n)
-{
+static inline __m128i splat16(int c) {
+    return _mm_set1_epi8((char)c);
+}
+
+static inline unsigned ctz(unsigned m) { return (unsigned)__builtin_ctz(m); } /* uncoverable: m != 0 by contract, the zero branch is the compiler's */
+static inline int byte_diff(const u8 *a, const u8 *b, size_t i) {
+    return (int)a[i] - (int)b[i];
+}
+
+static inline void rep_movsb(u8 *d, const u8 *s, size_t n) {
     __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
 }
 
-static inline void rep_stosb(u8 *d, int c, size_t n)
-{
+static inline void rep_stosb(u8 *d, int c, size_t n) {
     __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
 }
 
-static inline int overlap_backward(const u8 *d, const u8 *s, size_t n)
-{
+static inline int overlap_backward(const u8 *d, const u8 *s, size_t n) {
     return d > s && d < s + n;
 }
 
@@ -268,8 +319,7 @@ static inline int overlap_backward(const u8 *d, const u8 *s, size_t n)
 /* ------------------------------------------------------- short copy/fill */
 
 /* n <= 32. Every load happens before every store, so overlap is fine. */
-static inline void copy_small(u8 *d, const u8 *s, size_t n)
-{
+static inline void copy_small(u8 *d, const u8 *s, size_t n) {
     if (n >= 16) {
         __m128i x = load16(s), y = load16(s + n - 16);
         store16(d, x);
@@ -293,8 +343,7 @@ static inline void copy_small(u8 *d, const u8 *s, size_t n)
 }
 
 /* 33..64: all loads first, then all stores, overlap-safe. */
-static inline void copy_33_64(u8 *d, const u8 *s, size_t n)
-{
+static inline void copy_33_64(u8 *d, const u8 *s, size_t n) {
     __m128i x0 = load16(s), x1 = load16(s + 16), x2 = load16(s + n - 32), x3 = load16(s + n - 16);
     store16(d, x0);
     store16(d + 16, x1);
@@ -303,9 +352,9 @@ static inline void copy_33_64(u8 *d, const u8 *s, size_t n)
 }
 
 /* n <= 32. */
-static inline void fill_small(u8 *d, __m128i v, size_t n)
-{
+static inline void fill_small(u8 *d, __m128i v, size_t n) {
     uint64_t q = (uint64_t)_mm_cvtsi128_si64(v);
+
     if (n >= 16) {
         store16(d, v);
         store16(d + n - 16, v);
@@ -324,8 +373,7 @@ static inline void fill_small(u8 *d, __m128i v, size_t n)
 }
 
 /* 33..64. */
-static inline void fill_33_64(u8 *d, __m128i v, size_t n)
-{
+static inline void fill_33_64(u8 *d, __m128i v, size_t n) {
     store16(d, v);
     store16(d + 16, v);
     store16(d + n - 32, v);
@@ -336,58 +384,77 @@ static inline void fill_33_64(u8 *d, __m128i v, size_t n)
 
 /* n <= 16. A 16-byte load is taken only when both pointers have room in
    their pages; bit 16 bounds the search without a variable shift. */
-static inline int memcmp_le16(const u8 *a, const u8 *b, size_t n)
-{
-    if (n == 0)
+static inline int memcmp_le16(const u8 *a, const u8 *b, size_t n) {
+    if (n == 0) {
         return 0;
+    }
+
     if (both_in_page(a, b, 16)) {
         unsigned i = ctz(ne_mask16(load16(a), load16(b)) | 0x10000u);
         return i < n ? byte_diff(a, b, i) : 0;
     }
-    for (size_t i = 0; i < n; i++)
-        if (a[i] != b[i])
+
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] != b[i]) {
             return byte_diff(a, b, i);
+        }
+    }
+
     return 0;
 }
 
 /* 17..32: two overlapping blocks. */
-static inline int memcmp_17_32(const u8 *a, const u8 *b, size_t n)
-{
+static inline int memcmp_17_32(const u8 *a, const u8 *b, size_t n) {
     unsigned m = ne_mask16(load16(a), load16(b));
-    if (m)
+
+    if (m) {
         return byte_diff(a, b, ctz(m));
+    }
+
     m = ne_mask16(load16(a + n - 16), load16(b + n - 16));
     return m ? byte_diff(a, b, n - 16 + ctz(m)) : 0;
 }
 
 /* 33..64: four blocks, two from each end. */
-static inline int memcmp_33_64(const u8 *a, const u8 *b, size_t n)
-{
+static inline int memcmp_33_64(const u8 *a, const u8 *b, size_t n) {
     unsigned m = ne_mask16(load16(a), load16(b));
-    if (m)
+
+    if (m) {
         return byte_diff(a, b, ctz(m));
+    }
+
     m = ne_mask16(load16(a + 16), load16(b + 16));
-    if (m)
+
+    if (m) {
         return byte_diff(a, b, 16 + ctz(m));
+    }
+
     m = ne_mask16(load16(a + n - 32), load16(b + n - 32));
-    if (m)
+
+    if (m) {
         return byte_diff(a, b, n - 32 + ctz(m));
+    }
+
     m = ne_mask16(load16(a + n - 16), load16(b + n - 16));
     return m ? byte_diff(a, b, n - 16 + ctz(m)) : 0;
 }
 
 /* First 16 bytes of strcmp when both strings have room in their pages.
    Returns 1 with the answer in *result, else 0 with the pointers advanced. */
-static inline int strcmp_block16(const u8 **pa, const u8 **pb, int *result)
-{
+static inline int strcmp_block16(const u8 **pa, const u8 **pb, int *result) {
     const u8 *a = *pa, *b = *pb;
-    if (!both_in_page(a, b, 16))
+
+    if (!both_in_page(a, b, 16)) {
         return 0;
+    }
+
     unsigned m = diff_or_zero_mask16(load16(a), load16(b));
+
     if (m) {
         *result = byte_diff(a, b, ctz(m));
         return 1;
     }
+
     *pa = a + 16;
     *pb = b + 16;
     return 0;
@@ -395,22 +462,26 @@ static inline int strcmp_block16(const u8 **pa, const u8 **pb, int *result)
 
 /* Compare byte by byte up to the nearer page end. Returns 1 with the answer
    in *result, or 0 with both pointers advanced to the page boundary. */
-static inline int strcmp_to_page_end(const u8 **pa, const u8 **pb, int *result)
-{
+static inline int strcmp_to_page_end(const u8 **pa, const u8 **pb, int *result) {
     const u8 *a = *pa, *b = *pb;
     size_t n = page_left(a), k = page_left(b);
-    if (n > k)
+
+    if (n > k) {
         n = k;
+    }
+
     for (size_t i = 0; i < n; i++) {
         if (a[i] != b[i]) {
             *result = byte_diff(a, b, i);
             return 1;
         }
+
         if (!a[i]) {
             *result = 0;
             return 1;
         }
     }
+
     *pa = a + n;
     *pb = b + n;
     return 0;
@@ -421,18 +492,23 @@ static inline int strcmp_to_page_end(const u8 **pa, const u8 **pb, int *result)
 /* First 64 bytes of strlen with aligned blocks; the first block is aligned
    down to cover s and its mask is shifted by the misalignment. Returns the
    length, or SIZE_MAX with *next = the 16-aligned address 64 bytes on. */
-static inline size_t strlen_prefix64(const u8 *s, const u8 **next)
-{
+static inline size_t strlen_prefix64(const u8 *s, const u8 **next) {
     const u8 *a = align_down(s, 16);
     unsigned m = zero_mask16(load16a(a)) >> ((uintptr_t)s & 15);
-    if (m)
+
+    if (m) {
         return ctz(m);
+    }
+
     for (int k = 1; k < 4; k++) {
         a += 16;
         m = zero_mask16(load16a(a));
-        if (m)
+
+        if (m) {
             return (size_t)(a - s) + ctz(m);
+        }
     }
+
     *next = a + 16;
     return SIZE_MAX;
 }
@@ -441,19 +517,22 @@ static inline size_t strlen_prefix64(const u8 *s, const u8 **next)
 
 /* One pass over a string that has no NUL before the 16-byte boundary after s
    (the caller checked the first block). Each aligned source block is tested
+
    for NUL before the previous one is stored, and the last 16 bytes of the
    string are copied as one overlapping pair, as in FreeBSD's stpcpy. */
-static inline void *strcpy_long16(u8 *d, const u8 *s)
-{
+static inline void *strcpy_long16(u8 *d, const u8 *s) {
     const u8 *a = align_down(s, 16) + 16;
     __m128i next = load16a(a); /* aligned: never crosses a page */
     unsigned m = zero_mask16(next);
+
     if (m) {
         copy_small(d, s, (size_t)(a - s) + ctz(m) + 1); /* at most 32 bytes */
         RETURN_OPAQUE(d);
     }
+
     store16(d, load16(s)); /* [s, s+16) lies within the two blocks just checked */
     size_t off = (size_t)(a - s);
+
     for (;;) {
         __m128i block = next;
         a += 16;
@@ -461,9 +540,12 @@ static inline void *strcpy_long16(u8 *d, const u8 *s)
         m = zero_mask16(next);
         store16(d + off, block);
         off += 16;
-        if (m)
+
+        if (m) {
             break;
+        }
     }
+
     const u8 *nul = a + ctz(m);
     store16(d + (nul - s) - 15, load16(nul - 15)); /* the string is longer than 16 here */
     RETURN_OPAQUE(d);

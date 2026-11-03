@@ -10,22 +10,29 @@
 
 /* Load a NUL-terminated set of at most 16 bytes into a vector; returns 0 when
    the set is longer. Bytes after the NUL are irrelevant to pcmpistri. */
-static inline int load_set16(const u8 *set, __m128i *out)
-{
+static inline int load_set16(const u8 *set, __m128i *out) {
     if (page_left(set) >= 16) {
         __m128i v = load16(set);
+
         if (zero_mask16(v) || set[16] == 0) {
             *out = v;
             return 1;
         }
+
         return 0;
     }
+
     u8 buffer[16] __attribute__((aligned(16))) = {0};
     size_t i = 0;
-    for (; i < 16 && set[i]; i++)
+
+    for (; i < 16 && set[i]; i++) {
         buffer[i] = set[i];
-    if (i == 16 && set[16])
+    }
+
+    if (i == 16 && set[16]) {
         return 0;
+    }
+
     *out = load16a(buffer);
     return 1;
 }
@@ -33,24 +40,26 @@ static inline int load_set16(const u8 *set, __m128i *out)
 /* First text block for pcmpistri: 16 bytes from s when they stay in the page,
    otherwise the page remainder copied into a zero-padded buffer. *valid is
    the number of real bytes in the block. */
-static inline __m128i load_head16(const u8 *s, size_t *valid)
-{
+static inline __m128i load_head16(const u8 *s, size_t *valid) {
     if (page_left(s) >= 16) {
         *valid = 16;
         return load16(s);
     }
+
     u8 buffer[16] __attribute__((aligned(16))) = {0};
     size_t n = page_left(s);
-    for (size_t i = 0; i < n; i++)
+
+    for (size_t i = 0; i < n; i++) {
         buffer[i] = s[i];
+    }
+
     *valid = n;
     return load16a(buffer);
 }
 
 /* After the head block, continue with aligned blocks; overlapping the head is
    fine because results are relative to each block's own base. */
-static inline const u8 *after_head(const u8 *s, size_t valid)
-{
+static inline const u8 *after_head(const u8 *s, size_t valid) {
     return valid == 16 ? align_down(s + 16, 16) : s + valid;
 }
 
@@ -62,13 +71,14 @@ static inline const u8 *after_head(const u8 *s, size_t valid)
    16; the Z flag reports a NUL inside the text block. */
 #define CSPN_MODE (_SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT)
 
-static inline unsigned cspn_index(__m128i set, __m128i text)
-{
+static inline unsigned cspn_index(__m128i set, __m128i text) {
     unsigned i = (unsigned)_mm_cmpistri(set, text, CSPN_MODE);
-    if (i == 16 && _mm_cmpistrz(set, text, CSPN_MODE))
+
+    if (i == 16 && _mm_cmpistrz(set, text, CSPN_MODE)) {
         i = ctz(zero_mask16(text)); /* no match before the NUL: stop there */
+    }
+
     return i;
 }
-
 
 #endif

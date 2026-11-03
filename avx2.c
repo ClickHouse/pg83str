@@ -8,12 +8,29 @@
 #include "common.h"
 #include "pcmpistri.h"
 
-static inline __m256i load256(const void *p) { return _mm256_loadu_si256((const __m256i *)p); }
-static inline __m256i load256a(const void *p) { return _mm256_load_si256((const __m256i *)p); }
-static inline void store256(void *p, __m256i v) { _mm256_storeu_si256((__m256i *)p, v); }
-static inline void store256a(void *p, __m256i v) { _mm256_store_si256((__m256i *)p, v); }
-static inline unsigned mask256(__m256i v) { return (unsigned)_mm256_movemask_epi8(v); }
-static inline __m256i eq_zero(__m256i v) { return _mm256_cmpeq_epi8(v, _mm256_setzero_si256()); }
+static inline __m256i load256(const void *p) {
+    return _mm256_loadu_si256((const __m256i *)p);
+}
+
+static inline __m256i load256a(const void *p) {
+    return _mm256_load_si256((const __m256i *)p);
+}
+
+static inline void store256(void *p, __m256i v) {
+    _mm256_storeu_si256((__m256i *)p, v);
+}
+
+static inline void store256a(void *p, __m256i v) {
+    _mm256_store_si256((__m256i *)p, v);
+}
+
+static inline unsigned mask256(__m256i v) {
+    return (unsigned)_mm256_movemask_epi8(v);
+}
+
+static inline __m256i eq_zero(__m256i v) {
+    return _mm256_cmpeq_epi8(v, _mm256_setzero_si256());
+}
 
 /* ------------------------------------------------------- strspn/strcspn */
 
@@ -25,20 +42,20 @@ static inline __m256i eq_zero(__m256i v) { return _mm256_cmpeq_epi8(v, _mm256_se
 /* The two tables are built as four 64-bit words (a byte store followed by a
    16-byte load of the same bytes would stall on store forwarding; 8-byte words
    forward) and assembled into vectors from registers. */
-static inline void truffle_tables(const u8 *set, int with_nul, __m128i *low, __m128i *high)
-{
+static inline void truffle_tables(const u8 *set, int with_nul, __m128i *low, __m128i *high) {
     uint64_t t[4] = {with_nul ? 1u : 0u, 0, 0, 0};
+
     for (; *set; set++) {
         unsigned b = *set;
         t[((b >> 7) << 1) | ((b >> 3) & 1)] |= (uint64_t)(1u << ((b >> 4) & 7)) << (8 * (b & 7));
     }
+
     *low = _mm_set_epi64x((long long)t[1], (long long)t[0]);
     *high = _mm_set_epi64x((long long)t[3], (long long)t[2]);
 }
 
 /* The bytes of x that are in the set, one bit each. */
-static inline unsigned truffle_members(__m256i x, __m256i low, __m256i high, __m256i bits)
-{
+static inline unsigned truffle_members(__m256i x, __m256i low, __m256i high, __m256i bits) {
     __m256i t = _mm256_or_si256(_mm256_shuffle_epi8(low, x), _mm256_shuffle_epi8(high, _mm256_xor_si256(x, _mm256_set1_epi8((char)0x80))));
     __m256i b = _mm256_shuffle_epi8(bits, _mm256_and_si256(_mm256_srli_epi16(x, 4), _mm256_set1_epi8(7)));
     return ~mask256(_mm256_cmpeq_epi8(_mm256_and_si256(t, b), _mm256_setzero_si256()));
@@ -50,21 +67,25 @@ static inline unsigned truffle_members(__m256i x, __m256i low, __m256i high, __m
    32-byte blocks, the first with the bytes before `from` shifted out. members:
    stop at the first byte in the set (strcspn, the NUL counts as one), else at
    the first byte not in it (strspn, the NUL is not). */
-static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, int members)
-{
+static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, int members) {
     __m128i low16, high16;
     truffle_tables(set, members, &low16, &high16);
     __m256i low = _mm256_broadcastsi128_si256(low16), high = _mm256_broadcastsi128_si256(high16), bits = TRUFFLE_BITS;
     unsigned flip = members ? 0 : 0xffffffffu;
     const u8 *a = align_down(from, 32); /* aligned blocks never cross a page */
     unsigned m = (truffle_members(load256a(a), low, high, bits) ^ flip) >> (from - a);
-    if (m)
+
+    if (m) {
         return (size_t)(from - s) + ctz(m);
+    }
+
     for (;;) {
         a += 32;
         m = truffle_members(load256a(a), low, high, bits) ^ flip;
-        if (m)
+
+        if (m) {
             return (size_t)(a - s) + ctz(m);
+        }
     }
 }
 
@@ -74,47 +95,67 @@ static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, 
    where its tables pay off, and from the start for longer sets. */
 #define PCMPISTRI_BLOCKS 3
 
-size_t strcspn_avx2(const char *str, const char *reject)
-{
+size_t strcspn_avx2(const char *str, const char *reject) {
     const u8 *s = (const u8 *)str, *set = (const u8 *)reject;
-    if (!set[0])
+
+    if (!set[0]) {
         return str_strlen(str);
+    }
+
     __m128i set1;
     const u8 *from = s;
+
     if (load_set16(set, &set1)) {
         size_t valid;
         unsigned i = cspn_index(set1, load_head16(s, &valid));
-        if (i < valid)
+
+        if (i < valid) {
             return i;
+        }
+
         from = after_head(s, valid);
+
         for (int k = 0; k < PCMPISTRI_BLOCKS; k++, from += 16) {
             i = cspn_index(set1, load16a(from));
-            if (i < 16)
+
+            if (i < 16) {
                 return (size_t)(from - s) + i;
+            }
         }
     }
+
     return truffle_scan(from, s, set, 1);
 }
 
-size_t strspn_avx2(const char *str, const char *accept)
-{
+size_t strspn_avx2(const char *str, const char *accept) {
     const u8 *s = (const u8 *)str, *set = (const u8 *)accept;
-    if (!set[0])
+
+    if (!set[0]) {
         return 0;
+    }
+
     __m128i set1;
     const u8 *from = s;
+
     if (load_set16(set, &set1)) {
         size_t valid;
         unsigned i = (unsigned)_mm_cmpistri(set1, load_head16(s, &valid), SPN_MODE);
-        if (i < valid)
+
+        if (i < valid) {
             return i;
+        }
+
         from = after_head(s, valid);
+
         for (int k = 0; k < PCMPISTRI_BLOCKS; k++, from += 16) {
             i = (unsigned)_mm_cmpistri(set1, load16a(from), SPN_MODE);
-            if (i < 16)
+
+            if (i < 16) {
                 return (size_t)(from - s) + i;
+            }
         }
     }
+
     return truffle_scan(from, s, set, 0);
 }
 
@@ -124,31 +165,52 @@ size_t strspn_avx2(const char *str, const char *accept)
    checked with the bytes before a masked off (they may lie before s); then
    single 32-byte blocks up to a 128-byte boundary, then four per iteration:
    a 128-aligned group never crosses a page. */
-size_t strlen_tail_avx2(const u8 *a, const u8 *s)
-{
+size_t strlen_tail_avx2(const u8 *a, const u8 *s) {
     const u8 *start = align_down(a, 32);
     unsigned first = mask256(eq_zero(load256a(start))) >> (a - start);
-    if (first)
+
+    if (first) {
         return (size_t)(a - s) + ctz(first);
+    }
+
     a = start + 32;
+
     while ((uintptr_t)a & 127) {
         unsigned m = mask256(eq_zero(load256a(a)));
-        if (m)
+
+        if (m) {
             return (size_t)(a - s) + ctz(m);
+        }
+
         a += 32;
     }
+
     for (;;) {
         __m256i x0 = eq_zero(load256a(a)), x1 = eq_zero(load256a(a + 32));
         __m256i x2 = eq_zero(load256a(a + 64)), x3 = eq_zero(load256a(a + 96));
+
         if (mask256(_mm256_or_si256(_mm256_or_si256(x0, x1), _mm256_or_si256(x2, x3)))) {
             unsigned m = mask256(x0);
-            if (m) return (size_t)(a - s) + ctz(m);
+
+            if (m) {
+                return (size_t)(a - s) + ctz(m);
+            }
+
             m = mask256(x1);
-            if (m) return (size_t)(a - s) + 32 + ctz(m);
+
+            if (m) {
+                return (size_t)(a - s) + 32 + ctz(m);
+            }
+
             m = mask256(x2);
-            if (m) return (size_t)(a - s) + 64 + ctz(m);
+
+            if (m) {
+                return (size_t)(a - s) + 64 + ctz(m);
+            }
+
             return (size_t)(a - s) + 96 + ctz(mask256(x3));
         }
+
         a += 128;
     }
 }
@@ -157,16 +219,20 @@ size_t strlen_tail_avx2(const u8 *a, const u8 *s)
    in 10 end there, median 8 bytes); else the aligned block around s, which
    never crosses a page, with the bytes before s shifted out. Either way the
    next aligned block is where the tail continues. */
-size_t strlen_avx2(const char *str)
-{
+size_t strlen_avx2(const char *str) {
     const u8 *s = (const u8 *)str;
     unsigned m;
-    if (page_left(s) >= 32)
+
+    if (page_left(s) >= 32) {
         m = mask256(eq_zero(load256(s)));
-    else
+    } else {
         m = mask256(eq_zero(load256a(align_down(s, 32)))) >> ((uintptr_t)s & 31);
-    if (m)
+    }
+
+    if (m) {
         return ctz(m);
+    }
+
     return str_strlen_tail(align_down(s + 32, 32), s);
 }
 
@@ -176,12 +242,12 @@ size_t strlen_avx2(const char *str)
    aligned loop may clobber source bytes only after they were consumed. */
 /* The forward loop, aligned 128-byte steps, for 257..4095 bytes without backward
    overlap; the first and the last 32 bytes are the caller's. */
-static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n)
-{
+static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n) {
     size_t skew = 32 - ((uintptr_t)d & 31);
     u8 *dp = d + skew;
     const u8 *sp = s + skew;
     size_t left = n - skew;
+
     while (left >= 128) {
         __m256i x0 = load256(sp), x1 = load256(sp + 32), x2 = load256(sp + 64), x3 = load256(sp + 96);
         store256a(dp, x0);
@@ -192,6 +258,7 @@ static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n)
         sp += 128;
         left -= 128;
     }
+
     while (left >= 32) {
         store256a(dp, load256(sp));
         dp += 32;
@@ -200,8 +267,7 @@ static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n)
     }
 }
 
-void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
-{
+void *copy_large_avx2(u8 *d, const u8 *s, size_t n) {
     if (n <= 128) {
         __m256i x0 = load256(s), x1 = load256(s + 32), y0 = load256(s + n - 64), y1 = load256(s + n - 32);
         store256(d, x0);
@@ -210,6 +276,7 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
         store256(d + n - 32, y1);
         RETURN_OPAQUE(d);
     }
+
     if (n <= 256) {
         __m256i x0 = load256(s), x1 = load256(s + 32), x2 = load256(s + 64), x3 = load256(s + 96);
         __m256i y0 = load256(s + n - 128), y1 = load256(s + n - 96), y2 = load256(s + n - 64), y3 = load256(s + n - 32);
@@ -223,10 +290,13 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
         store256(d + n - 32, y3);
         RETURN_OPAQUE(d);
     }
+
     __m256i head = load256(s), tail = load256(s + n - 32);
+
     if (overlap_backward(d, s, n)) {
         /* down from the aligned end */
         size_t off = n - ((uintptr_t)(d + n) & 31);
+
         while (off >= 128) {
             off -= 128;
             __m256i x0 = load256(s + off), x1 = load256(s + off + 32), x2 = load256(s + off + 64), x3 = load256(s + off + 96);
@@ -235,6 +305,7 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
             store256a(d + off + 64, x2);
             store256a(d + off + 96, x3);
         }
+
         while (off >= 32) {
             off -= 32;
             store256a(d + off, load256(s + off));
@@ -244,16 +315,16 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
     } else {
         copy_forward_loop(d, s, n);
     }
+
     store256(d, head);
     store256(d + n - 32, tail);
     RETURN_OPAQUE(d);
 }
 
-
-static inline void *copy(void *dst, const void *src, size_t n)
-{
+static inline void *copy(void *dst, const void *src, size_t n) {
     u8 *d = (u8 *)dst;
     const u8 *s = (const u8 *)src;
+
     if (n <= 32) {
         copy_small(d, s, n);
     } else if (n <= 64) {
@@ -264,16 +335,21 @@ static inline void *copy(void *dst, const void *src, size_t n)
     } else {
         return str_copy_large(d, s, n);
     }
+
     return dst;
 }
 
-void *memcpy_avx2(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
-void *memmove_avx2(void *dst, const void *src, size_t n) { return copy(dst, src, n); }
+void *memcpy_avx2(void *dst, const void *src, size_t n) {
+    return copy(dst, src, n);
+}
+
+void *memmove_avx2(void *dst, const void *src, size_t n) {
+    return copy(dst, src, n);
+}
 
 /* ------------------------------------------------------------------ fill */
 
-static inline void *fill_loop(u8 *d, __m256i v, size_t n)
-{
+static inline void *fill_loop(u8 *d, __m256i v, size_t n) {
     /* four unaligned stores at each end, aligned 128-byte steps between; the loop
        is not unrolled (the compiler would, with a long prologue for a count that
        is usually small) */
@@ -283,6 +359,7 @@ static inline void *fill_loop(u8 *d, __m256i v, size_t n)
     store256(d + 96, v);
     u8 *end = d + n - 128;
     u8 *dp = (u8 *)align_down(d + 128, 32);
+
     NO_UNROLL
     while (dp < end) {
         store256a(dp, v);
@@ -291,6 +368,7 @@ static inline void *fill_loop(u8 *d, __m256i v, size_t n)
         store256a(dp + 96, v);
         dp += 128;
     }
+
     store256(end, v);
     store256(end + 32, v);
     store256(end + 64, v);
@@ -299,9 +377,9 @@ static inline void *fill_loop(u8 *d, __m256i v, size_t n)
 }
 
 /* n > 64. */
-void *fill_large_avx2(u8 *d, int c, size_t n)
-{
+void *fill_large_avx2(u8 *d, int c, size_t n) {
     __m256i v = _mm256_set1_epi8((char)c);
+
     if (n <= 128) {
         store256(d, v);
         store256(d + 32, v);
@@ -309,6 +387,7 @@ void *fill_large_avx2(u8 *d, int c, size_t n)
         store256(d + n - 32, v);
         RETURN_OPAQUE(d);
     }
+
     if (n <= 256) {
         store256(d, v);
         store256(d + 32, v);
@@ -320,21 +399,25 @@ void *fill_large_avx2(u8 *d, int c, size_t n)
         store256(d + n - 32, v);
         RETURN_OPAQUE(d);
     }
-    if (n >= REP_THRESHOLD)
+
+    if (n >= REP_THRESHOLD) {
         return str_fill_huge(d, c, n);
+    }
+
     return fill_loop(d, v, n);
 }
 
-
-void *memset_avx2(void *dst, int c, size_t n)
-{
+void *memset_avx2(void *dst, int c, size_t n) {
     u8 *d = (u8 *)dst;
-    if (n <= 32)
+
+    if (n <= 32) {
         fill_small(d, splat16(c), n);
-    else if (n <= 64)
+    } else if (n <= 64) {
         fill_33_64(d, splat16(c), n);
-    else
+    } else {
         return str_fill_large(d, c, n);
+    }
+
     return dst;
 }
 
@@ -342,12 +425,14 @@ void *memset_avx2(void *dst, int c, size_t n)
 
 /* Two 32-byte blocks at o1 < o2 (they may overlap): 1 with the answer in
    *result when they differ, else 0. */
-static inline int pair_differs(const u8 *a, const u8 *b, size_t o1, size_t o2, int *result)
-{
+static inline int pair_differs(const u8 *a, const u8 *b, size_t o1, size_t o2, int *result) {
     __m256i e0 = _mm256_cmpeq_epi8(load256(a + o1), load256(b + o1));
     __m256i e1 = _mm256_cmpeq_epi8(load256(a + o2), load256(b + o2));
-    if (mask256(_mm256_and_si256(e0, e1)) == 0xffffffffu)
+
+    if (mask256(_mm256_and_si256(e0, e1)) == 0xffffffffu) {
         return 0;
+    }
+
     unsigned m = mask256(e0) ^ 0xffffffffu;
     *result = m ? byte_diff(a, b, o1 + ctz(m)) : byte_diff(a, b, o2 + ctz(mask256(e1) ^ 0xffffffffu));
     return 1;
@@ -358,20 +443,27 @@ static inline int pair_differs(const u8 *a, const u8 *b, size_t o1, size_t o2, i
    left, and one covering the last 64 bytes. Overlap is harmless: bytes before
    a block's start were already verified, so the first mismatch is found in
    address order. */
-int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n)
-{
+int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n) {
     int result;
     size_t i = 0;
+
     while (n - i > 128) {
-        if (pair_differs(a, b, i, i + 32, &result))
+        if (pair_differs(a, b, i, i + 32, &result)) {
             return result;
+        }
+
         i += 64;
     }
+
     /* 65..128 bytes are left: a pair from the front and the pair at the end */
-    if (pair_differs(a, b, i, i + 32, &result))
+    if (pair_differs(a, b, i, i + 32, &result)) {
         return result;
-    if (pair_differs(a, b, n - 64, n - 32, &result))
+    }
+
+    if (pair_differs(a, b, n - 64, n - 32, &result)) {
         return result;
+    }
+
     return 0;
 }
 
@@ -379,70 +471,99 @@ int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n)
    pages: eq + 1 sets the bit of the first differing lane (all equal wraps to
    0), bzhi drops the lanes at n and beyond. No split at 16, no test for 0.
    33..64: the first and the last 32 bytes. */
-int memcmp_avx2(const void *pa, const void *pb, size_t n)
-{
+int memcmp_avx2(const void *pa, const void *pb, size_t n) {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
     unsigned m;
+
     if (n - 1 < 32) { /* 1..32: with n == 0 the pointers may be unreadable (the end of a buffer) */
+
         if (__builtin_expect(both_in_page(a, b, 32), 1)) {
             m = _bzhi_u32(mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1, (unsigned)n);
             return m ? byte_diff(a, b, ctz(m)) : 0;
         }
+
         return n <= 16 ? memcmp_le16(a, b, n) : memcmp_17_32(a, b, n);
     }
-    if (n == 0)
+
+    if (n == 0) {
         return 0;
+    }
+
     if (n <= 64) {
         m = mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1;
-        if (m)
+
+        if (m) {
             return byte_diff(a, b, ctz(m));
+        }
+
         m = mask256(_mm256_cmpeq_epi8(load256(a + n - 32), load256(b + n - 32))) + 1;
         return m ? byte_diff(a, b, n - 32 + ctz(m)) : 0;
     }
+
     return str_memcmp_large(a, b, n);
 }
 
 /* Bit i set when a[i] and b[i] are equal and a[i] is not NUL. */
-static inline __m256i same_and_nonzero(__m256i x, __m256i y)
-{
+static inline __m256i same_and_nonzero(__m256i x, __m256i y) {
     return _mm256_andnot_si256(eq_zero(x), _mm256_cmpeq_epi8(x, y));
 }
 
 /* Four 32-byte blocks per iteration while both pointers have 128 bytes left
    in their pages, single blocks near a page end, bytes at the very end. */
-int strcmp_tail_avx2(const u8 *a, const u8 *b)
-{
+int strcmp_tail_avx2(const u8 *a, const u8 *b) {
     int result;
     /* One block alone first: strings of a few dozen bytes end here without
        touching the 128-byte group. */
+
     if (both_in_page(a, b, 32)) {
         unsigned m = mask256(same_and_nonzero(load256(a), load256(b))) ^ 0xffffffffu;
-        if (m)
+
+        if (m) {
             return byte_diff(a, b, ctz(m));
+        }
+
         a += 32;
         b += 32;
     }
+
     for (;;) {
         if (both_in_page(a, b, 128)) {
             __m256i s0 = same_and_nonzero(load256(a), load256(b));
             __m256i s1 = same_and_nonzero(load256(a + 32), load256(b + 32));
             __m256i s2 = same_and_nonzero(load256(a + 64), load256(b + 64));
             __m256i s3 = same_and_nonzero(load256(a + 96), load256(b + 96));
+
             if (mask256(_mm256_and_si256(_mm256_and_si256(s0, s1), _mm256_and_si256(s2, s3))) != 0xffffffffu) {
                 unsigned m = mask256(s0) ^ 0xffffffffu;
-                if (m) return byte_diff(a, b, ctz(m));
+
+                if (m) {
+                    return byte_diff(a, b, ctz(m));
+                }
+
                 m = mask256(s1) ^ 0xffffffffu;
-                if (m) return byte_diff(a, b, 32 + ctz(m));
+
+                if (m) {
+                    return byte_diff(a, b, 32 + ctz(m));
+                }
+
                 m = mask256(s2) ^ 0xffffffffu;
-                if (m) return byte_diff(a, b, 64 + ctz(m));
+
+                if (m) {
+                    return byte_diff(a, b, 64 + ctz(m));
+                }
+
                 return byte_diff(a, b, 96 + ctz(mask256(s3) ^ 0xffffffffu));
             }
+
             a += 128;
             b += 128;
         } else if (both_in_page(a, b, 32)) {
             unsigned m = mask256(same_and_nonzero(load256(a), load256(b))) ^ 0xffffffffu;
-            if (m)
+
+            if (m) {
                 return byte_diff(a, b, ctz(m));
+            }
+
             a += 32;
             b += 32;
         } else if (strcmp_to_page_end(&a, &b, &result)) {
@@ -455,27 +576,37 @@ int strcmp_tail_avx2(const u8 *a, const u8 *b)
    lanes that are equal and not NUL, + 1, and the trailing zero count give
    the first differing or terminating byte (all 32 wrap to 0). A second block
    in line for the strings equal so far; the tail for the few longer still. */
-int strcmp_avx2(const char *left, const char *right)
-{
+int strcmp_avx2(const char *left, const char *right) {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
+
     if (__builtin_expect(both_in_page(a, b, 32), 1)) {
         unsigned m = mask256(same_and_nonzero(load256(a), load256(b))) + 1;
-        if (__builtin_expect(m != 0, 1))
+
+        if (__builtin_expect(m != 0, 1)) {
             return byte_diff(a, b, ctz(m));
+        }
+
         a += 32;
         b += 32;
+
         if (both_in_page(a, b, 32)) {
             m = mask256(same_and_nonzero(load256(a), load256(b))) + 1;
-            if (m)
+
+            if (m) {
                 return byte_diff(a, b, ctz(m));
+            }
+
             a += 32;
             b += 32;
         }
     } else {
         int result;
-        if (strcmp_block16(&a, &b, &result))
+
+        if (strcmp_block16(&a, &b, &result)) {
             return result;
+        }
     }
+
     return str_strcmp_tail(a, b);
 }
 
@@ -485,31 +616,40 @@ int strcmp_avx2(const char *left, const char *right)
    boundary after s (the caller checked that block). Each aligned source block
    is tested before the previous one is stored; the last 32 bytes of the string
    go out as one overlapping store. Exported for v4. */
-void *strcpy_long_avx2(u8 *d, const u8 *s)
-{
+void *strcpy_long_avx2(u8 *d, const u8 *s) {
     const u8 *a = align_down(s, 16) + 16; /* everything before a is nonzero */
+
     if ((uintptr_t)a & 31) {
         /* reach a 32-byte boundary: check the 16 bytes in between */
         unsigned m16 = zero_mask16(load16a(a));
+
         if (m16) {
             copy_small(d, s, (size_t)(a - s) + ctz(m16) + 1); /* at most 32 bytes */
             RETURN_OPAQUE(d);
         }
+
         a += 16;
     }
+
     __m256i next = load256a(a);
     unsigned m = mask256(eq_zero(next));
     __m256i head = load256(s); /* [s, s+32) lies within the bytes checked so far and this block */
+
     if (m) {
         size_t n = (size_t)(a - s) + ctz(m) + 1; /* at most 64 bytes */
-        if (n <= 32)
+
+        if (n <= 32) {
             copy_small(d, s, n);
-        else
+        } else {
             copy_33_64(d, s, n);
+        }
+
         RETURN_OPAQUE(d);
     }
+
     store256(d, head);
     size_t off = (size_t)(a - s);
+
     for (;;) {
         __m256i block = next;
         a += 32;
@@ -517,16 +657,18 @@ void *strcpy_long_avx2(u8 *d, const u8 *s)
         m = mask256(eq_zero(next));
         store256(d + off, block);
         off += 32;
-        if (m)
+
+        if (m) {
             break;
+        }
     }
+
     const u8 *nul = a + ctz(m);
     store256(d + (nul - s) - 31, load256(nul - 31)); /* the string is longer than 32 here */
     RETURN_OPAQUE(d);
 }
 
-static NOINLINE void *strcpy_long(u8 *d, const u8 *s)
-{
+static NOINLINE void *strcpy_long(u8 *d, const u8 *s) {
     return str_strcpy_long(d, s);
 }
 
@@ -534,43 +676,47 @@ static NOINLINE void *strcpy_long(u8 *d, const u8 *s)
    the aligned block around s shifted otherwise. A string ending in it is
    copied in one pass; the rest go to the long copy with the 16-byte boundary
    after s already known to be clear. */
-char *strcpy_avx2(char *dst, const char *src)
-{
+char *strcpy_avx2(char *dst, const char *src) {
     const u8 *s = (const u8 *)src;
     u8 *d = (u8 *)dst;
     unsigned m;
-    if (page_left(s) >= 32)
+
+    if (page_left(s) >= 32) {
         m = mask256(eq_zero(load256(s)));
-    else
+    } else {
         m = mask256(eq_zero(load256a(align_down(s, 32)))) >> ((uintptr_t)s & 31);
+    }
+
     if (m) {
         copy_small(d, s, ctz(m) + 1);
         return dst;
     }
+
     return strcpy_long(d, s);
 }
 
 /* Out of line, so that the common case below keeps no frame and no call. */
-static NOINLINE char *strcat_long(char *dst, const char *src)
-{
+static NOINLINE char *strcat_long(char *dst, const char *src) {
     str_strcpy(dst + str_strlen(dst), src);
     RETURN_OPAQUE(dst);
 }
 
-char *strcat_avx2(char *dst, const char *src)
-{
+char *strcat_avx2(char *dst, const char *src) {
     const u8 *d = (const u8 *)dst, *s = (const u8 *)src;
+
     if (both_in_page(d, s, 32)) {
         /* both strings end within their first 32 bytes: one load each, one short copy */
         unsigned md = mask256(eq_zero(load256(d)));
+
         if (md) {
             unsigned ms = mask256(eq_zero(load256(s)));
+
             if (ms) {
                 copy_small((u8 *)dst + ctz(md), s, ctz(ms) + 1);
                 return dst;
             }
         }
     }
+
     return strcat_long(dst, src);
 }
-

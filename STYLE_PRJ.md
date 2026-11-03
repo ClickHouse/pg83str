@@ -7,8 +7,14 @@ Per-project settings that the shared [STYLE.md](STYLE.md) delegates here.
 - **Namespace.** None: the library is C. Its public functions are `str_memcpy`,
   `str_strlen` and so on, renamed to the libc names by the build that embeds
   them (`-Dstr_memcpy=memcpy ...`).
-- **Formatter.** `./dev/style.py` formats every tracked C source. The Python
-  under `dev/` and `tst/` is not formatted mechanically.
+- **Formatter.** `./dev/style.py` applies the mechanical part of STYLE.md
+  this project takes and nothing else: attached braces, braces around every
+  control-statement body, no braced body on one line, and blank lines as the
+  std library places them (none right after `{` or before `}`, never two,
+  one after a block's closing brace, one before a control statement that
+  follows other code, one between definitions). Pointer spacing, line length
+  and the rest of `.clang-format` are not applied. `--check` is the CI gate.
+  The Python under `dev/` and `tst/` is not formatted mechanically.
 
 ## Deviations
 

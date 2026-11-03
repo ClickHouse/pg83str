@@ -78,20 +78,21 @@ const struct str_config str_configs[] = {
         .copy_huge = copy_huge_rep, .fill_huge = fill_huge_rep,
     }},
 };
+
 const unsigned str_nconfigs = sizeof str_configs / sizeof str_configs[0];
 /* clang-format on */
 
-static inline void cpuid(unsigned leaf, unsigned sub, unsigned r[4])
-{
+static inline void cpuid(unsigned leaf, unsigned sub, unsigned r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
 }
 
-static inline int bit(unsigned word, unsigned i) { return (word >> i) & 1; }
+static inline int bit(unsigned word, unsigned i) {
+    return (word >> i) & 1;
+}
 
 /* The instructions; everything the decisions need, so that they can be made
    again from any snapshot (the test feeds it other hosts). */
-void str_cpuid_read(struct str_cpuid *c)
-{
+void str_cpuid_read(struct str_cpuid *c) {
     unsigned r[4];
     cpuid(0, 0, r);
     c->max_leaf = r[0];
@@ -108,6 +109,7 @@ void str_cpuid_read(struct str_cpuid *c)
     cpuid(0x80000001u, 0, r);
     c->ecx81 = r[2];
     c->xcr0 = 0;
+
     if (bit(c->ecx1, 27)) { /* uncoverable: xgetbv faults without OSXSAVE, a CPU this test does not run on */
         unsigned lo, hi;
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
@@ -115,74 +117,150 @@ void str_cpuid_read(struct str_cpuid *c)
     }
 }
 
-unsigned str_host_of(const struct str_cpuid *c)
-{
-    if (c->max_leaf < 7)
+unsigned str_host_of(const struct str_cpuid *c) {
+    if (c->max_leaf < 7) {
         return 0;
+    }
+
     int intel = c->vendor_ebx == 0x756e6547 && c->vendor_edx == 0x49656e69 && c->vendor_ecx == 0x6c65746e;
     unsigned family = (c->eax1 >> 8) & 0xf, model = ((c->eax1 >> 4) & 0xf) | ((c->eax1 >> 12) & 0xf0);
     unsigned ecx1 = c->ecx1, ebx7 = c->ebx7, ecx81 = c->ecx81;
     unsigned have = bit(ebx7, 9) ? STR_ERMS : 0;   /* fast rep movsb/stosb */
+
     /* x86-64-v2: SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B, LAHF/SAHF */
-    if (!(bit(ecx1, 0) && bit(ecx1, 9) && bit(ecx1, 19) && bit(ecx1, 20) && bit(ecx1, 23) && bit(ecx1, 13) && bit(ecx81, 0)))
+    if (!(bit(ecx1, 0) && bit(ecx1, 9) && bit(ecx1, 19) && bit(ecx1, 20) && bit(ecx1, 23) && bit(ecx1, 13) && bit(ecx81, 0))) {
         return have;
+    }
+
     have |= STR_SSE42;
+
     /* x86-64-v3: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE, OSXSAVE with YMM state */
     if (!(bit(ecx1, 27) && bit(ecx1, 28) && bit(ecx1, 29) && bit(ecx1, 12) && bit(ecx1, 22)
-          && bit(ebx7, 5) && bit(ebx7, 3) && bit(ebx7, 8) && bit(ecx81, 5)))
+          && bit(ebx7, 5) && bit(ebx7, 3) && bit(ebx7, 8) && bit(ecx81, 5))) {
         return have;
-    if ((c->xcr0 & 0x06) != 0x06)
+    }
+
+    if ((c->xcr0 & 0x06) != 0x06) {
         return have;
+    }
+
     have |= STR_AVX2;
+
     /* x86-64-v4: AVX512F, BW, CD, DQ, VL with opmask and ZMM state */
-    if (!(bit(ebx7, 16) && bit(ebx7, 30) && bit(ebx7, 28) && bit(ebx7, 17) && bit(ebx7, 31) && (c->xcr0 & 0xe0) == 0xe0))
+    if (!(bit(ebx7, 16) && bit(ebx7, 30) && bit(ebx7, 28) && bit(ebx7, 17) && bit(ebx7, 31) && (c->xcr0 & 0xe0) == 0xe0)) {
         return have;
+    }
+
     have |= STR_AVX512;
     /* 512-bit registers lower the clock of Skylake-SP and its Cascade/Cooper Lake
        siblings (family 6 model 0x55); glibc keeps to 256 bits there too */
-    if (!(intel && family == 6 && model == 0x55))
+
+    if (!(intel && family == 6 && model == 0x55)) {
         have |= STR_ZMM;
+    }
+
     return have;
 }
 
-unsigned str_host(void)
-{
+unsigned str_host(void) {
     struct str_cpuid c;
     str_cpuid_read(&c);
     return str_host_of(&c);
 }
 
 /* The last configuration whose needs the host meets. */
-const struct str_config *str_choose_for(unsigned host)
-{
+const struct str_config *str_choose_for(unsigned host) {
     const struct str_config *best = &str_configs[0];
-    for (unsigned i = 1; i < str_nconfigs; i++)
-        if ((str_configs[i].needs & ~host) == 0)
+
+    for (unsigned i = 1; i < str_nconfigs; i++) {
+        if ((str_configs[i].needs & ~host) == 0) {
             best = &str_configs[i];
+        }
+    }
+
     return best;
 }
 
-const struct str_config *str_choose(void) { return str_choose_for(str_host()); }
+const struct str_config *str_choose(void) {
+    return str_choose_for(str_host());
+}
 
-void str_dispatch(void) { str_table = str_choose()->table; }
+void str_dispatch(void) {
+    str_table = str_choose()->table;
+}
 
-__attribute__((constructor)) static void select_table(void) { str_dispatch(); }
+__attribute__((constructor)) static void select_table(void) {
+    str_dispatch();
+}
 
-void *str_memcpy(void *d, const void *s, size_t n) { return str_table.memcpy(d, s, n); }
-void *str_memmove(void *d, const void *s, size_t n) { return str_table.memmove(d, s, n); }
-void *str_memset(void *d, int c, size_t n) { return str_table.memset(d, c, n); }
-int str_memcmp(const void *a, const void *b, size_t n) { return str_table.memcmp(a, b, n); }
-size_t str_strlen(const char *s) { return str_table.strlen(s); }
-char *str_strcpy(char *d, const char *s) { return str_table.strcpy(d, s); }
-char *str_strcat(char *d, const char *s) { return str_table.strcat(d, s); }
-int str_strcmp(const char *a, const char *b) { return str_table.strcmp(a, b); }
-size_t str_strspn(const char *s, const char *set) { return str_table.strspn(s, set); }
-size_t str_strcspn(const char *s, const char *set) { return str_table.strcspn(s, set); }
-void *str_copy_large(u8 *d, const u8 *s, size_t n) { return str_table.copy_large(d, s, n); }
-void *str_fill_large(u8 *d, int c, size_t n) { return str_table.fill_large(d, c, n); }
-int str_memcmp_large(const u8 *a, const u8 *b, size_t n) { return str_table.memcmp_large(a, b, n); }
-size_t str_strlen_tail(const u8 *a, const u8 *s) { return str_table.strlen_tail(a, s); }
-int str_strcmp_tail(const u8 *a, const u8 *b) { return str_table.strcmp_tail(a, b); }
-void *str_strcpy_long(u8 *d, const u8 *s) { return str_table.strcpy_long(d, s); }
-void *str_copy_huge(u8 *d, const u8 *s, size_t n) { return str_table.copy_huge(d, s, n); }
-void *str_fill_huge(u8 *d, int c, size_t n) { return str_table.fill_huge(d, c, n); }
+void *str_memcpy(void *d, const void *s, size_t n) {
+    return str_table.memcpy(d, s, n);
+}
+
+void *str_memmove(void *d, const void *s, size_t n) {
+    return str_table.memmove(d, s, n);
+}
+
+void *str_memset(void *d, int c, size_t n) {
+    return str_table.memset(d, c, n);
+}
+
+int str_memcmp(const void *a, const void *b, size_t n) {
+    return str_table.memcmp(a, b, n);
+}
+
+size_t str_strlen(const char *s) {
+    return str_table.strlen(s);
+}
+
+char *str_strcpy(char *d, const char *s) {
+    return str_table.strcpy(d, s);
+}
+
+char *str_strcat(char *d, const char *s) {
+    return str_table.strcat(d, s);
+}
+
+int str_strcmp(const char *a, const char *b) {
+    return str_table.strcmp(a, b);
+}
+
+size_t str_strspn(const char *s, const char *set) {
+    return str_table.strspn(s, set);
+}
+
+size_t str_strcspn(const char *s, const char *set) {
+    return str_table.strcspn(s, set);
+}
+
+void *str_copy_large(u8 *d, const u8 *s, size_t n) {
+    return str_table.copy_large(d, s, n);
+}
+
+void *str_fill_large(u8 *d, int c, size_t n) {
+    return str_table.fill_large(d, c, n);
+}
+
+int str_memcmp_large(const u8 *a, const u8 *b, size_t n) {
+    return str_table.memcmp_large(a, b, n);
+}
+
+size_t str_strlen_tail(const u8 *a, const u8 *s) {
+    return str_table.strlen_tail(a, s);
+}
+
+int str_strcmp_tail(const u8 *a, const u8 *b) {
+    return str_table.strcmp_tail(a, b);
+}
+
+void *str_strcpy_long(u8 *d, const u8 *s) {
+    return str_table.strcpy_long(d, s);
+}
+
+void *str_copy_huge(u8 *d, const u8 *s, size_t n) {
+    return str_table.copy_huge(d, s, n);
+}
+
+void *str_fill_huge(u8 *d, int c, size_t n) {
+    return str_table.fill_huge(d, c, n);
+}
