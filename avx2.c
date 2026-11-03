@@ -6,6 +6,7 @@
  * versions are defined here and serve the AVX-512 first blocks as well.
  */
 #include "common.h"
+#include "pcmpistri.h"
 
 static inline __m256i load256(const void *p) { return _mm256_loadu_si256((const __m256i *)p); }
 static inline __m256i load256a(const void *p) { return _mm256_load_si256((const __m256i *)p); }
@@ -41,40 +42,64 @@ static inline unsigned truffle_members(__m256i x, __m256i low, __m256i high, __m
 
 #define TRUFFLE_BITS _mm256_broadcastsi128_si256(_mm_setr_epi8(1, 2, 4, 8, 16, 32, 64, (char)128, 0, 0, 0, 0, 0, 0, 0, 0))
 
-size_t strcspn_avx2(const char *str, const char *reject)
+/* The scan from `from` on (the bytes of s before it are settled): aligned
+   32-byte blocks, the first with the bytes before `from` shifted out. members:
+   stop at the first byte in the set (strcspn, the NUL counts as one), else at
+   the first byte not in it (strspn, the NUL is not). */
+static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, int members)
 {
-    const u8 *s = (const u8 *)str;
     u8 table[32] __attribute__((aligned(32)));
-    truffle_tables((const u8 *)reject, table, 1); /* the NUL ends the scan like a member */
+    truffle_tables(set, table, members);
     __m256i low = _mm256_broadcastsi128_si256(load16(table)), high = _mm256_broadcastsi128_si256(load16(table + 16)), bits = TRUFFLE_BITS;
-    const u8 *a = align_down(s, 32); /* aligned blocks never cross a page */
-    unsigned m = truffle_members(load256a(a), low, high, bits) >> ((uintptr_t)s & 31);
+    unsigned flip = members ? 0 : 0xffffffffu;
+    const u8 *a = align_down(from, 32); /* aligned blocks never cross a page */
+    unsigned m = (truffle_members(load256a(a), low, high, bits) ^ flip) >> (from - a);
     if (m)
-        return ctz(m);
+        return (size_t)(from - s) + ctz(m);
     for (;;) {
         a += 32;
-        m = truffle_members(load256a(a), low, high, bits);
+        m = truffle_members(load256a(a), low, high, bits) ^ flip;
         if (m)
             return (size_t)(a - s) + ctz(m);
     }
 }
 
+/* A set of up to 16 bytes: the first text block by pcmpistri, one load of the
+   set, which is all most calls need (the workload's sets are a few bytes and
+   its strings end in the block); the shuffle scan takes over beyond it, and
+   from the start for longer sets. */
+size_t strcspn_avx2(const char *str, const char *reject)
+{
+    const u8 *s = (const u8 *)str, *set = (const u8 *)reject;
+    if (!set[0])
+        return str_strlen(str);
+    __m128i set1;
+    const u8 *from = s;
+    if (load_set16(set, &set1)) {
+        size_t valid;
+        unsigned i = cspn_index(set1, load_head16(s, &valid));
+        if (i < valid)
+            return i;
+        from = after_head(s, valid);
+    }
+    return truffle_scan(from, s, set, 1);
+}
+
 size_t strspn_avx2(const char *str, const char *accept)
 {
-    const u8 *s = (const u8 *)str;
-    u8 table[32] __attribute__((aligned(32)));
-    truffle_tables((const u8 *)accept, table, 0); /* the NUL is not a member: it ends the scan */
-    __m256i low = _mm256_broadcastsi128_si256(load16(table)), high = _mm256_broadcastsi128_si256(load16(table + 16)), bits = TRUFFLE_BITS;
-    const u8 *a = align_down(s, 32);
-    unsigned m = ~truffle_members(load256a(a), low, high, bits) >> ((uintptr_t)s & 31);
-    if (m)
-        return ctz(m);
-    for (;;) {
-        a += 32;
-        m = ~truffle_members(load256a(a), low, high, bits);
-        if (m)
-            return (size_t)(a - s) + ctz(m);
+    const u8 *s = (const u8 *)str, *set = (const u8 *)accept;
+    if (!set[0])
+        return 0;
+    __m128i set1;
+    const u8 *from = s;
+    if (load_set16(set, &set1)) {
+        size_t valid;
+        unsigned i = (unsigned)_mm_cmpistri(set1, load_head16(s, &valid), SPN_MODE);
+        if (i < valid)
+            return i;
+        from = after_head(s, valid);
     }
+    return truffle_scan(from, s, set, 0);
 }
 
 /* ------------------------------------------------------------ NUL scans */
