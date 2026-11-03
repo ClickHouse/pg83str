@@ -434,9 +434,27 @@ char *strcpy_avx2(char *dst, const char *src)
     return strcpy_long(d, s);
 }
 
-char *strcat_avx2(char *dst, const char *src)
+/* Out of line, so that the common case below keeps no frame and no call. */
+static NOINLINE char *strcat_long(char *dst, const char *src)
 {
     str_strcpy(dst + str_strlen(dst), src);
-    return dst;
+    RETURN_OPAQUE(dst);
+}
+
+char *strcat_avx2(char *dst, const char *src)
+{
+    const u8 *d = (const u8 *)dst, *s = (const u8 *)src;
+    if (both_in_page(d, s, 32)) {
+        /* both strings end within their first 32 bytes: one load each, one short copy */
+        unsigned md = mask256(eq_zero(load256(d)));
+        if (md) {
+            unsigned ms = mask256(eq_zero(load256(s)));
+            if (ms) {
+                copy_small((u8 *)dst + ctz(md), s, ctz(ms) + 1);
+                return dst;
+            }
+        }
+    }
+    return strcat_long(dst, src);
 }
 
