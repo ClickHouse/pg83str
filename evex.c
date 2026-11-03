@@ -35,7 +35,7 @@ size_t strlen_evex(const char *str)
         unsigned m = _mm256_cmpeq_epi8_mask(load256(s), _mm256_setzero_si256());
         if (m)
             return ctz(m);
-        return str_table.strlen_tail(align_down(s + 32, 32), s); /* bytes before it were checked */
+        return str_strlen_tail(align_down(s + 32, 32), s); /* bytes before it were checked */
     }
     if (left >= 16) {
         unsigned m = _mm_cmpeq_epi8_mask(load16(s), _mm_setzero_si128());
@@ -48,10 +48,10 @@ size_t strlen_evex(const char *str)
                 return (size_t)(a - s) + ctz(m);
             a += 16;
         }
-        return str_table.strlen_tail(a, s);
+        return str_strlen_tail(a, s);
     }
     size_t n = strlen_prefix64(s, &next);
-    return n != SIZE_MAX ? n : str_table.strlen_tail(next, s);
+    return n != SIZE_MAX ? n : str_strlen_tail(next, s);
 }
 
 /* ------------------------------------------------------------------ copy */
@@ -71,7 +71,7 @@ static inline void *copy(void *dst, const void *src, size_t n, int masked)
     } else if (n <= 64) {
         copy_33_64(d, s, n);
     } else {
-        return str_table.copy_large(d, s, n);
+        return str_copy_large(d, s, n);
     }
     return dst;
 }
@@ -91,7 +91,7 @@ void *memset_evex(void *dst, int c, size_t n)
     else if (n <= 64)
         fill_33_64(d, splat16(c), n);
     else
-        return str_table.fill_large(d, c, n);
+        return str_fill_large(d, c, n);
     return dst;
 }
 
@@ -108,7 +108,7 @@ int memcmp_evex(const void *pa, const void *pb, size_t n)
     }
     if (n <= 64)
         return memcmp_33_64(a, b, n);
-    return str_table.memcmp_large(a, b, n);
+    return str_memcmp_large(a, b, n);
 }
 
 /* 16 bytes first: at a few bytes a 32-byte block costs more than it saves. */
@@ -127,7 +127,7 @@ int strcmp_evex(const char *left, const char *right)
         a += 16;
         b += 16;
     }
-    return str_table.strcmp_tail(a, b);
+    return str_strcmp_tail(a, b);
 }
 
 /* ---------------------------------------------------------- strcpy/strcat */
@@ -144,7 +144,7 @@ static NOINLINE void *strcpy_long(u8 *d, const u8 *s)
         copy_small(d, s, ctz(m) + 1);
         RETURN_OPAQUE(d);
     }
-    return str_table.strcpy_long(d, s);
+    return str_strcpy_long(d, s);
 }
 
 char *strcpy_evex(char *dst, const char *src)
@@ -174,7 +174,7 @@ char *strcpy_evex(char *dst, const char *src)
 /* Out of line, so that the common case below keeps no frame and no call. */
 static NOINLINE char *strcat_long(char *dst, const char *src)
 {
-    str_table.strcpy(dst + str_table.strlen(dst), src);
+    str_strcpy(dst + str_strlen(dst), src);
     RETURN_OPAQUE(dst); /* else the caller keeps dst in a callee-saved register instead of a tail call */
 }
 

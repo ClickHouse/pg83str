@@ -28,7 +28,7 @@ size_t strlen_sse2(const char *str)
 {
     const u8 *s = (const u8 *)str, *next = 0;
     size_t n = strlen_prefix64(s, &next);
-    return n != SIZE_MAX ? n : str_table.strlen_tail(next, s);
+    return n != SIZE_MAX ? n : str_strlen_tail(next, s);
 }
 
 /* First index i with s[i] == c or s[i] == 0, aligned 16-byte blocks. */
@@ -157,7 +157,7 @@ static inline void *copy(void *dst, const void *src, size_t n)
     else if (n <= 64)
         copy_33_64(d, s, n);
     else
-        return str_table.copy_large(d, s, n);
+        return str_copy_large(d, s, n);
     return dst;
 }
 
@@ -215,7 +215,7 @@ void *memset_sse2(void *dst, int c, size_t n)
     else if (n <= 64)
         fill_33_64(d, v, n);
     else
-        return str_table.fill_large(d, c, n);
+        return str_fill_large(d, c, n);
     return dst;
 }
 
@@ -244,7 +244,7 @@ int memcmp_sse2(const void *pa, const void *pb, size_t n)
         return memcmp_17_32(a, b, n);
     if (n <= 64)
         return memcmp_33_64(a, b, n);
-    return str_table.memcmp_large(a, b, n);
+    return str_memcmp_large(a, b, n);
 }
 
 /* 16-byte blocks while both pointers have room in their pages, otherwise
@@ -271,7 +271,7 @@ int strcmp_sse2(const char *left, const char *right)
     int result;
     if (strcmp_block16(&a, &b, &result))
         return result;
-    return str_table.strcmp_tail(a, b);
+    return str_strcmp_tail(a, b);
 }
 
 /* ---------------------------------------------------------- strcpy/strcat */
@@ -292,12 +292,12 @@ char *strcpy_sse2(char *dst, const char *src)
         copy_small(d, s, ctz(m) + 1);
         return dst;
     }
-    return str_table.strcpy_long(d, s);
+    return str_strcpy_long(d, s);
 }
 
 char *strcat_sse2(char *dst, const char *src)
 {
-    str_table.strcpy(dst + str_table.strlen(dst), src);
+    str_strcpy(dst + str_strlen(dst), src);
     return dst;
 }
 
@@ -372,7 +372,7 @@ size_t strcspn_sse2(const char *str, const char *reject)
 {
     const u8 *s = (const u8 *)str, *set = (const u8 *)reject;
     if (!set[0])
-        return str_table.strlen(str);
+        return str_strlen(str);
     if (!set[1])
         return find_byte_or_nul_sse2(s, set[0]);
     return strcspn_table_sse2(s, set);

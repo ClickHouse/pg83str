@@ -194,7 +194,7 @@ size_t strcspn_sse42(const char *str, const char *reject)
     const u8 *s = (const u8 *)str, *set = (const u8 *)reject;
     __m128i set1, set2;
     if (!set[0])
-        return str_table.strlen(str);
+        return str_strlen(str);
     if (!set[1])
         return find_byte_or_nul_sse2(s, set[0]);
     if (load_set16(set, &set1))

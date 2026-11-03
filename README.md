@@ -17,10 +17,10 @@ the kernels they hand the long cases to (`copy_large`, `fill_large`,
 `memcmp_large`, `strlen_tail`, `strcmp_tail`, `strcpy_long`). An
 implementation is a plain function named by what it does and how
 (`strlen_evex512`, `copy_large_avx2`, `strcpy_long_sse2`); it runs its own
-hot path and, when it needs another primitive, calls it through the table:
-`strcat` is `str_table.strlen` plus `str_table.strcpy`, a 64-byte `strlen`
-first block continues in `str_table.strlen_tail`, `memmove` without overlap
-is `str_table.memcpy`. So the slots compose in any mix, and `dispatch.c`
+hot path and, when it needs another primitive, calls the entry point that
+jumps through the table: `strcat` is `str_strlen` plus `str_strcpy`, a
+64-byte `strlen` first block continues in `str_strlen_tail`, `memmove`
+without overlap is `str_memcpy`. So the slots compose in any mix, and `dispatch.c`
 names a complete table per class of host: 256-bit AVX-512 first blocks over
 the AVX2 kernels on Skylake-SP, 512-bit ones on Zen 4 and later, SSE4.2
 `strspn`/`strcspn` everywhere above the baseline.

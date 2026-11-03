@@ -8,8 +8,9 @@
  * Zen 4 the 512-bit ones, an AVX2 machine the AVX2 set; strspn and strcspn
  * stay SSE4.2 everywhere above the baseline. ERMS goes to str_cpu_erms.
  *
- * The public names are str_memcpy and so on; a libc build renames them with
- * -Dstr_memcpy=memcpy ... on the command line.
+ * The entry points str_memcpy and so on jump through the table; they are the
+ * public functions (a libc build renames them with -Dstr_memcpy=memcpy ... on
+ * the command line) and the way implementations call each other.
  */
 #include "common.h"
 
@@ -137,3 +138,9 @@ char *str_strcat(char *d, const char *s) { return str_table.strcat(d, s); }
 int str_strcmp(const char *a, const char *b) { return str_table.strcmp(a, b); }
 size_t str_strspn(const char *s, const char *set) { return str_table.strspn(s, set); }
 size_t str_strcspn(const char *s, const char *set) { return str_table.strcspn(s, set); }
+void *str_copy_large(u8 *d, const u8 *s, size_t n) { return str_table.copy_large(d, s, n); }
+void *str_fill_large(u8 *d, int c, size_t n) { return str_table.fill_large(d, c, n); }
+int str_memcmp_large(const u8 *a, const u8 *b, size_t n) { return str_table.memcmp_large(a, b, n); }
+size_t str_strlen_tail(const u8 *a, const u8 *s) { return str_table.strlen_tail(a, s); }
+int str_strcmp_tail(const u8 *a, const u8 *b) { return str_table.strcmp_tail(a, b); }
+void *str_strcpy_long(u8 *d, const u8 *s) { return str_table.strcpy_long(d, s); }

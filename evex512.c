@@ -67,7 +67,7 @@ size_t strlen_evex512(const char *str)
     }
     if (m)
         return ctz64(m);
-    return str_table.strlen_tail(align_down(s, 64) + 64, s);
+    return str_strlen_tail(align_down(s, 64) + 64, s);
 }
 
 /* ------------------------------------------------------------------ copy */
@@ -94,7 +94,7 @@ static inline void *copy(u8 *d, const u8 *s, size_t n)
         store512(d + n - 64, y1);
         return d;
     }
-    return str_table.copy_large(d, s, n);
+    return str_copy_large(d, s, n);
 }
 
 void *memcpy_evex512(void *dst, const void *src, size_t n) { return copy((u8 *)dst, (const u8 *)src, n); }
@@ -151,7 +151,7 @@ void *memset_evex512(void *dst, int c, size_t n)
         store512(d + n - 64, v);
         return dst;
     }
-    return str_table.fill_large(d, c, n);
+    return str_fill_large(d, c, n);
 }
 
 /* --------------------------------------------------------------- compare */
@@ -172,6 +172,6 @@ int memcmp_evex512(const void *pa, const void *pb, size_t n)
         m = _mm512_cmpneq_epu8_mask(load512(a + n - 64), load512(b + n - 64));
         return m ? byte_diff(a, b, n - 64 + ctz64(m)) : 0;
     }
-    return str_table.memcmp_large(a, b, n);
+    return str_memcmp_large(a, b, n);
 }
 

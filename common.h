@@ -33,7 +33,8 @@ typedef unsigned char u8;
 
 /* The one table of primitives: the public functions and the kernels they hand
    the long cases to. Every implementation does its own hot path and reaches
-   any other primitive only through this table, so dispatch.c can fill the
+   any other primitive only through the str_* entry points below, which jump
+   through this table, so dispatch.c can fill the
    slots from cpuid with any mix: a 64-byte first block can continue in a
    64-byte tail on one machine and in a 32-byte one on another. */
 struct str_table {
@@ -72,6 +73,25 @@ extern const struct str_config str_configs[];
 extern const unsigned str_nconfigs;
 const struct str_config *str_choose(void);   /* the configuration for this host */
 void str_dispatch(void);                     /* str_table = str_choose()->table */
+
+/* The entry points: each jumps through its slot of the table. Implementations
+   call each other only through these. */
+void *str_memcpy(void *, const void *, size_t);
+void *str_memmove(void *, const void *, size_t);
+void *str_memset(void *, int, size_t);
+int str_memcmp(const void *, const void *, size_t);
+size_t str_strlen(const char *);
+char *str_strcpy(char *, const char *);
+char *str_strcat(char *, const char *);
+int str_strcmp(const char *, const char *);
+size_t str_strspn(const char *, const char *);
+size_t str_strcspn(const char *, const char *);
+void *str_copy_large(u8 *d, const u8 *s, size_t n);
+void *str_fill_large(u8 *d, int c, size_t n);
+int str_memcmp_large(const u8 *a, const u8 *b, size_t n);
+size_t str_strlen_tail(const u8 *a, const u8 *s);
+int str_strcmp_tail(const u8 *a, const u8 *b);
+void *str_strcpy_long(u8 *d, const u8 *s);
 
 /* sse2.c: every primitive, the baseline the table starts as */
 void *memcpy_sse2(void *, const void *, size_t);
