@@ -263,13 +263,15 @@ int memcmp_avx2(const void *pa, const void *pb, size_t n)
 {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
     unsigned m;
-    if (n <= 32) {
+    if (n - 1 < 32) { /* 1..32: with n == 0 the pointers may be unreadable (the end of a buffer) */
         if (__builtin_expect(both_in_page(a, b, 32), 1)) {
             m = _bzhi_u32(mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1, (unsigned)n);
             return m ? byte_diff(a, b, ctz(m)) : 0;
         }
         return n <= 16 ? memcmp_le16(a, b, n) : memcmp_17_32(a, b, n);
     }
+    if (n == 0)
+        return 0;
     if (n <= 64) {
         m = mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1;
         if (m)
