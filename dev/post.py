@@ -147,13 +147,14 @@ def main():
     p.add_argument('--roundtrip', action='store_true', help='no passes: decode, lay out, write')
     p.add_argument('--check', action='store_true', help='compare the result with the original')
     p.add_argument('--passes', help='comma-separated pass list (default: all), see opt.py')
-    p.add_argument('--func-align', help='align every function to 2^N bytes (A/B runs)')
+    p.add_argument('--func-align', default='6', help='align every function to 2^N bytes (default 6: entries on 64-byte lines, where a 16-byte entry at the end of a 32-byte window costs up to a third on Skylake)')
     p.add_argument('inputs', nargs='+')
     args = p.parse_args()
     if args.passes:
         os.environ['POST_PASSES'] = args.passes
     if args.roundtrip:
         os.environ['POST_JCC_ALIGN'] = '0'   # reproduce the object, do not improve its layout
+        args.func_align = None
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     lines = []
