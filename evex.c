@@ -115,17 +115,18 @@ int memcmp_evex(const void *pa, const void *pb, size_t n)
 int strcmp_evex(const char *left, const char *right)
 {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
-    if (both_in_page(a, b, 32)) {
+    if (__builtin_expect(both_in_page(a, b, 32), 1)) {
         /* k: the lanes that are equal and not NUL. k + 1 clears them up to the first
            other lane, whose index is then the trailing zero count; all 32 equal and
-           nonzero wraps to 0. One dependent chain of two compares, no kor. */
+           nonzero wraps to 0. One dependent chain of two compares, no kor. Strings
+           differ or end within the block 9 times in 10: that path falls through. */
         __m256i x = load256(a);
         unsigned k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b)) + 1;
-        if (k)
+        if (__builtin_expect(k != 0, 1))
             return byte_diff(a, b, ctz(k));
-        a += 32;
-        b += 32;
-    } else if (both_in_page(a, b, 16)) {
+        return str_strcmp_tail(a + 32, b + 32);
+    }
+    if (both_in_page(a, b, 16)) {
         __m128i x = load16(a);
         unsigned k = _mm_mask_cmpeq_epi8_mask(_mm_test_epi8_mask(x, x), x, load16(b)) + 1;
         if (k != 0x10000)

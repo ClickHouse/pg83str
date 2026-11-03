@@ -179,8 +179,6 @@ size_t strspn_sse42(const char *str, const char *accept)
     __m128i set1, set2;
     if (!set[0])
         return 0;
-    if (!set[1])
-        return skip_byte_sse2(s, set[0]);
     if (load_set16(set, &set1))
         return strspn_pcmpistri(s, set1);
     set1 = load16(set); /* 16 non-NUL bytes: page-safe, see load_set16 */
@@ -195,8 +193,6 @@ size_t strcspn_sse42(const char *str, const char *reject)
     __m128i set1, set2;
     if (!set[0])
         return str_strlen(str);
-    if (!set[1])
-        return find_byte_or_nul_sse2(s, set[0]);
     if (load_set16(set, &set1))
         return strcspn_pcmpistri(s, set1);
     set1 = load16(set);
