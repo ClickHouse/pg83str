@@ -138,11 +138,28 @@ void *copy_large_sse2(u8 *d, const u8 *s, size_t n)
     }
     if (overlap_backward(d, s, n))
         return copy_backward(d, s, n);
-    if (n >= REP_THRESHOLD && str_cpu_erms) {
-        rep_movsb(d, s, n);
-        RETURN_OPAQUE(d);
-    }
+    if (n >= REP_THRESHOLD)
+        return str_copy_huge(d, s, n);
     return copy_forward(d, s, n);
+}
+
+/* ---------------------------------------------------- huge copy and fill */
+
+/* n >= REP_THRESHOLD, no backward overlap: the vector loops of this unit,
+   and the string instructions, which dispatch.c puts in the slots of the
+   hosts whose rep movsb/stosb are fast (ERMS). */
+void *copy_huge_sse2(u8 *d, const u8 *s, size_t n) { return copy_forward(d, s, n); }
+
+void *copy_huge_rep(u8 *d, const u8 *s, size_t n)
+{
+    rep_movsb(d, s, n);
+    RETURN_OPAQUE(d);
+}
+
+void *fill_huge_rep(u8 *d, int c, size_t n)
+{
+    rep_stosb(d, c, n);
+    RETURN_OPAQUE(d);
 }
 
 /* memcpy and memmove share one body: every short path is overlap-safe, and
@@ -165,25 +182,9 @@ void *memmove_sse2(void *dst, const void *src, size_t n) { return copy(dst, src,
 
 /* ------------------------------------------------------------------ fill */
 
-/* n > 64. */
-void *fill_large_sse2(u8 *d, int c, size_t n)
+/* The aligned loop for anything above 128 bytes. */
+static inline void *fill_loop(u8 *d, __m128i v, size_t n)
 {
-    __m128i v = splat16(c);
-    if (n <= 128) {
-        store16(d, v);
-        store16(d + 16, v);
-        store16(d + 32, v);
-        store16(d + 48, v);
-        store16(d + n - 64, v);
-        store16(d + n - 48, v);
-        store16(d + n - 32, v);
-        store16(d + n - 16, v);
-        RETURN_OPAQUE(d);
-    }
-    if (n >= REP_THRESHOLD && str_cpu_erms) {
-        rep_stosb(d, c, n);
-        RETURN_OPAQUE(d);
-    }
     store16(d, v);
     size_t skew = 16 - ((uintptr_t)d & 15);
     u8 *dp = d + skew;
@@ -204,6 +205,28 @@ void *fill_large_sse2(u8 *d, int c, size_t n)
     store16(d + n - 16, v);
     RETURN_OPAQUE(d);
 }
+
+/* n > 64. */
+void *fill_large_sse2(u8 *d, int c, size_t n)
+{
+    __m128i v = splat16(c);
+    if (n <= 128) {
+        store16(d, v);
+        store16(d + 16, v);
+        store16(d + 32, v);
+        store16(d + 48, v);
+        store16(d + n - 64, v);
+        store16(d + n - 48, v);
+        store16(d + n - 32, v);
+        store16(d + n - 16, v);
+        RETURN_OPAQUE(d);
+    }
+    if (n >= REP_THRESHOLD)
+        return str_fill_huge(d, c, n);
+    return fill_loop(d, v, n);
+}
+
+void *fill_huge_sse2(u8 *d, int c, size_t n) { return fill_loop(d, splat16(c), n); }
 
 void *memset_sse2(void *dst, int c, size_t n)
 {

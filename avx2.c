@@ -70,6 +70,32 @@ size_t strlen_avx2(const char *str)
 
 /* n > 64. Head and tail vectors are loaded first and stored last, so an
    aligned loop may clobber source bytes only after they were consumed. */
+/* The forward loop, aligned 128-byte steps, for anything above 256 bytes without
+   backward overlap; the first and the last 32 bytes are the caller's. */
+static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n)
+{
+    size_t skew = 32 - ((uintptr_t)d & 31);
+    u8 *dp = d + skew;
+    const u8 *sp = s + skew;
+    size_t left = n - skew;
+    while (left >= 128) {
+        __m256i x0 = load256(sp), x1 = load256(sp + 32), x2 = load256(sp + 64), x3 = load256(sp + 96);
+        store256a(dp, x0);
+        store256a(dp + 32, x1);
+        store256a(dp + 64, x2);
+        store256a(dp + 96, x3);
+        dp += 128;
+        sp += 128;
+        left -= 128;
+    }
+    while (left >= 32) {
+        store256a(dp, load256(sp));
+        dp += 32;
+        sp += 32;
+        left -= 32;
+    }
+}
+
 void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
 {
     if (n <= 128) {
@@ -109,31 +135,20 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
             off -= 32;
             store256a(d + off, load256(s + off));
         }
-    } else if (n >= REP_THRESHOLD && str_cpu_erms) {
-        rep_movsb(d, s, n);
-        RETURN_OPAQUE(d);
+    } else if (n >= REP_THRESHOLD) {
+        return str_copy_huge(d, s, n);
     } else {
-        size_t skew = 32 - ((uintptr_t)d & 31);
-        u8 *dp = d + skew;
-        const u8 *sp = s + skew;
-        size_t left = n - skew;
-        while (left >= 128) {
-            __m256i x0 = load256(sp), x1 = load256(sp + 32), x2 = load256(sp + 64), x3 = load256(sp + 96);
-            store256a(dp, x0);
-            store256a(dp + 32, x1);
-            store256a(dp + 64, x2);
-            store256a(dp + 96, x3);
-            dp += 128;
-            sp += 128;
-            left -= 128;
-        }
-        while (left >= 32) {
-            store256a(dp, load256(sp));
-            dp += 32;
-            sp += 32;
-            left -= 32;
-        }
+        copy_forward_loop(d, s, n);
     }
+    store256(d, head);
+    store256(d + n - 32, tail);
+    RETURN_OPAQUE(d);
+}
+
+void *copy_huge_avx2(u8 *d, const u8 *s, size_t n)
+{
+    __m256i head = load256(s), tail = load256(s + n - 32);
+    copy_forward_loop(d, s, n);
     store256(d, head);
     store256(d + n - 32, tail);
     RETURN_OPAQUE(d);
@@ -161,32 +176,8 @@ void *memmove_avx2(void *dst, const void *src, size_t n) { return copy(dst, src,
 
 /* ------------------------------------------------------------------ fill */
 
-/* n > 64. */
-void *fill_large_avx2(u8 *d, int c, size_t n)
+static inline void *fill_loop(u8 *d, __m256i v, size_t n)
 {
-    __m256i v = _mm256_set1_epi8((char)c);
-    if (n <= 128) {
-        store256(d, v);
-        store256(d + 32, v);
-        store256(d + n - 64, v);
-        store256(d + n - 32, v);
-        RETURN_OPAQUE(d);
-    }
-    if (n <= 256) {
-        store256(d, v);
-        store256(d + 32, v);
-        store256(d + 64, v);
-        store256(d + 96, v);
-        store256(d + n - 128, v);
-        store256(d + n - 96, v);
-        store256(d + n - 64, v);
-        store256(d + n - 32, v);
-        RETURN_OPAQUE(d);
-    }
-    if (n >= REP_THRESHOLD && str_cpu_erms) {
-        rep_stosb(d, c, n);
-        RETURN_OPAQUE(d);
-    }
     /* four unaligned stores at each end, aligned 128-byte steps between; the loop
        is not unrolled (the compiler would, with a long prologue for a count that
        is usually small) */
@@ -210,6 +201,35 @@ void *fill_large_avx2(u8 *d, int c, size_t n)
     store256(end + 96, v);
     RETURN_OPAQUE(d);
 }
+
+/* n > 64. */
+void *fill_large_avx2(u8 *d, int c, size_t n)
+{
+    __m256i v = _mm256_set1_epi8((char)c);
+    if (n <= 128) {
+        store256(d, v);
+        store256(d + 32, v);
+        store256(d + n - 64, v);
+        store256(d + n - 32, v);
+        RETURN_OPAQUE(d);
+    }
+    if (n <= 256) {
+        store256(d, v);
+        store256(d + 32, v);
+        store256(d + 64, v);
+        store256(d + 96, v);
+        store256(d + n - 128, v);
+        store256(d + n - 96, v);
+        store256(d + n - 64, v);
+        store256(d + n - 32, v);
+        RETURN_OPAQUE(d);
+    }
+    if (n >= REP_THRESHOLD)
+        return str_fill_huge(d, c, n);
+    return fill_loop(d, v, n);
+}
+
+void *fill_huge_avx2(u8 *d, int c, size_t n) { return fill_loop(d, _mm256_set1_epi8((char)c), n); }
 
 void *memset_avx2(void *dst, int c, size_t n)
 {

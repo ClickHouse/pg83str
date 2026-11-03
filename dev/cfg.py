@@ -22,11 +22,11 @@ from objfile import Ins, Reloc
 from opt import refresh
 
 # struct str_config { const char *name; unsigned needs; struct str_table table; }
-CONFIG_SIZE = 144
-TABLE_OFFSET = 16
-SLOT = 8
 SLOTS = ['memcpy', 'memmove', 'memset', 'memcmp', 'strlen', 'strcpy', 'strcat', 'strcmp', 'strspn', 'strcspn',
-         'copy_large', 'fill_large', 'memcmp_large', 'strlen_tail', 'strcmp_tail', 'strcpy_long']
+         'copy_large', 'fill_large', 'memcmp_large', 'strlen_tail', 'strcmp_tail', 'strcpy_long', 'copy_huge', 'fill_huge']
+SLOT = 8
+TABLE_OFFSET = 16
+CONFIG_SIZE = TABLE_OFFSET + SLOT * len(SLOTS)
 JCC = '_jcc'   # a slot naming the twin laid out with the JCC padding: this configuration's copies get it
 
 

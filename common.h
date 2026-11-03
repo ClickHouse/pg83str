@@ -23,8 +23,9 @@
 #define PAGE_SIZE 4096
 #define PAGE_MASK (PAGE_SIZE - 1)
 
-/* Copies and fills of at least REP_THRESHOLD bytes use rep movsb/stosb when
-   the CPU reports ERMS; below it vector loops win on every host measured. */
+/* Copies and fills of at least REP_THRESHOLD bytes go to the copy_huge and
+   fill_huge slots: rep movsb/stosb where dispatch.c found them fast (ERMS),
+   the vector loops elsewhere; below it vector loops win on every host measured. */
 #define REP_THRESHOLD 4096
 
 typedef unsigned char u8;
@@ -60,12 +61,14 @@ struct str_table {
     size_t (*strlen_tail)(const u8 *a, const u8 *s);           /* a 16-aligned, s <= a, no NUL in [s, a) */
     int (*strcmp_tail)(const u8 *a, const u8 *b);              /* any pointers */
     void *(*strcpy_long)(u8 *d, const u8 *s);                  /* no NUL before the 16-byte boundary after s */
+    void *(*copy_huge)(u8 *d, const u8 *s, size_t n);          /* n >= REP_THRESHOLD, no backward overlap */
+    void *(*fill_huge)(u8 *d, int c, size_t n);                /* n >= REP_THRESHOLD */
 };
 extern struct str_table str_table;
 
 /* What the host runs well, as bits of str_host(); dispatch.c picks a
    configuration from them. STR_ZMM: 512-bit registers cost nothing extra. */
-enum { STR_SSE42 = 1, STR_AVX2 = 2, STR_AVX512 = 4, STR_ZMM = 8 };
+enum { STR_SSE42 = 1, STR_AVX2 = 2, STR_AVX512 = 4, STR_ZMM = 8, STR_ERMS = 16 };
 unsigned str_host(void);
 /* The configurations dispatch.c chooses from, by name; the test runs every
    one whose needs the host meets. */
@@ -97,6 +100,8 @@ int str_memcmp_large(const u8 *a, const u8 *b, size_t n);
 size_t str_strlen_tail(const u8 *a, const u8 *s);
 int str_strcmp_tail(const u8 *a, const u8 *b);
 void *str_strcpy_long(u8 *d, const u8 *s);
+void *str_copy_huge(u8 *d, const u8 *s, size_t n);
+void *str_fill_huge(u8 *d, int c, size_t n);
 
 /* sse2.c: every primitive, the baseline the table starts as */
 void *memcpy_sse2(void *, const void *, size_t);
@@ -115,6 +120,10 @@ int memcmp_large_sse2(const u8 *a, const u8 *b, size_t n);
 size_t strlen_tail_sse2(const u8 *a, const u8 *s);
 int strcmp_tail_sse2(const u8 *a, const u8 *b);
 void *strcpy_long_sse2(u8 *d, const u8 *s);
+void *copy_huge_sse2(u8 *d, const u8 *s, size_t n);
+void *fill_huge_sse2(u8 *d, int c, size_t n);
+void *copy_huge_rep(u8 *d, const u8 *s, size_t n);   /* rep movsb: the ERMS hosts */
+void *fill_huge_rep(u8 *d, int c, size_t n);         /* rep stosb */
 size_t strspn_table_sse2(const u8 *s, const u8 *set);
 size_t strcspn_table_sse2(const u8 *s, const u8 *set);
 size_t find_byte_or_nul_sse2(const u8 *s, u8 c);
@@ -137,6 +146,8 @@ int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n);
 size_t strlen_tail_avx2(const u8 *a, const u8 *s);
 int strcmp_tail_avx2(const u8 *a, const u8 *b);
 void *strcpy_long_avx2(u8 *d, const u8 *s);
+void *copy_huge_avx2(u8 *d, const u8 *s, size_t n);
+void *fill_huge_avx2(u8 *d, int c, size_t n);
 /* evex.c: AVX-512 with 256-bit registers */
 void *memcpy_evex(void *, const void *, size_t);
 void *memmove_evex(void *, const void *, size_t);
@@ -154,8 +165,8 @@ int memcmp_evex512(const void *, const void *, size_t);
 size_t strlen_evex512(const char *);
 void *fill_large_evex512(u8 *d, int c, size_t n);
 size_t strlen_tail_evex512(const u8 *a, const u8 *s);
+void *fill_huge_evex512(u8 *d, int c, size_t n);
 
-extern unsigned char str_cpu_erms;
 
 /* The same functions laid out by the post pass with the JCC-erratum padding
    (jcc-*.o, see dev/post.py), for Skylake-SP. */
@@ -175,6 +186,8 @@ int memcmp_large_avx2_jcc(const u8 *a, const u8 *b, size_t n);
 size_t strlen_tail_avx2_jcc(const u8 *a, const u8 *s);
 int strcmp_tail_avx2_jcc(const u8 *a, const u8 *b);
 void *strcpy_long_avx2_jcc(u8 *d, const u8 *s);
+void *copy_huge_rep_jcc(u8 *d, const u8 *s, size_t n);
+void *fill_huge_rep_jcc(u8 *d, int c, size_t n);
 
 /* -------------------------------------------------------------- basics */
 

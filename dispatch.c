@@ -6,18 +6,15 @@
  * freely, since implementations reach each other only through the table. A
  * Skylake-SP gets the 256-bit AVX-512 first blocks over the AVX2 kernels, a
  * Zen 4 the 512-bit ones, an AVX2 machine the AVX2 set; strspn and strcspn
- * stay SSE4.2 everywhere above the baseline. ERMS goes to str_cpu_erms.
+ * stay SSE4.2 everywhere above the baseline; copies and fills of 4096 bytes
+ * and more go to the copy_huge and fill_huge slots, rep movsb/stosb on the
+ * hosts with ERMS.
  *
  * The entry points str_memcpy and so on jump through the table; they are the
  * public functions (a libc build renames them with -Dstr_memcpy=memcpy ... on
  * the command line) and the way implementations call each other.
  */
 #include "common.h"
-
-/* The one piece of data the implementations read: whether rep movsb/stosb
-   are fast here. Lives here, not in a unit, so that a unit is code only and
-   the post pass can lay it out twice. */
-unsigned char str_cpu_erms;
 
 /* clang-format off */
 struct str_table str_table = {
@@ -26,6 +23,7 @@ struct str_table str_table = {
     .strspn = strspn_sse2, .strcspn = strcspn_sse2,
     .copy_large = copy_large_sse2, .fill_large = fill_large_sse2, .memcmp_large = memcmp_large_sse2,
     .strlen_tail = strlen_tail_sse2, .strcmp_tail = strcmp_tail_sse2, .strcpy_long = strcpy_long_sse2,
+    .copy_huge = copy_huge_sse2, .fill_huge = fill_huge_sse2,
 };
 
 const struct str_config str_configs[] = {
@@ -35,6 +33,7 @@ const struct str_config str_configs[] = {
         .strspn = strspn_sse2, .strcspn = strcspn_sse2,
         .copy_large = copy_large_sse2, .fill_large = fill_large_sse2, .memcmp_large = memcmp_large_sse2,
         .strlen_tail = strlen_tail_sse2, .strcmp_tail = strcmp_tail_sse2, .strcpy_long = strcpy_long_sse2,
+        .copy_huge = copy_huge_sse2, .fill_huge = fill_huge_sse2,
     }},
     {"sse42", STR_SSE42, {
         .memcpy = memcpy_sse2, .memmove = memmove_sse2, .memset = memset_sse2, .memcmp = memcmp_sse2,
@@ -42,35 +41,39 @@ const struct str_config str_configs[] = {
         .strspn = strspn_sse42, .strcspn = strcspn_sse42,
         .copy_large = copy_large_sse2, .fill_large = fill_large_sse2, .memcmp_large = memcmp_large_sse2,
         .strlen_tail = strlen_tail_sse2, .strcmp_tail = strcmp_tail_sse2, .strcpy_long = strcpy_long_sse2,
+        .copy_huge = copy_huge_sse2, .fill_huge = fill_huge_sse2,
     }},
-    {"avx2", STR_SSE42 | STR_AVX2, {
+    {"avx2", STR_SSE42 | STR_AVX2 | STR_ERMS, {
         .memcpy = memcpy_avx2, .memmove = memmove_avx2, .memset = memset_avx2, .memcmp = memcmp_avx2,
         .strlen = strlen_avx2, .strcpy = strcpy_avx2, .strcat = strcat_avx2, .strcmp = strcmp_avx2,
         .strspn = strspn_sse42, .strcspn = strcspn_sse42,
         .copy_large = copy_large_avx2, .fill_large = fill_large_avx2, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_avx2, .strcmp_tail = strcmp_tail_avx2, .strcpy_long = strcpy_long_avx2,
+        .copy_huge = copy_huge_rep, .fill_huge = fill_huge_rep,
     }},
     /* AVX-512 at 256 bits: Skylake-SP and its Cascade/Cooper Lake siblings, where
        512-bit instructions lower the clock (glibc keeps to 256 bits there too).
        The same CPUs have the JCC erratum, so the code is the copy the post pass
        laid out with branches kept off 32-byte boundaries (*_jcc). */
-    {"evex", STR_SSE42 | STR_AVX2 | STR_AVX512, {
+    {"evex", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ERMS, {
         .memcpy = memcpy_evex_jcc, .memmove = memmove_evex_jcc, .memset = memset_evex_jcc, .memcmp = memcmp_evex_jcc,
         .strlen = strlen_evex_jcc, .strcpy = strcpy_evex_jcc, .strcat = strcat_evex_jcc, .strcmp = strcmp_evex_jcc,
         .strspn = strspn_sse42_jcc, .strcspn = strcspn_sse42_jcc,
         .copy_large = copy_large_avx2_jcc, .fill_large = fill_large_avx2_jcc, .memcmp_large = memcmp_large_avx2_jcc,
         .strlen_tail = strlen_tail_avx2_jcc, .strcmp_tail = strcmp_tail_avx2_jcc, .strcpy_long = strcpy_long_avx2_jcc,
+        .copy_huge = copy_huge_rep_jcc, .fill_huge = fill_huge_rep_jcc,
     }},
     /* AVX-512 at 512 bits: Zen 4 and 5, Ice Lake and later. The memory functions
        and strlen take one 64-byte block first; strcpy, strcat and strcmp keep
        the 16-byte first blocks (measured best), the copy and compare kernels
        stay 32-byte. */
-    {"evex512", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM, {
+    {"evex512", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, {
         .memcpy = memcpy_evex512, .memmove = memmove_evex512, .memset = memset_evex512, .memcmp = memcmp_evex512,
         .strlen = strlen_evex512, .strcpy = strcpy_evex, .strcat = strcat_evex, .strcmp = strcmp_evex,
         .strspn = strspn_sse42, .strcspn = strcspn_sse42,
         .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_evex512, .strcmp_tail = strcmp_tail_avx2, .strcpy_long = strcpy_long_avx2,
+        .copy_huge = copy_huge_rep, .fill_huge = fill_huge_rep,
     }},
 };
 const unsigned str_nconfigs = sizeof str_configs / sizeof str_configs[0];
@@ -97,11 +100,11 @@ unsigned str_host(void)
     unsigned ebx7 = r[1];
     cpuid(0x80000001u, 0, r);
     unsigned ecx81 = r[2];
-    str_cpu_erms = (unsigned char)bit(ebx7, 9);
+    unsigned have = bit(ebx7, 9) ? STR_ERMS : 0;   /* fast rep movsb/stosb */
     /* x86-64-v2: SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B, LAHF/SAHF */
     if (!(bit(ecx1, 0) && bit(ecx1, 9) && bit(ecx1, 19) && bit(ecx1, 20) && bit(ecx1, 23) && bit(ecx1, 13) && bit(ecx81, 0)))
-        return 0;
-    unsigned have = STR_SSE42;
+        return have;
+    have |= STR_SSE42;
     /* x86-64-v3: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE, OSXSAVE with YMM state */
     if (!(bit(ecx1, 27) && bit(ecx1, 28) && bit(ecx1, 29) && bit(ecx1, 12) && bit(ecx1, 22)
           && bit(ebx7, 5) && bit(ebx7, 3) && bit(ebx7, 8) && bit(ecx81, 5)))
@@ -151,3 +154,5 @@ int str_memcmp_large(const u8 *a, const u8 *b, size_t n) { return str_table.memc
 size_t str_strlen_tail(const u8 *a, const u8 *s) { return str_table.strlen_tail(a, s); }
 int str_strcmp_tail(const u8 *a, const u8 *b) { return str_table.strcmp_tail(a, b); }
 void *str_strcpy_long(u8 *d, const u8 *s) { return str_table.strcpy_long(d, s); }
+void *str_copy_huge(u8 *d, const u8 *s, size_t n) { return str_table.copy_huge(d, s, n); }
+void *str_fill_huge(u8 *d, int c, size_t n) { return str_table.fill_huge(d, c, n); }

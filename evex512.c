@@ -106,12 +106,8 @@ void *memmove_evex512(void *dst, const void *src, size_t n) { return copy((u8 *)
    live across a call), the splat is remade. Four unaligned stores at each end,
    aligned 256-byte steps between; the loop is not unrolled (the compiler
    would, with a long prologue for a count that is usually 1-16). */
-void *fill_large_evex512(u8 *d, int c, size_t n)
+static inline void *fill_loop(u8 *d, int c, size_t n)
 {
-    if (n >= REP_THRESHOLD && str_cpu_erms) {
-        rep_stosb(d, c, n);
-        RETURN_OPAQUE(d);
-    }
     __m512i v = _mm512_set1_epi8((char)c);
     store512(d, v);
     store512(d + 64, v);
@@ -133,6 +129,15 @@ void *fill_large_evex512(u8 *d, int c, size_t n)
     store512(end + 192, v);
     RETURN_OPAQUE(d);
 }
+
+void *fill_large_evex512(u8 *d, int c, size_t n)
+{
+    if (n >= REP_THRESHOLD)
+        return str_fill_huge(d, c, n);
+    return fill_loop(d, c, n);
+}
+
+void *fill_huge_evex512(u8 *d, int c, size_t n) { return fill_loop(d, c, n); }
 
 void *memset_evex512(void *dst, int c, size_t n)
 {
