@@ -115,15 +115,21 @@ int memcmp_evex(const void *pa, const void *pb, size_t n)
 int strcmp_evex(const char *left, const char *right)
 {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
-    /* (A masked equal-and-nonzero compare with "inc, test" instead of the kor was
-       tried: 5% faster at 5 bytes on Skylake-SP, 14% slower at 25 bytes on Zen 5.) */
-    /* One 16-byte block: a 32-byte one was 17-26% slower at 5 bytes (two 256-bit
-       mask compares), a second 16-byte block here slower at 25 than the tail's 32. */
-    if (both_in_page(a, b, 16)) {
+    if (both_in_page(a, b, 32)) {
+        /* k: the lanes that are equal and not NUL. k + 1 clears them up to the first
+           other lane, whose index is then the trailing zero count; all 32 equal and
+           nonzero wraps to 0. One dependent chain of two compares, no kor. */
+        __m256i x = load256(a);
+        unsigned k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b)) + 1;
+        if (k)
+            return byte_diff(a, b, ctz(k));
+        a += 32;
+        b += 32;
+    } else if (both_in_page(a, b, 16)) {
         __m128i x = load16(a);
-        unsigned m = _mm_cmpneq_epu8_mask(x, load16(b)) | _mm_cmpeq_epi8_mask(x, _mm_setzero_si128());
-        if (m)
-            return byte_diff(a, b, ctz(m));
+        unsigned k = _mm_mask_cmpeq_epi8_mask(_mm_test_epi8_mask(x, x), x, load16(b)) + 1;
+        if (k != 0x10000)
+            return byte_diff(a, b, ctz(k));
         a += 16;
         b += 16;
     }
