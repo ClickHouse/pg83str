@@ -91,7 +91,8 @@ def padding_runs(obj, section, instructions):
     return padding
 
 
-def layout(obj, section, instructions, func_align=None):
+def layout(obj, section, instructions, func_align=None, jcc_align=None):
+    """jcc_align: pad branches off 32-byte boundaries (the Skylake JCC erratum); None: POST_JCC_ALIGN (default on)."""
     sec = obj.sections[section]
     old_end = len(sec.data)
     padding = padding_runs(obj, section, instructions)
@@ -120,7 +121,8 @@ def layout(obj, section, instructions, func_align=None):
             run = []
         else:
             run = []
-    jcc_align = os.environ.get('POST_JCC_ALIGN', '1') == '1'
+    if jcc_align is None:
+        jcc_align = os.environ.get('POST_JCC_ALIGN', '1') == '1'
     offsets = {}
     encoded = {}
     while True:

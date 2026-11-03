@@ -9,8 +9,10 @@ import elf
 DROP = {'.eh_frame', '.llvm_addrsig', '.symtab', '.strtab', '.shstrtab'}
 
 
-def write_object(src_path, dst_path, layouts, remap):
-    """layouts: {code section name: Layout}; remap(section, old offset) -> new offset."""
+def write_object(src_path, dst_path, layouts, remap, rename=None):
+    """layouts: {code section name: Layout}; remap(section, old offset) -> new offset;
+    rename: {symbol name: new name} for the symbols defined here and the relocations against them."""
+    rename = rename or {}
     e = elf.read(src_path)
     old_index = {s.name: s.index for s in e.sections}
     kept = []   # old sections that stay, in order
@@ -49,7 +51,7 @@ def write_object(src_path, dst_path, layouts, remap):
             shndx = sym.shndx
             value, size = sym.value, sym.size
         sym_index[n] = len(symbols)
-        symbols.append((sym.name, value, size, sym.type, sym.bind, shndx))
+        symbols.append((rename.get(sym.name, sym.name), value, size, sym.type, sym.bind, shndx))
     # a pass may relocate against a symbol the object did not reference (the table behind a trampoline)
     needed = {symname for lay in layouts.values() for _, _, symname, is_section, _ in lay.relocs if not is_section}
     for name in sorted(needed - {name for name, *_ in symbols}):
@@ -74,7 +76,7 @@ def write_object(src_path, dst_path, layouts, remap):
         entries = []
         if s.name in layouts:
             for off, type_, symname, is_section, addend in layouts[s.name].relocs:
-                entries.append((off, type_, symname, is_section, addend))
+                entries.append((off, type_, symname if is_section else rename.get(symname, symname), is_section, addend))
         else:
             for r in e.relocs.get(s.index, []):
                 sym = e.symbols[r.symbol]
@@ -83,7 +85,7 @@ def write_object(src_path, dst_path, layouts, remap):
                 addend = r.addend
                 if is_section and symname in layouts:
                     addend = remap(symname, addend)
-                entries.append((r.offset, r.type, symname, is_section, addend))
+                entries.append((r.offset, r.type, symname if is_section else rename.get(symname, symname), is_section, addend))
         if entries:
             rela[s.name] = entries
     by_name = {}

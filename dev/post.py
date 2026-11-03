@@ -6,10 +6,13 @@ encode, write the objects and the archive.
             [--passes a,b,c] [--func-align N] OBJECT.o|ARCHIVE.a ...
 
 Each object is decoded with x86.py, rewritten by opt.py (nothing with
---roundtrip), laid out again by layout.py and written by elfout.py. --check
-compares the result with the original: with --roundtrip the code bytes,
-relocations and symbols must be identical; otherwise it reports the
-instruction counts."""
+--roundtrip), laid out again by layout.py and written by elfout.py: once as
+it is and once more, for every unit but dispatch, with the branches padded
+off 32-byte boundaries (the Skylake JCC erratum) and its global functions
+renamed name_jcc, as jcc-<object>; dispatch.c picks those on the hosts with
+the erratum, since the padding costs about 5% elsewhere. --check compares
+the result with the original: with --roundtrip the code bytes, relocations
+and symbols must be identical; otherwise it reports the code sizes."""
 import argparse
 import os
 import sys
@@ -26,6 +29,10 @@ from units import UNITS, unit_of  # noqa: E402
 
 
 def process(path, out, args, obj, code, trampolines):
+    """The object rewritten, laid out without the JCC padding; and, for every unit
+    but dispatch, a twin laid out with it, its global functions renamed name_jcc,
+    for the hosts with the erratum (dispatch.c picks it there). Returns
+    [(new path, report lines)]."""
     unit = unit_of(path)
     march = UNITS[unit]
     report = []
@@ -33,11 +40,19 @@ def process(path, out, args, obj, code, trampolines):
         for name in code:
             code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name, trampolines=trampolines)
             report += lines
-    layouts = {name: layout.layout(obj, name, ins, args.func_align) for name, ins in code.items()}
-    remap = layout.resolve_relocs(obj, layouts)
-    new = out / Path(path).name
-    elfout.write_object(path, new, layouts, remap)
-    return new, report
+    out_objects = []
+    variants = [('', False, None)]
+    if not args.roundtrip and unit != 'dispatch':
+        exported = {s.name for s in obj.symbols if s.type == 'STT_FUNC' and s.bind == 'STB_GLOBAL' and s.section != 'UND'}
+        variants.append(('jcc-', True, {name: name + '_jcc' for name in exported}))
+    for prefix, jcc, rename in variants:
+        jcc = jcc if not args.roundtrip else None
+        layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=jcc) for name, ins in code.items()}
+        remap = layout.resolve_relocs(obj, layouts)
+        new = out / (prefix + Path(path).name)
+        elfout.write_object(path, new, layouts, remap, rename)
+        out_objects.append((new, report if not prefix else ['%s: with the JCC padding, %d functions as *_jcc' % (new.name, len(rename))]))
+    return out_objects
 
 
 def describe(path):
@@ -148,18 +163,18 @@ def main():
     for path, obj, code in decoded:
         trampolines.update(opt.trampolines_of(obj, code))
     for path, obj, code in decoded:
-        new, report = process(path, out, args, obj, code, trampolines)
-        objects.append(new)
         unit = unit_of(path)
-        lines += ['%s: %s' % (unit, line) for line in report]
-        if args.check:
-            diff = compare(describe(path), describe(new))
-            if args.roundtrip:
-                lines.append('%s: %s' % (unit, 'identical' if diff is None else diff))
-                failed |= diff is not None
-            else:
-                a, b = describe(path)[0], describe(new)[0]
-                lines.append('%s: %d -> %d bytes of code' % (unit, sum(map(len, a.values())), sum(map(len, b.values()))))
+        for new, report in process(path, out, args, obj, code, trampolines):
+            objects.append(new)
+            lines += ['%s: %s' % (unit, line) for line in report]
+            if args.check:
+                diff = compare(describe(path), describe(new))
+                if args.roundtrip:
+                    lines.append('%s: %s' % (unit, 'identical' if diff is None else diff))
+                    failed |= diff is not None
+                else:
+                    a, b = describe(path)[0], describe(new)[0]
+                    lines.append('%s: %d -> %d bytes of code (%s)' % (unit, sum(map(len, a.values())), sum(map(len, b.values())), new.name))
     if args.archive:
         elfout.write_archive(args.archive, [(o.name, o.read_bytes()) for o in objects])
     text = '\n'.join(lines) + '\n'

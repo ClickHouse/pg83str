@@ -157,6 +157,25 @@ size_t strlen_tail_evex512(const u8 *a, const u8 *s);
 
 extern unsigned char str_cpu_erms;
 
+/* The same functions laid out by the post pass with the JCC-erratum padding
+   (jcc-*.o, see dev/post.py), for Skylake-SP. */
+void *memcpy_evex_jcc(void *, const void *, size_t);
+void *memmove_evex_jcc(void *, const void *, size_t);
+void *memset_evex_jcc(void *, int, size_t);
+int memcmp_evex_jcc(const void *, const void *, size_t);
+size_t strlen_evex_jcc(const char *);
+char *strcpy_evex_jcc(char *, const char *);
+char *strcat_evex_jcc(char *, const char *);
+int strcmp_evex_jcc(const char *, const char *);
+size_t strspn_sse42_jcc(const char *, const char *);
+size_t strcspn_sse42_jcc(const char *, const char *);
+void *copy_large_avx2_jcc(u8 *d, const u8 *s, size_t n);
+void *fill_large_avx2_jcc(u8 *d, int c, size_t n);
+int memcmp_large_avx2_jcc(const u8 *a, const u8 *b, size_t n);
+size_t strlen_tail_avx2_jcc(const u8 *a, const u8 *s);
+int strcmp_tail_avx2_jcc(const u8 *a, const u8 *b);
+void *strcpy_long_avx2_jcc(u8 *d, const u8 *s);
+
 /* -------------------------------------------------------------- basics */
 
 static inline size_t page_left(const void *p)
