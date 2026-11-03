@@ -98,9 +98,8 @@ void str_cpuid_read(struct str_cpuid *c)
     c->vendor_ebx = r[1];
     c->vendor_edx = r[3];
     c->vendor_ecx = r[2];
-    c->eax1 = c->ecx1 = c->ebx7 = c->ecx81 = c->xcr0 = 0;
-    if (c->max_leaf < 7)
-        return;
+    /* leaf 7 past the highest leaf reads as the highest one on Intel, garbage
+       either way: str_host_of looks at max_leaf before it believes ebx7 */
     cpuid(1, 0, r);
     c->eax1 = r[0];
     c->ecx1 = r[2];
@@ -108,7 +107,8 @@ void str_cpuid_read(struct str_cpuid *c)
     c->ebx7 = r[1];
     cpuid(0x80000001u, 0, r);
     c->ecx81 = r[2];
-    if (bit(c->ecx1, 27)) { /* OSXSAVE: xgetbv exists */
+    c->xcr0 = 0;
+    if (bit(c->ecx1, 27)) { /* uncoverable: xgetbv faults without OSXSAVE, a CPU this test does not run on */
         unsigned lo, hi;
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
         c->xcr0 = lo;

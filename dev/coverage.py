@@ -9,7 +9,9 @@ build), the test is linked against them and run, and gcov's JSON gives the
 lines and branches each unit executed. Prints a summary per file and the
 uncovered lines and branches with their source, writes DIR/summary.txt and
 DIR/uncovered.txt, and fails when the total line or branch coverage is below
---min percent. The test exercises every configuration the host can run and
+--min percent. A line commented "uncoverable: <why>" keeps its branches out
+of the count (xgetbv behind the OSXSAVE check, the compiler's own branch in
+ctz for an argument that is never zero). The test exercises every configuration the host can run and
 the decisions for other hosts from cpuid snapshots, so one AVX-512 machine
 covers everything; a host without AVX-512 cannot run the EVEX code and
 reports less."""
@@ -101,6 +103,12 @@ def main():
                     key = (n, i)
                     branches[name][key] = branches[name].get(key, 0) + br['count']
     src = {name: (ROOT / name).read_text().split('\n') for name in SOURCES if (ROOT / name).exists()}
+    # a line marked "uncoverable:" with its reason is left out of the branch count: a
+    # branch the hardware of the test host cannot take, or the compiler's own
+    excluded = {name: {n + 1 for n, line in enumerate(text) if 'uncoverable:' in line} for name, text in src.items()}
+    for name in branches:
+        for key in [k for k in branches[name] if k[0] in excluded.get(name, ())]:
+            del branches[name][key]
     summary = []
     uncovered = []
     tl = tc = tb = tbc = 0

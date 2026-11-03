@@ -63,25 +63,25 @@ static inline int load_set_second16(const u8 *set, __m128i *out)
 #define SPN_MASK_MODE (SPN_MODE | _SIDD_BIT_MASK)
 #define CSPN_MASK_MODE (CSPN_MODE | _SIDD_BIT_MASK)
 
-/* Two set halves: a byte is outside the set when it is outside both halves. */
-static inline unsigned spn2_index(__m128i set1, __m128i set2, __m128i text)
+/* The bytes of a block in neither half of the set, one bit each; a NUL counts
+   (negative polarity, masked), so the scan stops there. */
+static inline unsigned spn2_misses(__m128i set1, __m128i set2, __m128i text)
 {
-    unsigned m = (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set1, text, SPN_MASK_MODE))
-               & (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set2, text, SPN_MASK_MODE));
-    return m ? ctz(m) : 16;
+    return (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set1, text, SPN_MASK_MODE))
+           & (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set2, text, SPN_MASK_MODE));
 }
 
 static size_t strspn_pcmpistrm32(const u8 *s, __m128i set1, __m128i set2)
 {
     size_t valid;
     __m128i head = load_head16(s, &valid);
-    unsigned i = spn2_index(set1, set2, head);
-    if (i < valid)
-        return i;
+    unsigned m = spn2_misses(set1, set2, head);
+    if (m && ctz(m) < valid)
+        return ctz(m);
     for (const u8 *p = after_head(s, valid);; p += 16) {
-        i = spn2_index(set1, set2, load16a(p));
-        if (i < 16)
-            return (size_t)(p - s) + i;
+        m = spn2_misses(set1, set2, load16a(p));
+        if (m)
+            return (size_t)(p - s) + ctz(m);
     }
 }
 

@@ -149,7 +149,6 @@ void *fill_large_evex512(u8 *d, int c, size_t n)
     return fill_loop(d, c, n);
 }
 
-void *fill_huge_evex512(u8 *d, int c, size_t n) { return fill_loop(d, c, n); }
 
 void *memset_evex512(void *dst, int c, size_t n)
 {

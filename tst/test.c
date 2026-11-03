@@ -116,6 +116,49 @@ static void suite(int full)
                 CHECK(d[0] == 'x' && !memcmp(d + 1, s, n + 1) && d[n + 2] == 0x55);
             }
 
+    phase = "long strcat and set scans";
+    for (size_t n = 0; n <= 600; n += (n < 70 ? 1 : 37))
+        for (size_t m = 0; m <= 600; m += (m < 70 ? 1 : 41)) {
+            unsigned char *s = a + 4096 + (n * 5 % 48), *d = b + 4096 + (m * 7 % 48);
+            pattern(s, n, (unsigned)n);
+            s[n] = 0;
+            pattern(d, m, (unsigned)m + 3);
+            d[m] = 0;
+            d[m + n + 1] = 0x55;
+            memcpy(ref, d, m);
+            memcpy(ref + m, s, n + 1);
+            CHECK(T->strcat((char *)d, (char *)s) == (char *)d);
+            CHECK(!memcmp(d, ref, m + n + 1) && d[m + n + 1] == 0x55);
+        }
+    {
+        const size_t setlens[] = {1, 2, 3, 15, 16, 17, 31, 32, 33, 64, 200};
+        for (size_t k = 0; k < sizeof setlens / sizeof *setlens; k++) {
+            size_t m = setlens[k];
+            unsigned char *set = b + 8192 + k * 7;
+            for (size_t i = 0; i < m; i++)
+                set[i] = (unsigned char)(1 + (i * 97 + 13) % 255);
+            set[m] = 0;
+            for (size_t run = 0; run <= 600; run += (run < 70 ? 1 : 29))
+                for (size_t off = 0; off < 48; off += 5) {
+                    unsigned char *s = a + 4096 + off;
+                    for (size_t i = 0; i < run; i++)   /* members, then a byte outside the set */
+                        s[i] = set[i % m];
+                    s[run] = (unsigned char)(m == 200 ? 200 : 254);   /* 254 is in no set here, 200 not in the long one */
+                    s[run + 1] = set[0];
+                    s[run + 2] = 0;
+                    CHECK(T->strspn((char *)s, (char *)set) == strspn((char *)s, (char *)set));
+                    for (size_t i = 0; i < run; i++)   /* non-members, then a member */
+                        s[i] = (unsigned char)(m == 200 ? 200 + i % 50 : 254 - i % 2);
+                    s[run] = set[m / 2];
+                    s[run + 1] = 0;
+                    CHECK(T->strcspn((char *)s, (char *)set) == strcspn((char *)s, (char *)set));
+                    s[run] = 0;   /* and the NUL instead */
+                    CHECK(T->strspn((char *)s, (char *)set) == strspn((char *)s, (char *)set));
+                    CHECK(T->strcspn((char *)s, (char *)set) == strcspn((char *)s, (char *)set));
+                }
+        }
+    }
+
     if (!full)
         goto guards;
     phase = "overlap";
@@ -273,6 +316,12 @@ guards:;
                 CHECK(sign(T->strcmp((char *)d, (char *)s)) == sign(strcmp((char *)d, (char *)s)));
                 memset(d, 0x55, n + 1);
                 CHECK(T->strcpy((char *)d, (char *)s) == (char *)d && !memcmp(d, s, n + 1));
+                /* strcat: a destination of its own length m, then s appended up to the guard */
+                size_t m = (n + gb_) % 40;
+                unsigned char *dd = gb + 12288 - gb_ - m - n - 2;
+                pattern(dd, m, 5);
+                dd[m] = 0;
+                CHECK(T->strcat((char *)dd, (char *)s) == (char *)dd && dd[m + n] == 0 && !memcmp(dd + m, s, n + 1));
             }
 
     /* Every pair of page offsets of two pointers. The decisions of a two-pointer
@@ -343,12 +392,14 @@ guards:;
                     CHECK(T->strspn((char *)s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ") == strspn((char *)s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"));
                 }
             }
-        /* and of the set: its load has page logic of its own */
+        /* and of the set: its load has page logic of its own; the set ends before
+           the guard when it fits the page, else runs into the next (mapped) one */
+        unsigned char *gs2 = guard_pages(2);
         for (size_t os = 0; os < 4096; os++) {
             const size_t setlens[] = {1, 2, 15, 16, 17, 31, 32, 33, 40};
             for (size_t k = 0; k < sizeof setlens / sizeof *setlens; k++) {
                 size_t m = setlens[k];
-                unsigned char *set = gs + (os + m + 1 <= 4096 ? 0 : 4096 - m - 1 - (os % 7)) + (os + m + 1 <= 4096 ? os : 0);
+                unsigned char *set = (os + m + 1 <= 4096 ? gs + os : gs2 + os);
                 for (size_t i = 0; i < m; i++)
                     set[i] = (unsigned char)('A' + i % 26);
                 set[m] = 0;
@@ -363,6 +414,7 @@ guards:;
                 CHECK(T->strcspn((char *)s, (char *)set) == strcspn((char *)s, (char *)set));
             }
         }
+        munmap(gs2 - 4096, 4 * 4096);
     }
 
     phase = "random";
@@ -409,7 +461,7 @@ guards:;
             }
         }
     }
-    printf("PASS %zu checks: small sizes x alignments, overlap directions, large sizes, guard pages, offset pairs, single offsets, random\n", checks);
+    printf("PASS %zu checks: small sizes x alignments, long strcat and set scans, overlap directions, large sizes, guard pages, offset pairs, single offsets, random\n", checks);
     munmap(ga - 4096, 5 * 4096);
     munmap(gb - 4096, 5 * 4096);
     munmap(gs - 4096, 3 * 4096);
@@ -434,6 +486,23 @@ static void table_of(struct str_table *t, void *const *slots) { memcpy(t, slots,
 #define INTEL 0x756e6547, 0x49656e69, 0x6c65746e
 #define AMD 0x68747541, 0x69746e65, 0x444d4163
 
+/* The public entry points, through the dispatched table. */
+static void entries(void)
+{
+    phase = "entry points";
+    char s[64] = "hello, world", d[64];
+    CHECK(str_strlen(s) == 12);
+    CHECK(str_strcpy(d, s) == d && !strcmp(d, s));
+    CHECK(str_strcat(d, s) == d && str_strlen(d) == 24);
+    CHECK(str_strcmp(s, d) < 0 && str_strcmp(d, s) > 0 && str_strcmp(s, s) == 0);
+    CHECK(str_memcpy(d, s, 13) == d && str_memcmp(d, s, 13) == 0);
+    CHECK(str_memmove(d + 1, d, 13) == d + 1 && !strcmp(d + 1, s));
+    CHECK(str_memset(d, 'x', 5) == d && d[0] == 'x' && d[4] == 'x' && d[5] == 'o');
+    CHECK(str_memcmp(s, d, 13) < 0);
+    CHECK(str_strspn(s, "ehl") == 4 && str_strcspn(s, ",") == 5);
+    printf("entry points: PASS %zu checks\n", checks);
+}
+
 static void hosts(void)
 {
     const struct {
@@ -453,12 +522,37 @@ static void hosts(void)
         {"ice lake", {7, INTEL, 0x606a6, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
         {"zen 4", {7, AMD, 0xa60f12, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
         {"avx-512 without erms", {7, AMD, 0xa60f12, V3_ECX1, V4_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM, "sse42"},
+        {"vendor like intel in ebx only", {7, 0x756e6547, 0, 0, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
+        {"vendor like intel in ebx and edx", {7, 0x756e6547, 0x49656e69, 0, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
     };
     phase = "hosts";
     for (size_t i = 0; i < sizeof machines / sizeof *machines; i++) {
         unsigned bits = str_host_of(&machines[i].c);
         if (bits != machines[i].bits || strcmp(str_choose_for(bits)->name, machines[i].config)) {
             fprintf(stderr, "FAIL hosts: %s: bits %#x, configuration %s\n", machines[i].name, bits, str_choose_for(bits)->name);
+            exit(2);
+        }
+        checks++;
+    }
+    /* every feature bit missing on its own from a Zen 4: the level that needs it is
+       lost, the ones below stay (each test of the checks fails in turn) */
+    const struct { int word; unsigned bit; unsigned keep; const char *config; } one_missing[] = {
+        {1, 0, STR_ERMS, "sse2"}, {1, 9, STR_ERMS, "sse2"}, {1, 19, STR_ERMS, "sse2"}, {1, 20, STR_ERMS, "sse2"},
+        {1, 23, STR_ERMS, "sse2"}, {1, 13, STR_ERMS, "sse2"}, {3, 0, STR_ERMS, "sse2"},
+        {1, 27, STR_SSE42 | STR_ERMS, "sse42"}, {1, 28, STR_SSE42 | STR_ERMS, "sse42"}, {1, 29, STR_SSE42 | STR_ERMS, "sse42"},
+        {1, 12, STR_SSE42 | STR_ERMS, "sse42"}, {1, 22, STR_SSE42 | STR_ERMS, "sse42"}, {2, 5, STR_SSE42 | STR_ERMS, "sse42"},
+        {2, 3, STR_SSE42 | STR_ERMS, "sse42"}, {2, 8, STR_SSE42 | STR_ERMS, "sse42"}, {3, 5, STR_SSE42 | STR_ERMS, "sse42"},
+        {2, 16, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"}, {2, 30, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"},
+        {2, 28, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"}, {2, 17, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"},
+        {2, 31, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"},
+    };
+    for (size_t i = 0; i < sizeof one_missing / sizeof *one_missing; i++) {
+        struct str_cpuid c = {7, AMD, 0xa60f12, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7};
+        unsigned *word = one_missing[i].word == 1 ? &c.ecx1 : one_missing[i].word == 2 ? &c.ebx7 : &c.ecx81;
+        *word &= ~B(one_missing[i].bit);
+        unsigned bits = str_host_of(&c);
+        if (bits != one_missing[i].keep || strcmp(str_choose_for(bits)->name, one_missing[i].config)) {
+            fprintf(stderr, "FAIL hosts: without word %d bit %u: bits %#x, configuration %s\n", one_missing[i].word, one_missing[i].bit, bits, str_choose_for(bits)->name);
             exit(2);
         }
         checks++;
@@ -521,5 +615,7 @@ int main(void)
     printf("mixes: PASS %zu checks in %zu one-slot mixes of %s and %s\n", checks, mixes, bases[0]->name, bases[1]->name);
     checks = 0;
     hosts();
+    checks = 0;
+    entries();
     return 0;
 }

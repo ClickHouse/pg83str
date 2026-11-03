@@ -161,8 +161,6 @@ int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n);
 size_t strlen_tail_avx2(const u8 *a, const u8 *s);
 int strcmp_tail_avx2(const u8 *a, const u8 *b);
 void *strcpy_long_avx2(u8 *d, const u8 *s);
-void *copy_huge_avx2(u8 *d, const u8 *s, size_t n);
-void *fill_huge_avx2(u8 *d, int c, size_t n);
 /* evex.c: AVX-512 with 256-bit registers */
 void *memcpy_evex(void *, const void *, size_t);
 void *memmove_evex(void *, const void *, size_t);
@@ -180,7 +178,6 @@ int memcmp_evex512(const void *, const void *, size_t);
 size_t strlen_evex512(const char *);
 void *fill_large_evex512(u8 *d, int c, size_t n);
 size_t strlen_tail_evex512(const u8 *a, const u8 *s);
-void *fill_huge_evex512(u8 *d, int c, size_t n);
 int strcmp_tail_evex512(const u8 *a, const u8 *b);
 void *strcpy_long_evex512(u8 *d, const u8 *s);
 
@@ -245,7 +242,7 @@ static inline unsigned ne_mask16(__m128i a, __m128i b) { return eq_mask16(a, b) 
 /* Bit i set when a[i] != b[i] or a[i] == 0. */
 static inline unsigned diff_or_zero_mask16(__m128i a, __m128i b) { return ne_mask16(a, b) | zero_mask16(a); }
 static inline __m128i splat16(int c) { return _mm_set1_epi8((char)c); }
-static inline unsigned ctz(unsigned m) { return (unsigned)__builtin_ctz(m); }
+static inline unsigned ctz(unsigned m) { return (unsigned)__builtin_ctz(m); } /* uncoverable: m != 0 by contract, the zero branch is the compiler's */
 static inline int byte_diff(const u8 *a, const u8 *b, size_t i) { return (int)a[i] - (int)b[i]; }
 
 static inline void rep_movsb(u8 *d, const u8 *s, size_t n)

@@ -52,9 +52,16 @@ only the Skylake-SP configuration names the `_jcc` twins.
   `ar`. The library is the post pass's output: a build without it does not
   link.
 - `tst/test.c` — the library against the host C library: all sizes and
-  alignments, overlaps, guard pages, random sets, for every configuration the
-  host can run and for the dispatched one. `tst/roundtrip.py` — the decoder
-  and emitter against the compiler at -O0…-O3.
+  alignments, overlaps, guard pages, every pair of page offsets of two
+  pointers and every offset of one, random sets, for every configuration the
+  host can run and for the dispatched one; then every slot replaced by every
+  other implementation in turn (the contracts between first blocks and
+  kernels hold for any mix), and the host decisions made again from cpuid
+  snapshots of other machines. `tst/roundtrip.py` — the decoder and emitter
+  against the compiler at -O0…-O3. `./build coverage` (`dev/coverage.py`,
+  gcc and gcov): 100% of the lines and branches of the C on a host that runs
+  every configuration; two branches the hardware cannot take are marked
+  `uncoverable:` with the reason.
 
 ## Build
 

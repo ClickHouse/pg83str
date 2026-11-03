@@ -174,8 +174,8 @@ size_t strlen_avx2(const char *str)
 
 /* n > 64. Head and tail vectors are loaded first and stored last, so an
    aligned loop may clobber source bytes only after they were consumed. */
-/* The forward loop, aligned 128-byte steps, for anything above 256 bytes without
-   backward overlap; the first and the last 32 bytes are the caller's. */
+/* The forward loop, aligned 128-byte steps, for 257..4095 bytes without backward
+   overlap; the first and the last 32 bytes are the caller's. */
 static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n)
 {
     size_t skew = 32 - ((uintptr_t)d & 31);
@@ -249,14 +249,6 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
     RETURN_OPAQUE(d);
 }
 
-void *copy_huge_avx2(u8 *d, const u8 *s, size_t n)
-{
-    __m256i head = load256(s), tail = load256(s + n - 32);
-    copy_forward_loop(d, s, n);
-    store256(d, head);
-    store256(d + n - 32, tail);
-    RETURN_OPAQUE(d);
-}
 
 static inline void *copy(void *dst, const void *src, size_t n)
 {
@@ -333,7 +325,6 @@ void *fill_large_avx2(u8 *d, int c, size_t n)
     return fill_loop(d, v, n);
 }
 
-void *fill_huge_avx2(u8 *d, int c, size_t n) { return fill_loop(d, _mm256_set1_epi8((char)c), n); }
 
 void *memset_avx2(void *dst, int c, size_t n)
 {
@@ -376,7 +367,8 @@ int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n)
             return result;
         i += 64;
     }
-    if (n - i > 64 && pair_differs(a, b, i, i + 32, &result))
+    /* 65..128 bytes are left: a pair from the front and the pair at the end */
+    if (pair_differs(a, b, i, i + 32, &result))
         return result;
     if (pair_differs(a, b, n - 64, n - 32, &result))
         return result;
