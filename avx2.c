@@ -22,14 +22,18 @@ static inline __m256i eq_zero(__m256i v) { return _mm256_cmpeq_epi8(v, _mm256_se
    pshufb indexes by the low four bits and gives 0 where bit 7 of the index is
    set, so the first table answers for b < 0x80 as it is and the second for
    b >= 0x80 after b ^ 0x80. Any set, 32 bytes per step, no pcmpistri. */
-static inline void truffle_tables(const u8 *set, u8 table[32], int with_nul)
+/* The two tables are built as four 64-bit words (a byte store followed by a
+   16-byte load of the same bytes would stall on store forwarding; 8-byte words
+   forward) and assembled into vectors from registers. */
+static inline void truffle_tables(const u8 *set, int with_nul, __m128i *low, __m128i *high)
 {
-    for (int i = 0; i < 32; i++)
-        table[i] = 0;
-    for (; *set; set++)
-        table[((*set >> 7) << 4) | (*set & 15)] |= (u8)(1 << ((*set >> 4) & 7));
-    if (with_nul)
-        table[0] |= 1;
+    uint64_t t[4] = {with_nul ? 1u : 0u, 0, 0, 0};
+    for (; *set; set++) {
+        unsigned b = *set;
+        t[((b >> 7) << 1) | ((b >> 3) & 1)] |= (uint64_t)(1u << ((b >> 4) & 7)) << (8 * (b & 7));
+    }
+    *low = _mm_set_epi64x((long long)t[1], (long long)t[0]);
+    *high = _mm_set_epi64x((long long)t[3], (long long)t[2]);
 }
 
 /* The bytes of x that are in the set, one bit each. */
@@ -48,9 +52,9 @@ static inline unsigned truffle_members(__m256i x, __m256i low, __m256i high, __m
    the first byte not in it (strspn, the NUL is not). */
 static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, int members)
 {
-    u8 table[32] __attribute__((aligned(32)));
-    truffle_tables(set, table, members);
-    __m256i low = _mm256_broadcastsi128_si256(load16(table)), high = _mm256_broadcastsi128_si256(load16(table + 16)), bits = TRUFFLE_BITS;
+    __m128i low16, high16;
+    truffle_tables(set, members, &low16, &high16);
+    __m256i low = _mm256_broadcastsi128_si256(low16), high = _mm256_broadcastsi128_si256(high16), bits = TRUFFLE_BITS;
     unsigned flip = members ? 0 : 0xffffffffu;
     const u8 *a = align_down(from, 32); /* aligned blocks never cross a page */
     unsigned m = (truffle_members(load256a(a), low, high, bits) ^ flip) >> (from - a);
@@ -64,10 +68,12 @@ static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, 
     }
 }
 
-/* A set of up to 16 bytes: the first text block by pcmpistri, one load of the
-   set, which is all most calls need (the workload's sets are a few bytes and
-   its strings end in the block); the shuffle scan takes over beyond it, and
-   from the start for longer sets. */
+/* A set of up to 16 bytes: the first 64 bytes of text by pcmpistri, one load
+   of the set, which is all most calls need (the workload's sets are a few
+   bytes and its strings end within them); the shuffle scan takes over beyond,
+   where its tables pay off, and from the start for longer sets. */
+#define PCMPISTRI_BLOCKS 3
+
 size_t strcspn_avx2(const char *str, const char *reject)
 {
     const u8 *s = (const u8 *)str, *set = (const u8 *)reject;
@@ -81,6 +87,11 @@ size_t strcspn_avx2(const char *str, const char *reject)
         if (i < valid)
             return i;
         from = after_head(s, valid);
+        for (int k = 0; k < PCMPISTRI_BLOCKS; k++, from += 16) {
+            i = cspn_index(set1, load16a(from));
+            if (i < 16)
+                return (size_t)(from - s) + i;
+        }
     }
     return truffle_scan(from, s, set, 1);
 }
@@ -98,6 +109,11 @@ size_t strspn_avx2(const char *str, const char *accept)
         if (i < valid)
             return i;
         from = after_head(s, valid);
+        for (int k = 0; k < PCMPISTRI_BLOCKS; k++, from += 16) {
+            i = (unsigned)_mm_cmpistri(set1, load16a(from), SPN_MODE);
+            if (i < 16)
+                return (size_t)(from - s) + i;
+        }
     }
     return truffle_scan(from, s, set, 0);
 }
