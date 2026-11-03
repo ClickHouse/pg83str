@@ -8,53 +8,58 @@
 #define STR_PCMPISTRI_H
 #include "common.h"
 
+/* The bytes of the aligned 16-byte block around p, from p on, moved down to
+   lane 0, the lanes past the block's end zero: a shuffle with the indexes
+   i + k, those past 15 made negative (pshufb gives 0 for them). The aligned
+   block never crosses a page; *valid is the number of bytes from p in it.
+   No buffer on the stack: gcc copied into one byte by byte and gave the
+   whole function a frame for it. */
+static inline __m128i load16_from(const u8 *p, size_t *valid) {
+    size_t k = (uintptr_t)p & 15;
+    __m128i idx = _mm_add_epi8(_mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), _mm_set1_epi8((char)k));
+    idx = _mm_or_si128(idx, _mm_cmpgt_epi8(idx, _mm_set1_epi8(15)));
+    *valid = 16 - k;
+    return _mm_shuffle_epi8(load16a(align_down(p, 16)), idx);
+}
+
 /* Load a NUL-terminated set of at most 16 bytes into a vector; returns 0 when
-   the set is longer. Bytes after the NUL are irrelevant to pcmpistri. */
+   the set is longer. Bytes after the NUL are irrelevant to pcmpistri. Near a
+   page end: the page's bytes moved down, and if the NUL is not among them
+   the set goes on in the next page (it is a string), whose first aligned
+   block supplies the rest, moved up into the lanes after them. */
 static inline int load_set16(const u8 *set, __m128i *out) {
+    __m128i v;
+
     if (page_left(set) >= 16) {
-        __m128i v = load16(set);
+        v = load16(set);
+    } else {
+        size_t valid;
+        v = load16_from(set, &valid);
 
-        if (zero_mask16(v) || set[16] == 0) {
-            *out = v;
-            return 1;
+        if (!(zero_mask16(v) & ((1u << valid) - 1))) { /* the lanes past the page's bytes are zero too */
+            __m128i idx = _mm_sub_epi8(_mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), _mm_set1_epi8((char)valid));
+            v = _mm_or_si128(v, _mm_shuffle_epi8(load16a(set + valid), idx)); /* lanes before valid: negative index, 0 */
         }
-
-        return 0;
     }
 
-    u8 buffer[16] __attribute__((aligned(16))) = {0};
-    size_t i = 0;
-
-    for (; i < 16 && set[i]; i++) {
-        buffer[i] = set[i];
+    if (zero_mask16(v) || set[16] == 0) {
+        *out = v;
+        return 1;
     }
 
-    if (i == 16 && set[16]) {
-        return 0;
-    }
-
-    *out = load16a(buffer);
-    return 1;
+    return 0;
 }
 
 /* First text block for pcmpistri: 16 bytes from s when they stay in the page,
-   otherwise the page remainder copied into a zero-padded buffer. *valid is
-   the number of real bytes in the block. */
+   otherwise the page remainder moved down to lane 0 with zeros after it.
+   *valid is the number of real bytes in the block. */
 static inline __m128i load_head16(const u8 *s, size_t *valid) {
     if (page_left(s) >= 16) {
         *valid = 16;
         return load16(s);
     }
 
-    u8 buffer[16] __attribute__((aligned(16))) = {0};
-    size_t n = page_left(s);
-
-    for (size_t i = 0; i < n; i++) {
-        buffer[i] = s[i];
-    }
-
-    *valid = n;
-    return load16a(buffer);
+    return load16_from(s, valid);
 }
 
 /* After the head block, continue with aligned blocks; overlapping the head is
