@@ -55,7 +55,7 @@ def write_object(src_path, dst_path, layouts, remap, rename=None, new_sections=(
                 continue
             shndx = new_index[secname]
             value, size = sym.value, sym.size
-            if secname in layouts:
+            if secname in layouts and sym.type != 'STT_SECTION':   # a section symbol stays at 0: relocations add the mapped offset
                 value = remap(secname, sym.value)
                 if sym.type == 'STT_FUNC' or size:
                     size = remap(secname, sym.value + sym.size) - value

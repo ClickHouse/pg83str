@@ -14,8 +14,17 @@ the objects, every unit but dispatch also as a twin with the Skylake JCC
 padding and its functions renamed name_jcc, the implementations the
 Skylake-SP configuration names. --check compares the result with the
 original: with --roundtrip the code bytes, relocations and symbols must be
-identical; otherwise it reports the code sizes."""
+identical; otherwise it reports the code sizes.
+
+dev/phases.json gives functions, by configuration, the offset of their entry
+within its 64-byte line: measured per host class on the workload (the same
+code runs up to 20% faster or slower by that offset alone, differently per
+function and per host, and no model of 32-byte windows predicted it), so
+the numbers are the stand's, and a function whose code changed should be
+measured again. dev/profile.json, from dev/profile.py, feeds the order pass
+(off by default)."""
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -31,30 +40,34 @@ from objfile import Object  # noqa: E402
 from units import UNITS, unit_of  # noqa: E402
 
 
-def optimize_all(path, obj, code, args, trampolines):
+def optimize_all(path, obj, code, args, trampolines, profile):
     unit = unit_of(path)
     march = UNITS[unit]
     report = []
     if not args.roundtrip:
         for name in code:
-            code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name, trampolines=trampolines)
+            code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name, trampolines=trampolines, profile=profile)
             report += lines
     return report
 
 
-def write(path, out, args, obj, code, clones, overrides):
+def write(path, out, args, obj, code, clones, overrides, maps):
     """Lay the object out again, with the configuration clones as new sections, and write it;
     for every unit but dispatch also the twin laid out with the JCC padding, its global functions
-    renamed name_jcc (the implementations the Skylake-SP configuration names). Returns the paths."""
+    renamed name_jcc (the implementations the Skylake-SP configuration names). Returns the paths.
+    maps collects {object: {section: {new offset: original offset}}} for the profile."""
     jcc = None if args.roundtrip else False
-    layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=jcc) for name, ins in code.items()}
+    phases = args.phase_map   # {configuration.function or function: the entry's offset in its 64-byte line}
+    layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=jcc,
+                                   phase=max([phases.get(f.name, 0) for f in obj.functions(name)] or [0])) for name, ins in code.items()}
     new_sections = []
     for section, ins, symname, jcc_cfg, source in clones:
-        layouts[section] = layout.layout(obj, section, ins, args.func_align, jcc_align=jcc_cfg, source=source)
+        layouts[section] = layout.layout(obj, section, ins, args.func_align, jcc_align=jcc_cfg, source=source, phase=phases.get(symname, 0))
         new_sections.append((section, layouts[section], symname))
     remap = layout.resolve_relocs(obj, layouts)
     new = out / Path(path).name
     elfout.write_object(path, new, layouts, remap, None, new_sections, overrides)
+    maps[new.name] = {name: {str(v): k for k, v in lay.offsets.items()} for name, lay in layouts.items()}
     out_paths = [new]
     if not args.roundtrip and unit_of(path) != 'dispatch':
         exported = {s.name for s in obj.symbols if s.type == 'STT_FUNC' and s.bind == 'STB_GLOBAL' and s.section != 'UND'}
@@ -158,6 +171,9 @@ def main():
     p.add_argument('--roundtrip', action='store_true', help='no passes: decode, lay out, write')
     p.add_argument('--check', action='store_true', help='compare the result with the original')
     p.add_argument('--passes', help='comma-separated pass list (default: all), see opt.py')
+    p.add_argument('--layout-map', help='write {object: {section: {new offset: original offset}}} as JSON, for dev/profile.py')
+    p.add_argument('--phases', default=str(HERE / 'phases.json'), help='{function or configuration.function: entry offset within its 64-byte line} (default dev/phases.json; absent: 0)')
+    p.add_argument('--profile', default=str(HERE / 'profile.json'), help='the sample profile dev/profile.py wrote (default dev/profile.json; absent: no profile)')
     p.add_argument('--func-align', default='6', help='align every function to 2^N bytes (default 6: entries on 64-byte lines, where a 16-byte entry at the end of a 32-byte window costs up to a third on Skylake)')
     p.add_argument('inputs', nargs='+')
     args = p.parse_args()
@@ -177,9 +193,17 @@ def main():
     trampolines = {}
     for path, obj, code in decoded:
         trampolines.update(opt.trampolines_of(obj, code))
+    args.phase_map = {}
+    if not args.roundtrip and args.phases and Path(args.phases).exists():
+        args.phase_map = json.load(open(args.phases))
+        lines.append('phases: %s, %d entries' % (args.phases, len(args.phase_map)))
+    profile = {}
+    if not args.roundtrip and args.profile and Path(args.profile).exists():
+        profile = json.load(open(args.profile))
+        lines.append('profile: %s, %d functions' % (args.profile, len(profile)))
     reports = {}
     for path, obj, code in decoded:
-        reports[path] = optimize_all(path, obj, code, args, trampolines)
+        reports[path] = optimize_all(path, obj, code, args, trampolines, profile)
     # the configurations: every function each one reaches, cloned into its unit, calling directly
     clones = [[] for _ in decoded]
     overrides = {}
@@ -190,9 +214,10 @@ def main():
         for c in configs:
             n = sum(1 for cl in clones for section, *_ in cl if section.startswith('.text.%s.' % c.name))
             lines.append('%s: %d functions, %s' % (c.name, n, 'the JCC padding' if c.jcc else 'no padding'))
+    maps = {}
     for (path, obj, code), unit_clones in zip(decoded, clones):
         unit = unit_of(path)
-        paths = write(path, out, args, obj, code, unit_clones, overrides)
+        paths = write(path, out, args, obj, code, unit_clones, overrides, maps)
         objects += paths
         new = paths[0]
         lines += ['%s: %s' % (unit, line) for line in reports[path]]
@@ -206,6 +231,8 @@ def main():
                 lines.append('%s: %d -> %d bytes of code' % (unit, sum(map(len, a.values())), sum(map(len, b.values()))))
     if args.archive:
         elfout.write_archive(args.archive, [(o.name, o.read_bytes()) for o in objects])
+    if args.layout_map:
+        Path(args.layout_map).write_text(json.dumps(maps))
     text = '\n'.join(lines) + '\n'
     if args.report:
         Path(args.report).write_text(text)

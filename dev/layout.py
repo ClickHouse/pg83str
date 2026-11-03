@@ -91,9 +91,10 @@ def padding_runs(obj, section, instructions):
     return padding
 
 
-def layout(obj, section, instructions, func_align=None, jcc_align=None, source=None):
+def layout(obj, section, instructions, func_align=None, jcc_align=None, source=None, phase=0):
     """jcc_align: pad branches off 32-byte boundaries (the Skylake JCC erratum); None: POST_JCC_ALIGN (default on).
-    source: the object's section the instructions came from, when they are written as a new one (a clone)."""
+    source: the object's section the instructions came from, when they are written as a new one (a clone).
+    phase: the function entry's offset within its aligned line (dev/phases.json, measured per host class)."""
     section = source or section
     sec = obj.sections[section]
     old_end = len(sec.data)
@@ -153,7 +154,7 @@ def layout(obj, section, instructions, func_align=None, jcc_align=None, source=N
                 continue
             starts_function = (i.offset in func_starts and i.offset == i.home and id(i) not in leading) or id(i) in leads_function
             if starts_function and func_align:
-                pad = (-off) % (1 << func_align)
+                pad = (int(os.environ.get('POST_FUNC_PHASE', phase)) - off) % (1 << func_align)
                 if pad:
                     items.append(('pad', nops(pad)))
                     off += pad

@@ -43,6 +43,13 @@ prove the rewrites safe:
            and of the two masks, but the compare that waits for the load no
            longer has the other one behind it. The critical path from the
            loads to the mask is one operation shorter (strcmp, memcmp).
+  order    (off by default: measured neutral to worse, the compiler's order
+           with hot and tail was already right) with a sample profile
+           (dev/profile.py): the blocks in hot-path order. From the entry, the
+           hotter successor comes next and falls through (a conditional branch
+           is inverted when its taken side is the hotter), then the hottest
+           block not yet placed, and so on; a block whose fall-through moved
+           away gets a jmp.
   tramp    jmp/call F where F, in another object of the same run, is nothing
            but jmp *slot(%rip) (the str_* entry points of dispatch.c): go
            through the slot directly, jmp/call *slot(%rip). The sources call
@@ -1075,6 +1082,90 @@ def mask_op_without_memory_first(fn):
     return done
 
 
+# ---------------------------------------------------------------- order
+
+def order_blocks(fn, samples):
+    """Blocks in hot-path order by the samples {original offset: count} of the function."""
+    if not samples:
+        return []
+    weight = {}
+    for b in fn.blocks:
+        weight[id(b)] = sum(samples.get(str(fn.ins[k].home), 0) for k in range(b.start, b.end))
+    if sum(weight.values()) < 50 or len(fn.blocks) < 3:
+        return []
+    # a block that starts with an instruction a pass made (a copied tail) has no label to
+    # jump to: it must stay behind its predecessor, so such a function keeps its order
+    if any(fn.ins[b.start].offset != fn.ins[b.start].home for b in fn.blocks):
+        return []
+    block_at = {b.start: b for b in fn.blocks}
+    placed = []
+    seen = set()
+    cur = fn.blocks[0]
+    while True:
+        placed.append(cur)
+        seen.add(id(cur))
+        nxt = [s for s in cur.succ if id(s) not in seen]
+        if nxt:
+            cur = max(nxt, key=lambda s: (weight[id(s)], -s.start))
+            continue
+        rest = [b for b in fn.blocks if id(b) not in seen]
+        if not rest:
+            break
+        cur = max(rest, key=lambda b: (weight[id(b)], -b.start))
+    if [b.start for b in placed] == [b.start for b in fn.blocks]:
+        return []
+    # the instruction list in the new order; every block's control transfer repaired
+    out = []
+    done = []
+    for n, b in enumerate(placed):
+        body = [fn.ins[k] for k in range(b.start, b.end)]
+        last = body[-1]
+        following = placed[n + 1] if n + 1 < len(placed) else None
+        fall = block_at.get(b.end)   # the original fall-through block, if the block had one
+        if last.flow == 'ConditionalBranch' and fn.internal(last):
+            target = block_at[fn.index_of_offset()[last.target]]
+            if following is target and fall is not None and fall is not target:
+                cc = last.mnemonic[1:]
+                if cc in INVERT:   # the taken side is next now: invert, the old fall-through becomes the target
+                    last.j['mnemonic'] = 'j' + INVERT[cc]
+                    last.j['cc'] = INVERT[cc]
+                    last.j['branch_target'] = fn.ins[fall.start].offset
+                    last.j['ops'][0]['branch'] = fn.ins[fall.start].offset
+                    refresh(last)
+                    done.append('%s: %s inverted, the hot side falls through' % (fn.name, label_of(last)))
+                    fall = target
+            if fall is not None and following is not fall:
+                body.append(jump_to(last, fn.ins[fall.start].offset))
+        elif last.flow == 'UnconditionalBranch' and fn.internal(last):
+            target = block_at[fn.index_of_offset()[last.target]]
+            if following is target:
+                delete(last)   # falls through now
+        elif last.flow in ('Return', 'IndirectBranch') or (last.flow == 'UnconditionalBranch'):
+            pass
+        elif fall is not None and following is not fall:
+            body.append(jump_to(last, fn.ins[fall.start].offset))
+        out += body
+    fn.ins[:] = out
+    done.insert(0, '%s: %d blocks in hot-path order (%s)' % (fn.name, len(placed), ' '.join(label_of(fn.ins[b.start]) if False else '%x' % fn_block_home(fn, b) for b in placed)))
+    analyze(fn)
+    return done
+
+
+def fn_block_home(fn, b):
+    return fn.ins[b.start].home
+
+
+def jump_to(after, target):
+    """A new jmp to an internal target, belonging to the instruction before it."""
+    j = clone(after)
+    j.j.update({'mnemonic': 'jmp', 'cc': None, 'flow': 'UnconditionalBranch', 'encoding': 'Legacy',
+                'ops': [{'kind': 'NearBranch', 'branch': target, 'size': 32, 'field_pos': 1}], 'regs': [], 'mems': [],
+                'branch_target': target, 'len': 5, 'form': None, 'before': False})
+    j.reloc = None
+    refresh(j)
+    return j
+
+
 # ---------------------------------------------------------------- tramp
 
 def trampolines_of(obj, code):
@@ -1121,14 +1212,15 @@ def full_gpr(name):
     return {'eax': 'rax', 'ecx': 'rcx', 'edx': 'rdx', 'esi': 'rsi', 'edi': 'rdi'}.get(name, 'r' + name[1:-1] if name.endswith('d') else name)
 
 
-def optimize(obj, ins, evex, section='.text', trampolines=None):
+def optimize(obj, ins, evex, section='.text', trampolines=None, profile=None):
     """evex: the unit is compiled for AVX-512VL, so ymm16-31 and masked memory operands exist.
     section: the code section the instructions came from (-ffunction-sections puts each function in its own).
-    trampolines: the one-jump entry points of the whole run, see trampolines_of."""
+    trampolines: the one-jump entry points of the whole run, see trampolines_of.
+    profile: {function: {original offset: samples}} from dev/profile.py, for the order pass."""
     report = []
     passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,kor,kfirst,lea,copy,tramp').split(',')
     if not evex:  # layout passes apply to every unit; the mask/EVEX ones only to the AVX-512 ones
-        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy', 'tramp')]
+        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy', 'tramp', 'order')]
     functions = split_functions(obj, ins, section)
     for fn in functions:
         analyze(fn)
@@ -1147,6 +1239,8 @@ def optimize(obj, ins, evex, section='.text', trampolines=None):
                 report += mask_op_without_memory_first(fn)
             elif name == 'tramp':
                 report += through_trampolines(fn, trampolines or {})
+            elif name == 'order':
+                report += order_blocks(fn, (profile or {}).get(fn.name))
             elif name == 'thread':
                 report += thread_jumps(fn)
             elif name == 'lea':
