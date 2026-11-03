@@ -335,12 +335,31 @@ int strcmp_tail_avx2(const u8 *a, const u8 *b)
     }
 }
 
+/* One 32-byte block when both strings have the room in their pages: the
+   lanes that are equal and not NUL, + 1, and the trailing zero count give
+   the first differing or terminating byte (all 32 wrap to 0). A second block
+   in line for the strings equal so far; the tail for the few longer still. */
 int strcmp_avx2(const char *left, const char *right)
 {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
-    int result;
-    if (strcmp_block16(&a, &b, &result))
-        return result;
+    if (__builtin_expect(both_in_page(a, b, 32), 1)) {
+        unsigned m = mask256(same_and_nonzero(load256(a), load256(b))) + 1;
+        if (__builtin_expect(m != 0, 1))
+            return byte_diff(a, b, ctz(m));
+        a += 32;
+        b += 32;
+        if (both_in_page(a, b, 32)) {
+            m = mask256(same_and_nonzero(load256(a), load256(b))) + 1;
+            if (m)
+                return byte_diff(a, b, ctz(m));
+            a += 32;
+            b += 32;
+        }
+    } else {
+        int result;
+        if (strcmp_block16(&a, &b, &result))
+            return result;
+    }
     return str_strcmp_tail(a, b);
 }
 

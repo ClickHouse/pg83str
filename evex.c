@@ -85,17 +85,26 @@ void *memmove_evex(void *dst, const void *src, size_t n) { return copy(dst, src,
 
 /* ------------------------------------------------------------------ fill */
 
+/* n <= 32: one masked 32-byte store when it stays in its page (a masked
+   store into the next page is assisted by microcode on Intel), 16 bytes
+   masked or the short path otherwise; 33..64: two 32-byte stores. */
 void *memset_evex(void *dst, int c, size_t n)
 {
     u8 *d = (u8 *)dst;
-    if (n <= 16)
-        mstore16(d, low_mask(n), splat16(c));
-    else if (n <= 32)
-        fill_small(d, splat16(c), n);
-    else if (n <= 64)
-        fill_33_64(d, splat16(c), n);
-    else
+    if (n <= 32) {
+        if (__builtin_expect(page_left(d) >= 32, 1))
+            _mm256_mask_storeu_epi8(d, low_mask32(n), _mm256_set1_epi8((char)c));
+        else if (n <= 16)
+            mstore16(d, low_mask(n), splat16(c));
+        else
+            fill_small(d, splat16(c), n);
+    } else if (n <= 64) {
+        __m256i v = _mm256_set1_epi8((char)c);
+        store256(d, v);
+        store256(d + n - 32, v);
+    } else {
         return str_fill_large(d, c, n);
+    }
     return dst;
 }
 

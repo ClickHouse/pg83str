@@ -37,6 +37,12 @@ prove the rewrites safe:
            The compiler tests the or of two masks with kortest and then builds
            it again for the index; on the path that needs the index (the
            common one in strcmp) that was three mask ops after the load.
+  kfirst   vpcmp (mem),X,kA; vptestm X,X,kB{kA}  ->  vptestm X,X,kA; vpcmp (mem),X,kB{kA}
+           (any two mask-producing compares, the first with a memory operand
+           and the second masked by its result and free of memory): the same
+           and of the two masks, but the compare that waits for the load no
+           longer has the other one behind it. The critical path from the
+           loads to the mask is one operation shorter (strcmp, memcmp).
   tramp    jmp/call F where F, in another object of the same run, is nothing
            but jmp *slot(%rip) (the str_* entry points of dispatch.c): go
            through the slot directly, jmp/call *slot(%rip). The sources call
@@ -1017,6 +1023,53 @@ def kor_before_branch(fn):
     return done
 
 
+# ---------------------------------------------------------------- kfirst
+
+def kcompare(i):
+    """A mask-producing compare: (destination k, [source register names]) or None."""
+    ops = i.j['ops']
+    if not i.gas or i.j['encoding'] != 'EVEX' or not (i.mnemonic.startswith('vpcmp') or i.mnemonic.startswith('vptest')) \
+            or not ops or ops[0]['kind'] != 'Register' or ops[0]['reg'][0] != 'k' or i.reloc is not None:
+        return None
+    return ops[0]['reg'], [o['reg'] for o in ops[1:] if o['kind'] == 'Register']
+
+
+def kreg_entries(name, access):
+    return [{'name': name, 'full': name, 'access': access}]
+
+
+def mask_op_without_memory_first(fn):
+    done = []
+    for b in fn.blocks:
+        idx = [k for k in range(b.start, b.end) if fn.ins[k].gas]
+        for p, q in zip(idx, idx[1:]):
+            A, B = fn.ins[p], fn.ins[q]
+            ca, cb = kcompare(A), kcompare(B)
+            if not ca or not cb or p == b.start:   # a label on A would be left behind by the swap
+                continue
+            ka, kb = ca[0], cb[0]
+            if A.j['op_mask'] != 'none' or B.j['op_mask'] != ka or ka in cb[1] or ka in fn.live_after[q]:
+                continue
+            if not any(o['kind'] == 'Memory' for o in A.j['ops']) or any(o['kind'] == 'Memory' for o in B.j['ops']):
+                continue
+            if kb in ca[1] or A.j['zeroing'] or B.j['zeroing']:
+                continue
+            # B computes its mask into ka, unmasked; A, masked by it, delivers the and into kb
+            B.j['ops'][0]['reg'] = ka
+            B.j['op_mask'] = 'none'
+            B.j['regs'] = [r for r in B.j['regs'] if r['name'] not in (ka, kb)] + kreg_entries(ka, 'Write')
+            A.j['ops'][0]['reg'] = kb
+            A.j['op_mask'] = ka
+            A.j['regs'] = [r for r in A.j['regs'] if r['name'] not in (ka, kb)] + kreg_entries(kb, 'Write') + kreg_entries(ka, 'Read')
+            refresh(A)
+            refresh(B)
+            fn.ins[p], fn.ins[q] = B, A
+            done.append('%s: %s before %s, the load-bearing compare under its mask' % (fn.name, B.gas, A.gas))
+    if done:
+        analyze(fn)
+    return done
+
+
 # ---------------------------------------------------------------- tramp
 
 def trampolines_of(obj, code):
@@ -1068,7 +1121,7 @@ def optimize(obj, ins, evex, section='.text', trampolines=None):
     section: the code section the instructions came from (-ffunction-sections puts each function in its own).
     trampolines: the one-jump entry points of the whole run, see trampolines_of."""
     report = []
-    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,kor,lea,copy,tramp').split(',')
+    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,kor,kfirst,lea,copy,tramp').split(',')
     if not evex:  # layout passes apply to every unit; the mask/EVEX ones only to the AVX-512 ones
         passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy', 'tramp')]
     functions = split_functions(obj, ins, section)
@@ -1085,6 +1138,8 @@ def optimize(obj, ins, evex, section='.text', trampolines=None):
                 report += kortest_to_test(fn)
             elif name == 'kor':
                 report += kor_before_branch(fn)
+            elif name == 'kfirst':
+                report += mask_op_without_memory_first(fn)
             elif name == 'tramp':
                 report += through_trampolines(fn, trampolines or {})
             elif name == 'thread':
