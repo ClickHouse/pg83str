@@ -31,6 +31,16 @@ prove the rewrites safe:
   ktest    kortest k,k; je/jne L  ->  kmov k,r; test r,r; je/jne L with a free
            GPR r, and when L begins with the same kmov k,r on every way in,
            that kmov goes away: test+jcc fuse, kortest+jcc do not.
+  kor      kortest kA,kB; je/jne, where the only way into one successor is
+           this branch and it starts with kor kA,kB,kD; kmov kD,r: the kor and
+           kmov move in front of the branch and the kortest becomes test r,r.
+           The compiler tests the or of two masks with kortest and then builds
+           it again for the index; on the path that needs the index (the
+           common one in strcmp) that was three mask ops after the load.
+  tramp    jmp/call F where F, in another object of the same run, is nothing
+           but jmp *slot(%rip) (the str_* entry points of dispatch.c): go
+           through the slot directly, jmp/call *slot(%rip). The sources call
+           the entry points; the code jumps through the table.
   lea      lea (a,b),c; add $imm,c -> lea imm(a,b),c.
   copy     mov A,B at the entry (the ABI shuffle): reads of B become reads of A
            where both are unchanged, the copy moves to the places that still
@@ -52,7 +62,7 @@ from dataclasses import dataclass, field
 
 import x86
 from encode import HIGH8
-from objfile import Ins
+from objfile import Ins, Reloc
 
 
 def refresh(i):
@@ -945,17 +955,122 @@ def kortest_to_test(fn):
     return done
 
 
+# Instructions that leave the flags alone; anything else is taken to write them.
+FLAG_NEUTRAL = re.compile(r'^(mov|lea|push|pop|nop|k[a-z]+|v[a-z0-9]+|cmov[a-z]+|set[a-z]+|j[a-z]+)$')
+FLAG_READERS = re.compile(r'^(j(?!mp$)[a-z]+|set[a-z]+|cmov[a-z]+|adc|sbb)$')
+
+
+def reads_flags_first(fn, b, start):
+    """Whether the flags are read in block b from index start on before anything writes them."""
+    for k in range(start, b.end):
+        i = fn.ins[k]
+        if not i.gas:
+            continue
+        if FLAG_READERS.match(i.mnemonic):
+            return True
+        if not FLAG_NEUTRAL.match(i.mnemonic):
+            return False
+    return any(reads_flags_first(fn, s, s.start) for s in b.succ)
+
+
+def kor_before_branch(fn):
+    """kortest kA,kB; jcc with a successor, entered only from here, that starts
+    with kor kA,kB,kD; kmov kD,r: kor; kmov; test r,r; jcc. The kor and kmov
+    move up; kD and r must be dead on the other edge, and nothing may read the
+    flags of the kortest (test sets CF differently)."""
+    done = []
+    preds = predecessors(fn)
+    inserts = []
+    for b in fn.blocks:
+        seq = [k for k in range(b.start, b.end) if fn.ins[k].gas]
+        if len(seq) < 2:
+            continue
+        kt, jcc = fn.ins[seq[-2]], fn.ins[seq[-1]]
+        m = kregs(kt, 'kortest', 2)
+        if not m or jcc.flow != 'ConditionalBranch' or jcc.mnemonic not in ('je', 'jne'):
+            continue
+        for s in b.succ:
+            if s is b or preds[id(s)] != [b]:
+                continue
+            body = [k for k in range(s.start, s.end) if fn.ins[k].gas]
+            if len(body) < 2:
+                continue
+            kor, km = kregs(fn.ins[body[0]], 'kor', 3), kmov_of(fn.ins[body[1]])
+            if not kor or sorted(kor[1:]) != sorted(m) or not km or km[1] != kor[0]:
+                continue
+            kd, reg = kor[0], km[2]
+            others = [x for x in b.succ if x is not s]
+            if any(kd in x.live_in or full_gpr(reg) in x.live_in for x in others):
+                continue
+            if reads_flags_first(fn, s, body[2] if len(body) > 2 else s.end) or any(reads_flags_first(fn, x, x.start) for x in others):
+                continue
+            inserts.append((seq[-2], [clone(fn.ins[body[0]], before=True), clone(fn.ins[body[1]], before=True)]))
+            kt.j.update({'mnemonic': 'test', 'cc': None, 'ops': [register(reg, 32), register(reg, 32)],
+                         'regs': [{'name': reg, 'full': full_gpr(reg), 'access': 'Read'}], 'encoding': 'Legacy'})
+            refresh(kt)
+            done.append('%s: %s and %s moved in front of the branch, kortest -> test %s' % (fn.name, fn.ins[body[0]].gas, fn.ins[body[1]].gas, reg))
+            delete(fn.ins[body[0]])
+            delete(fn.ins[body[1]])
+            break
+    for k, clones in sorted(inserts, reverse=True):
+        fn.ins[k:k] = clones
+    return done
+
+
+# ---------------------------------------------------------------- tramp
+
+def trampolines_of(obj, code):
+    """{function name: (symbol, offset)} for every global function of the object whose
+    body is one jmp *symbol+offset(%rip): the str_* entry points of dispatch.c."""
+    out = {}
+    exported = {s.name for s in obj.symbols if s.type == 'STT_FUNC' and s.bind == 'STB_GLOBAL'}
+    for section, ins in code.items():
+        for f in obj.functions(section):
+            body = [i for i in ins if f.value <= i.offset < f.value + f.size and i.gas]
+            # a frame-pointer build wraps the jump in push %rbp; mov %rsp,%rbp; ...; pop %rbp
+            if len(body) == 4 and [i.gas for i in body[:3]] == ['pushq %rbp', 'movq %rsp,%rbp', 'popq %rbp']:
+                body = body[3:]
+            if f.name in exported and len(body) == 1 and body[0].mnemonic == 'jmp' and body[0].flow == 'IndirectBranch' \
+                    and body[0].reloc is not None and not body[0].reloc.symbol_is_section and body[0].reloc.type == 'R_X86_64_PC32':
+                i, r = body[0], body[0].reloc
+                out[f.name] = (r.symbol, r.addend + (i.home_end - r.offset))
+    return out
+
+
+def through_trampolines(fn, trampolines):
+    """jmp/call F with F a trampoline: jmp/call *slot(%rip)."""
+    done = []
+    for i in fn.ins:
+        if not i.gas or i.reloc is None or i.reloc.type != 'R_X86_64_PLT32' or i.mnemonic not in ('jmp', 'call'):
+            continue
+        t = trampolines.get(i.reloc.symbol)
+        if t is None:
+            continue
+        symbol, slot = t
+        i.j['ops'] = [{'kind': 'Memory', 'mem': {'base': 'none', 'index': 'none', 'scale': 1, 'disp': 0, 'size': 8, 'rip_rel': True, 'seg': None}, 'field_pos': 2}]
+        i.j['mems'] = [{'base': 'none', 'index': 'none', 'scale': 1, 'disp': 0, 'size': 8, 'access': 'Read'}]
+        i.j['flow'] = 'IndirectBranch' if i.mnemonic == 'jmp' else 'IndirectCall'
+        i.j['encoding'] = 'Legacy'
+        i.j['len'] = 6   # ff 25/15 disp32: the relocation field is at byte 2
+        i.j.pop('branch_target', None)
+        done.append('%s: %s %s now goes through %s+%#x' % (fn.name, i.mnemonic, i.reloc.symbol, symbol, slot))
+        i.reloc = Reloc(i.home + 2, 'R_X86_64_PC32', symbol, slot - 4)
+        refresh(i)
+    return done
+
+
 def full_gpr(name):
     return {'eax': 'rax', 'ecx': 'rcx', 'edx': 'rdx', 'esi': 'rsi', 'edi': 'rdi'}.get(name, 'r' + name[1:-1] if name.endswith('d') else name)
 
 
-def optimize(obj, ins, evex, section='.text'):
+def optimize(obj, ins, evex, section='.text', trampolines=None):
     """evex: the unit is compiled for AVX-512VL, so ymm16-31 and masked memory operands exist.
-    section: the code section the instructions came from (-ffunction-sections puts each function in its own)."""
+    section: the code section the instructions came from (-ffunction-sections puts each function in its own).
+    trampolines: the one-jump entry points of the whole run, see trampolines_of."""
     report = []
-    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,lea,copy').split(',')
-    if not evex:  # layout passes apply to every level; the mask/EVEX ones only to v4
-        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy')]
+    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,kor,lea,copy,tramp').split(',')
+    if not evex:  # layout passes apply to every unit; the mask/EVEX ones only to the AVX-512 ones
+        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy', 'tramp')]
     functions = split_functions(obj, ins, section)
     for fn in functions:
         analyze(fn)
@@ -968,6 +1083,10 @@ def optimize(obj, ins, evex, section='.text'):
                 report += hot_tails(fn)
             elif name == 'ktest':
                 report += kortest_to_test(fn)
+            elif name == 'kor':
+                report += kor_before_branch(fn)
+            elif name == 'tramp':
+                report += through_trampolines(fn, trampolines or {})
             elif name == 'thread':
                 report += thread_jumps(fn)
             elif name == 'lea':

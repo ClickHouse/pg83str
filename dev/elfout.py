@@ -50,6 +50,10 @@ def write_object(src_path, dst_path, layouts, remap):
             value, size = sym.value, sym.size
         sym_index[n] = len(symbols)
         symbols.append((sym.name, value, size, sym.type, sym.bind, shndx))
+    # a pass may relocate against a symbol the object did not reference (the table behind a trampoline)
+    needed = {symname for lay in layouts.values() for _, _, symname, is_section, _ in lay.relocs if not is_section}
+    for name in sorted(needed - {name for name, *_ in symbols}):
+        symbols.append((name, 0, 0, 'STT_NOTYPE', 'STB_GLOBAL', 0))
     strtab = bytearray(b'\0')
     name_offset = {}
     for name, *_ in symbols:

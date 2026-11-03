@@ -25,15 +25,13 @@ from objfile import Object  # noqa: E402
 from units import UNITS, unit_of  # noqa: E402
 
 
-def process(path, out, args):
+def process(path, out, args, obj, code, trampolines):
     unit = unit_of(path)
     march = UNITS[unit]
-    obj = Object(path)
-    code = obj.decode_all()
     report = []
     if not args.roundtrip:
         for name in code:
-            code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name)
+            code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name, trampolines=trampolines)
             report += lines
     layouts = {name: layout.layout(obj, name, ins, args.func_align) for name, ins in code.items()}
     remap = layout.resolve_relocs(obj, layouts)
@@ -143,8 +141,14 @@ def main():
     lines = []
     failed = False
     objects = []
-    for path in inputs_of(args.inputs, out):
-        new, report = process(path, out, args)
+    # every object decoded first: a pass may look across them (the trampolines of dispatch.c)
+    decoded = [(path, Object(path)) for path in inputs_of(args.inputs, out)]
+    decoded = [(path, obj, obj.decode_all()) for path, obj in decoded]
+    trampolines = {}
+    for path, obj, code in decoded:
+        trampolines.update(opt.trampolines_of(obj, code))
+    for path, obj, code in decoded:
+        new, report = process(path, out, args, obj, code, trampolines)
         objects.append(new)
         unit = unit_of(path)
         lines += ['%s: %s' % (unit, line) for line in report]
