@@ -91,8 +91,10 @@ def padding_runs(obj, section, instructions):
     return padding
 
 
-def layout(obj, section, instructions, func_align=None, jcc_align=None):
-    """jcc_align: pad branches off 32-byte boundaries (the Skylake JCC erratum); None: POST_JCC_ALIGN (default on)."""
+def layout(obj, section, instructions, func_align=None, jcc_align=None, source=None):
+    """jcc_align: pad branches off 32-byte boundaries (the Skylake JCC erratum); None: POST_JCC_ALIGN (default on).
+    source: the object's section the instructions came from, when they are written as a new one (a clone)."""
+    section = source or section
     sec = obj.sections[section]
     old_end = len(sec.data)
     padding = padding_runs(obj, section, instructions)

@@ -5,14 +5,16 @@ encode, write the objects and the archive.
     post.py [--out DIR] [--archive LIB.a] [--report FILE] [--roundtrip] [--check]
             [--passes a,b,c] [--func-align N] OBJECT.o|ARCHIVE.a ...
 
-Each object is decoded with x86.py, rewritten by opt.py (nothing with
---roundtrip), laid out again by layout.py and written by elfout.py: once as
-it is and once more, for every unit but dispatch, with the branches padded
-off 32-byte boundaries (the Skylake JCC erratum) and its global functions
-renamed name_jcc, as jcc-<object>; dispatch.c picks those on the hosts with
-the erratum, since the padding costs about 5% elsewhere. --check compares
-the result with the original: with --roundtrip the code bytes, relocations
-and symbols must be identical; otherwise it reports the code sizes."""
+Each object is decoded with x86.py and rewritten by opt.py (nothing with
+--roundtrip); then cfg.py gives every configuration of dispatch.c its own
+copies of the functions it reaches, calling each other directly and laid
+out as the configuration asks (the sources call through the table; the code
+a host runs does not); layout.py lays the sections out and elfout.py writes
+the objects, every unit but dispatch also as a twin with the Skylake JCC
+padding and its functions renamed name_jcc, the implementations the
+Skylake-SP configuration names. --check compares the result with the
+original: with --roundtrip the code bytes, relocations and symbols must be
+identical; otherwise it reports the code sizes."""
 import argparse
 import os
 import sys
@@ -20,6 +22,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import cfg  # noqa: E402
 import elf  # noqa: E402
 import elfout  # noqa: E402
 import layout  # noqa: E402
@@ -28,11 +31,7 @@ from objfile import Object  # noqa: E402
 from units import UNITS, unit_of  # noqa: E402
 
 
-def process(path, out, args, obj, code, trampolines):
-    """The object rewritten, laid out without the JCC padding; and, for every unit
-    but dispatch, a twin laid out with it, its global functions renamed name_jcc,
-    for the hosts with the erratum (dispatch.c picks it there). Returns
-    [(new path, report lines)]."""
+def optimize_all(path, obj, code, args, trampolines):
     unit = unit_of(path)
     march = UNITS[unit]
     report = []
@@ -40,22 +39,34 @@ def process(path, out, args, obj, code, trampolines):
         for name in code:
             code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name, trampolines=trampolines)
             report += lines
-    out_objects = []
-    variants = [('', False, None)]
-    if not args.roundtrip and unit != 'dispatch':
+    return report
+
+
+def write(path, out, args, obj, code, clones, overrides):
+    """Lay the object out again, with the configuration clones as new sections, and write it;
+    for every unit but dispatch also the twin laid out with the JCC padding, its global functions
+    renamed name_jcc (the implementations the Skylake-SP configuration names). Returns the paths."""
+    jcc = None if args.roundtrip else False
+    layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=jcc) for name, ins in code.items()}
+    new_sections = []
+    for section, ins, symname, jcc_cfg, source in clones:
+        layouts[section] = layout.layout(obj, section, ins, args.func_align, jcc_align=jcc_cfg, source=source)
+        new_sections.append((section, layouts[section], symname))
+    remap = layout.resolve_relocs(obj, layouts)
+    new = out / Path(path).name
+    elfout.write_object(path, new, layouts, remap, None, new_sections, overrides)
+    out_paths = [new]
+    if not args.roundtrip and unit_of(path) != 'dispatch':
         exported = {s.name for s in obj.symbols if s.type == 'STT_FUNC' and s.bind == 'STB_GLOBAL' and s.section != 'UND'}
         data = sorted(s.name for s in obj.symbols if s.type == 'STT_OBJECT' and s.bind == 'STB_GLOBAL' and s.section != 'UND')
         if data:   # a unit is code only: its twin would define the data a second time
             raise ValueError('%s defines data (%s); data belongs to dispatch.c' % (Path(path).name, ', '.join(data)))
-        variants.append(('jcc-', True, {name: name + '_jcc' for name in exported}))
-    for prefix, jcc, rename in variants:
-        jcc = jcc if not args.roundtrip else None
-        layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=jcc) for name, ins in code.items()}
-        remap = layout.resolve_relocs(obj, layouts)
-        new = out / (prefix + Path(path).name)
-        elfout.write_object(path, new, layouts, remap, rename)
-        out_objects.append((new, report if not prefix else ['%s: with the JCC padding, %d functions as *_jcc' % (new.name, len(rename))]))
-    return out_objects
+        twin_layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=True) for name, ins in code.items()}
+        remap = layout.resolve_relocs(obj, twin_layouts)
+        twin = out / ('jcc-' + Path(path).name)
+        elfout.write_object(path, twin, twin_layouts, remap, {name: name + '_jcc' for name in exported})
+        out_paths.append(twin)
+    return out_paths
 
 
 def describe(path):
@@ -166,19 +177,33 @@ def main():
     trampolines = {}
     for path, obj, code in decoded:
         trampolines.update(opt.trampolines_of(obj, code))
+    reports = {}
     for path, obj, code in decoded:
+        reports[path] = optimize_all(path, obj, code, args, trampolines)
+    # the configurations: every function each one reaches, cloned into its unit, calling directly
+    clones = [[] for _ in decoded]
+    overrides = {}
+    dispatch = [obj for _, obj, _ in decoded if any(s.name == 'str_configs' for s in obj.symbols)]
+    if not args.roundtrip and dispatch:
+        configs = cfg.read_configs(dispatch[0])
+        clones, overrides = cfg.specialize(decoded, configs, cfg.initial_table(dispatch[0]))
+        for c in configs:
+            n = sum(1 for cl in clones for section, *_ in cl if section.startswith('.text.%s.' % c.name))
+            lines.append('%s: %d functions, %s' % (c.name, n, 'the JCC padding' if c.jcc else 'no padding'))
+    for (path, obj, code), unit_clones in zip(decoded, clones):
         unit = unit_of(path)
-        for new, report in process(path, out, args, obj, code, trampolines):
-            objects.append(new)
-            lines += ['%s: %s' % (unit, line) for line in report]
-            if args.check:
-                diff = compare(describe(path), describe(new))
-                if args.roundtrip:
-                    lines.append('%s: %s' % (unit, 'identical' if diff is None else diff))
-                    failed |= diff is not None
-                else:
-                    a, b = describe(path)[0], describe(new)[0]
-                    lines.append('%s: %d -> %d bytes of code (%s)' % (unit, sum(map(len, a.values())), sum(map(len, b.values())), new.name))
+        paths = write(path, out, args, obj, code, unit_clones, overrides)
+        objects += paths
+        new = paths[0]
+        lines += ['%s: %s' % (unit, line) for line in reports[path]]
+        if args.check:
+            diff = compare(describe(path), describe(new))
+            if args.roundtrip:
+                lines.append('%s: %s' % (unit, 'identical' if diff is None else diff))
+                failed |= diff is not None
+            else:
+                a, b = describe(path)[0], describe(new)[0]
+                lines.append('%s: %d -> %d bytes of code' % (unit, sum(map(len, a.values())), sum(map(len, b.values()))))
     if args.archive:
         elfout.write_archive(args.archive, [(o.name, o.read_bytes()) for o in objects])
     text = '\n'.join(lines) + '\n'

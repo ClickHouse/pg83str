@@ -9,10 +9,14 @@ import elf
 DROP = {'.eh_frame', '.llvm_addrsig', '.symtab', '.strtab', '.shstrtab'}
 
 
-def write_object(src_path, dst_path, layouts, remap, rename=None):
+def write_object(src_path, dst_path, layouts, remap, rename=None, new_sections=(), overrides=None):
     """layouts: {code section name: Layout}; remap(section, old offset) -> new offset;
-    rename: {symbol name: new name} for the symbols defined here and the relocations against them."""
+    rename: {symbol name: new name} for the symbols defined here and the relocations against them;
+    new_sections: [(name, Layout, symbol name)] code sections that did not exist in the source, each
+    with one global function symbol at its start; overrides: {(section, offset): (symbol, addend)}
+    for data relocations that now point elsewhere."""
     rename = rename or {}
+    overrides = overrides or {}
     e = elf.read(src_path)
     old_index = {s.name: s.index for s in e.sections}
     kept = []   # old sections that stay, in order
@@ -33,9 +37,17 @@ def write_object(src_path, dst_path, layouts, remap, rename=None):
         else:
             contents.append(s.data if s.type != 'SHT_NOBITS' else b'')
         headers.append(dict(type=s, flags=s.flags, link=0, info=0, align=s.align, entsize=s.entsize, nobits=s.size if s.type == 'SHT_NOBITS' else None))
-    # symbols: drop the ones of dropped sections, renumber, update code values and sizes
+    for name, lay, symname in new_sections:
+        new_index[name] = len(names)
+        names.append(name)
+        contents.append(lay.data)
+        headers.append(dict(type=1, flags=0x6, link=0, info=0, align=64, entsize=0))
+    # symbols: drop the ones of dropped sections, renumber, update code values and sizes;
+    # a new section gets a section symbol among the locals and its function among the globals
     symbols = []
     sym_index = {}
+    new_locals = [('', 0, 0, 'STT_SECTION', 'STB_LOCAL', new_index[name]) for name, lay, symname in new_sections]
+    new_globals = [(symname, 0, len(lay.data), 'STT_FUNC', 'STB_GLOBAL', new_index[name]) for name, lay, symname in new_sections]
     for n, sym in enumerate(e.symbols):
         if 0 < sym.shndx < 0xff00:
             secname = e.sections[sym.shndx].name
@@ -50,10 +62,15 @@ def write_object(src_path, dst_path, layouts, remap, rename=None):
         else:
             shndx = sym.shndx
             value, size = sym.value, sym.size
+        if sym.bind != 'STB_LOCAL' and new_locals:
+            symbols += new_locals
+            new_locals = []
         sym_index[n] = len(symbols)
         symbols.append((rename.get(sym.name, sym.name), value, size, sym.type, sym.bind, shndx))
+    symbols += new_locals + new_globals
     # a pass may relocate against a symbol the object did not reference (the table behind a trampoline)
     needed = {symname for lay in layouts.values() for _, _, symname, is_section, _ in lay.relocs if not is_section}
+    needed |= {symname for symname, _ in overrides.values()}
     for name in sorted(needed - {name for name, *_ in symbols}):
         symbols.append((name, 0, 0, 'STT_NOTYPE', 'STB_GLOBAL', 0))
     strtab = bytearray(b'\0')
@@ -85,9 +102,15 @@ def write_object(src_path, dst_path, layouts, remap, rename=None):
                 addend = r.addend
                 if is_section and symname in layouts:
                     addend = remap(symname, addend)
+                if (s.name, r.offset) in overrides:
+                    symname, addend = overrides[(s.name, r.offset)]
+                    is_section = False
                 entries.append((r.offset, r.type, symname if is_section else rename.get(symname, symname), is_section, addend))
         if entries:
             rela[s.name] = entries
+    for name, lay, symname in new_sections:
+        if lay.relocs:
+            rela[name] = list(lay.relocs)
     by_name = {}
     for n, (name, value, size, type_, bind, shndx) in enumerate(symbols):
         if type_ == 'STT_SECTION':
