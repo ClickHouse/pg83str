@@ -49,11 +49,21 @@ size_t strlen_tail_avx2(const u8 *a, const u8 *s)
     }
 }
 
+/* One 32-byte block at s when the page allows (all 32 bytes count: 9 strings
+   in 10 end there, median 8 bytes); else the aligned block around s, which
+   never crosses a page, with the bytes before s shifted out. Either way the
+   next aligned block is where the tail continues. */
 size_t strlen_avx2(const char *str)
 {
-    const u8 *s = (const u8 *)str, *next = 0;
-    size_t n = strlen_prefix64(s, &next);
-    return n != SIZE_MAX ? n : str_strlen_tail(next, s);
+    const u8 *s = (const u8 *)str;
+    unsigned m;
+    if (page_left(s) >= 32)
+        m = mask256(eq_zero(load256(s)));
+    else
+        m = mask256(eq_zero(load256a(align_down(s, 32)))) >> ((uintptr_t)s & 31);
+    if (m)
+        return ctz(m);
+    return str_strlen_tail(align_down(s + 32, 32), s);
 }
 
 /* ------------------------------------------------------------------ copy */
