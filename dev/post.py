@@ -44,6 +44,9 @@ def process(path, out, args, obj, code, trampolines):
     variants = [('', False, None)]
     if not args.roundtrip and unit != 'dispatch':
         exported = {s.name for s in obj.symbols if s.type == 'STT_FUNC' and s.bind == 'STB_GLOBAL' and s.section != 'UND'}
+        data = sorted(s.name for s in obj.symbols if s.type == 'STT_OBJECT' and s.bind == 'STB_GLOBAL' and s.section != 'UND')
+        if data:   # a unit is code only: its twin would define the data a second time
+            raise ValueError('%s defines data (%s); data belongs to dispatch.c' % (Path(path).name, ', '.join(data)))
         variants.append(('jcc-', True, {name: name + '_jcc' for name in exported}))
     for prefix, jcc, rename in variants:
         jcc = jcc if not args.roundtrip else None

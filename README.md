@@ -25,6 +25,12 @@ names a complete table per class of host: 256-bit AVX-512 first blocks over
 the AVX2 kernels on Skylake-SP, 512-bit ones on Zen 4 and later, SSE4.2
 `strspn`/`strcspn` everywhere above the baseline.
 
+Anything that depends on the host is a slot, not a build flag. The post pass
+lays every unit out twice: plain, and with branches kept off 32-byte
+boundaries for the Skylake JCC erratum (`jcc-<unit>.c.o`, functions renamed
+`name_jcc`); the padding helps Skylake-SP and costs about 5% elsewhere, so
+only the Skylake-SP configuration names the `_jcc` twins.
+
 ## Layout
 
 - `sse2.c`, `sse42.c`, `avx2.c`, `evex.c`, `evex512.c` — the implementations,
@@ -36,11 +42,14 @@ the AVX2 kernels on Skylake-SP, 512-bit ones on Zen 4 and later, SSE4.2
   `str_table`, and the public `str_memcpy` and friends jump through it. A
   libc build renames them: `-Dstr_memcpy=memcpy ...`.
 - `dev/` — the post pass, Python only: `x86.py` decodes x86-64 (legacy,
-  VEX, EVEX) into structured instructions, `opt.py` rewrites them,
-  `encode.py` encodes them again from the same tables, `layout.py` lays the
-  sections out (branch relaxation, alignment, relocations), `elf.py` and
-  `elfout.py` read and write the objects and the archive, `post.py` drives
-  it. No assembler, no `ar`.
+  VEX, EVEX) into structured instructions, `opt.py` rewrites them (tail and
+  branch layout, mask-register and vector-register rewrites, calls through
+  the table slots instead of the entry points), `encode.py` encodes them
+  again from the same tables, `layout.py` lays the sections out (branch
+  relaxation, alignment, relocations), `elf.py` and `elfout.py` read and
+  write the objects and the archive, `post.py` drives it. No assembler, no
+  `ar`. The library is the post pass's output: a build without it does not
+  link.
 - `tst/test.c` — the library against the host C library: all sizes and
   alignments, overlaps, guard pages, random sets, for every configuration the
   host can run and for the dispatched one. `tst/roundtrip.py` — the decoder

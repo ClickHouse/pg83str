@@ -14,6 +14,11 @@
  */
 #include "common.h"
 
+/* The one piece of data the implementations read: whether rep movsb/stosb
+   are fast here. Lives here, not in a unit, so that a unit is code only and
+   the post pass can lay it out twice. */
+unsigned char str_cpu_erms;
+
 /* clang-format off */
 struct str_table str_table = {
     .memcpy = memcpy_sse2, .memmove = memmove_sse2, .memset = memset_sse2, .memcmp = memcmp_sse2,

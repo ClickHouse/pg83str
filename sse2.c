@@ -1,7 +1,7 @@
 /*
  * sse2.c: every primitive for baseline x86-64 (SSE2 only), the set str_table
  * starts as. Compile with -march=x86-64. Also home of what the other files
- * share: table-driven strspn/strcspn, single-byte scans, and the ERMS flag.
+ * share: table-driven strspn/strcspn and single-byte scans.
  *
  * Semantics are the plain C library ones: a string is a byte sequence up to
  * the first NUL, comparisons use unsigned char, no locale, no Unicode.
@@ -9,7 +9,6 @@
  */
 #include "common.h"
 
-unsigned char str_cpu_erms;
 
 /* ------------------------------------------------------------ NUL scans */
 
