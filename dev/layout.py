@@ -102,12 +102,16 @@ def layout(obj, section, instructions, func_align=None, jcc_align=None):
     for i in instructions:
         if i.target is not None and i.reloc is None and 0 <= i.target < old_end and i.gas:
             internal[id(i)] = i.target
-    # branch sizes: the decoded form where there is one, short otherwise (grown as needed)
+    # branch sizes: the decoded form where there is one, short otherwise (grown as needed);
+    # a branch or call with a relocation is rel32 whatever its text says: the field the
+    # linker fills is 4 bytes (a pass may have given it a new target and no form)
     bsize = {}
     for i in instructions:
         if id(i) in internal:
             form = i.j.get('form')
             bsize[id(i)] = form['imm'] if form and form.get('imm') in (8, 32) else 8
+        elif i.reloc is not None and i.flow in ('ConditionalBranch', 'UnconditionalBranch', 'Call'):
+            bsize[id(i)] = 32
     # new instructions marked 'before' belong to the original instruction after them: its
     # label (and a function symbol) must point at the first of them
     leading = set()
@@ -217,6 +221,8 @@ def layout(obj, section, instructions, func_align=None, jcc_align=None):
         if id(i) in internal:
             size = bsize[id(i)]
             rel = offsets[internal[id(i)]] - (off + branch_length(i, size))
+        else:
+            size = bsize.get(id(i))
         b, fields = encode.encode(i.j, rel, size)
         assert encoded[id(i)][0] == off, (i, encoded[id(i)][0], off)
         data += b

@@ -760,16 +760,18 @@ def sink_copies(fn):
         if bad or not region:
             continue
         region_blocks = {id(block_of[k]) for k in region}
-        # where must B be restored?
-        inserts = set()
+        # where must B be restored? {index: belongs to the instruction there (its label
+        # moves to the copy) or to the edge before it (the label stays: a loop head
+        # entered from the region's fall-through must not run the copy on its back edges)}
+        inserts = {}
         for k in region:
             i = fn.ins[k]
             if k in implicit:
-                inserts.add(k)
+                inserts[k] = True
             if ends.get(k) == 'A' and B in fn.live_after[k]:
-                inserts.add(k)
+                inserts[k] = True
             if B in exit_live(i):
-                inserts.add(k)
+                inserts[k] = True
         for b in fn.blocks:
             if id(b) not in region_blocks:
                 continue
@@ -777,7 +779,10 @@ def sink_copies(fn):
             if last in region and last not in ends:
                 for s in b.succ:
                     if id(s) not in region_blocks and B in s.live_in:
-                        inserts.add(last if fn.ins[last].flow != 'Next' else b.end)
+                        if fn.ins[last].flow != 'Next':
+                            inserts[last] = True
+                        else:
+                            inserts.setdefault(b.end, False)
         if len(inserts) > 3:
             continue
         # rewrite the reads
@@ -812,7 +817,7 @@ def sink_copies(fn):
                 delete(i)
         new_ins = []
         for k in sorted(inserts, reverse=True):
-            copy_ = clone(mov, before=True)
+            copy_ = clone(mov, before=inserts[k])
             copy_.j.pop('branch_target', None)
             refresh(copy_)
             new_ins.append((k, [copy_]))
