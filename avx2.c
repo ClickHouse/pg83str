@@ -70,7 +70,7 @@ size_t strlen_avx2(const char *str)
 
 /* n > 64. Head and tail vectors are loaded first and stored last, so an
    aligned loop may clobber source bytes only after they were consumed. */
-void * copy_large_avx2(u8 *d, const u8 *s, size_t n)
+void *copy_large_avx2(u8 *d, const u8 *s, size_t n)
 {
     if (n <= 128) {
         __m256i x0 = load256(s), x1 = load256(s + 32), y0 = load256(s + n - 64), y1 = load256(s + n - 32);
@@ -158,7 +158,7 @@ void *memmove_avx2(void *dst, const void *src, size_t n) { return copy(dst, src,
 /* ------------------------------------------------------------------ fill */
 
 /* n > 64. */
-void * fill_large_avx2(u8 *d, int c, size_t n)
+void *fill_large_avx2(u8 *d, int c, size_t n)
 {
     __m256i v = _mm256_set1_epi8((char)c);
     if (n <= 128) {
@@ -183,24 +183,27 @@ void * fill_large_avx2(u8 *d, int c, size_t n)
         rep_stosb(d, c, n);
         RETURN_OPAQUE(d);
     }
+    /* four unaligned stores at each end, aligned 128-byte steps between; the loop
+       is not unrolled (the compiler would, with a long prologue for a count that
+       is usually small) */
     store256(d, v);
-    size_t skew = 32 - ((uintptr_t)d & 31);
-    u8 *dp = d + skew;
-    size_t left = n - skew;
-    while (left >= 128) {
+    store256(d + 32, v);
+    store256(d + 64, v);
+    store256(d + 96, v);
+    u8 *end = d + n - 128;
+    u8 *dp = (u8 *)align_down(d + 128, 32);
+    NO_UNROLL
+    while (dp < end) {
         store256a(dp, v);
         store256a(dp + 32, v);
         store256a(dp + 64, v);
         store256a(dp + 96, v);
         dp += 128;
-        left -= 128;
     }
-    while (left >= 32) {
-        store256a(dp, v);
-        dp += 32;
-        left -= 32;
-    }
-    store256(d + n - 32, v);
+    store256(end, v);
+    store256(end + 32, v);
+    store256(end + 64, v);
+    store256(end + 96, v);
     RETURN_OPAQUE(d);
 }
 
@@ -252,15 +255,28 @@ int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n)
     return 0;
 }
 
+/* n <= 32 in one 32-byte compare when both pointers have the room in their
+   pages: eq + 1 sets the bit of the first differing lane (all equal wraps to
+   0), bzhi drops the lanes at n and beyond. No split at 16, no test for 0.
+   33..64: the first and the last 32 bytes. */
 int memcmp_avx2(const void *pa, const void *pb, size_t n)
 {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
-    if (n <= 16)
-        return memcmp_le16(a, b, n);
-    if (n <= 32)
-        return memcmp_17_32(a, b, n);
-    if (n <= 64)
-        return memcmp_33_64(a, b, n);
+    unsigned m;
+    if (n <= 32) {
+        if (__builtin_expect(both_in_page(a, b, 32), 1)) {
+            m = _bzhi_u32(mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1, (unsigned)n);
+            return m ? byte_diff(a, b, ctz(m)) : 0;
+        }
+        return n <= 16 ? memcmp_le16(a, b, n) : memcmp_17_32(a, b, n);
+    }
+    if (n <= 64) {
+        m = mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1;
+        if (m)
+            return byte_diff(a, b, ctz(m));
+        m = mask256(_mm256_cmpeq_epi8(load256(a + n - 32), load256(b + n - 32))) + 1;
+        return m ? byte_diff(a, b, n - 32 + ctz(m)) : 0;
+    }
     return str_memcmp_large(a, b, n);
 }
 
@@ -328,7 +344,7 @@ int strcmp_avx2(const char *left, const char *right)
    boundary after s (the caller checked that block). Each aligned source block
    is tested before the previous one is stored; the last 32 bytes of the string
    go out as one overlapping store. Exported for v4. */
-void * strcpy_long_avx2(u8 *d, const u8 *s)
+void *strcpy_long_avx2(u8 *d, const u8 *s)
 {
     const u8 *a = align_down(s, 16) + 16; /* everything before a is nonzero */
     if ((uintptr_t)a & 31) {

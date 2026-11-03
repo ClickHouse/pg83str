@@ -122,7 +122,7 @@ static void *copy_backward(u8 *d, const u8 *s, size_t n)
 }
 
 /* n > 64. */
-void * copy_large_sse2(u8 *d, const u8 *s, size_t n)
+void *copy_large_sse2(u8 *d, const u8 *s, size_t n)
 {
     if (n <= 128) {
         __m128i x0 = load16(s), x1 = load16(s + 16), x2 = load16(s + 32), x3 = load16(s + 48);
@@ -167,7 +167,7 @@ void *memmove_sse2(void *dst, const void *src, size_t n) { return copy(dst, src,
 /* ------------------------------------------------------------------ fill */
 
 /* n > 64. */
-void * fill_large_sse2(u8 *d, int c, size_t n)
+void *fill_large_sse2(u8 *d, int c, size_t n)
 {
     __m128i v = splat16(c);
     if (n <= 128) {
@@ -276,7 +276,7 @@ int strcmp_sse2(const char *left, const char *right)
 
 /* ---------------------------------------------------------- strcpy/strcat */
 
-void * strcpy_long_sse2(u8 *d, const u8 *s)
+void *strcpy_long_sse2(u8 *d, const u8 *s)
 {
     return strcpy_long16(d, s);
 }

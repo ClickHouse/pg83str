@@ -30,6 +30,11 @@
 typedef unsigned char u8;
 
 #define NOINLINE __attribute__((noinline))
+#ifdef __clang__
+    #define NO_UNROLL _Pragma("clang loop unroll(disable)")
+#else
+    #define NO_UNROLL _Pragma("GCC unroll 1")
+#endif
 
 /* The one table of primitives: the public functions and the kernels they hand
    the long cases to. Every implementation does its own hot path and reaches

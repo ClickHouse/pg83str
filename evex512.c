@@ -102,8 +102,11 @@ void *memmove_evex512(void *dst, const void *src, size_t n) { return copy((u8 *)
 
 /* ------------------------------------------------------------------ fill */
 
-/* No vector argument (the library's convention: nothing vector is live across a call), the splat is remade. */
-void * fill_large_evex512(u8 *d, int c, size_t n)
+/* n > 256. No vector argument (the library's convention: nothing vector is
+   live across a call), the splat is remade. Four unaligned stores at each end,
+   aligned 256-byte steps between; the loop is not unrolled (the compiler
+   would, with a long prologue for a count that is usually 1-16). */
+void *fill_large_evex512(u8 *d, int c, size_t n)
 {
     if (n >= REP_THRESHOLD && str_cpu_erms) {
         rep_stosb(d, c, n);
@@ -111,23 +114,23 @@ void * fill_large_evex512(u8 *d, int c, size_t n)
     }
     __m512i v = _mm512_set1_epi8((char)c);
     store512(d, v);
-    size_t skew = 64 - ((uintptr_t)d & 63);
-    u8 *dp = d + skew;
-    size_t left = n - skew;
-    while (left >= 256) {
+    store512(d + 64, v);
+    store512(d + 128, v);
+    store512(d + 192, v);
+    u8 *end = d + n - 256;
+    u8 *dp = (u8 *)align_down(d + 256, 64);
+    NO_UNROLL
+    while (dp < end) {
         store512a(dp, v);
         store512a(dp + 64, v);
         store512a(dp + 128, v);
         store512a(dp + 192, v);
         dp += 256;
-        left -= 256;
     }
-    while (left >= 64) {
-        store512a(dp, v);
-        dp += 64;
-        left -= 64;
-    }
-    store512(d + n - 64, v);
+    store512(end, v);
+    store512(end + 64, v);
+    store512(end + 128, v);
+    store512(end + 192, v);
     RETURN_OPAQUE(d);
 }
 
