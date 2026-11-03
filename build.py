@@ -8,7 +8,9 @@ from units import UNITS  # noqa: E402
 
 # -fno-pic: the post passes rewrite the objects and want plain PC32/PLT32
 # relocations; the library is meant to be linked into a static libc anyway.
-build.cflags += ["-O3", "-fno-builtin", "-fno-stack-protector", "-fomit-frame-pointer", "-fno-pic", "-fno-pie"]
+# -ffunction-sections: one function per section, which the post pass needs
+# to give every configuration its own copies of the functions it reaches.
+build.cflags += ["-O3", "-fno-builtin", "-fno-stack-protector", "-fomit-frame-pointer", "-fno-pic", "-fno-pie", "-ffunction-sections"]
 
 warning_flags = ["-Wall", "-Wextra", "-Werror"]
 
