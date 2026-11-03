@@ -37,3 +37,32 @@ jobs:
         run: |
           cat .build/checks/test.txt .build/checks/roundtrip.txt
           cat .build/post/report.txt
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Show the CPU
+        run: lscpu | sed -n '1,24p'
+
+      # 100% needs a host that runs every configuration (AVX-512); elsewhere the
+      # EVEX code cannot run and the report is informational.
+      - name: Line and branch coverage of the C by the test (gcc, gcov)
+        run: |
+          if grep -q avx512bw /proc/cpuinfo; then min=100; else min=0; fi
+          python3 dev/coverage.py --out .build/coverage --min "$min"
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Coverage"
+            echo
+            echo '```text'
+            cat .build/coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

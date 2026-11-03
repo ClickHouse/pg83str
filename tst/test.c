@@ -1,8 +1,12 @@
-/* Correctness test against glibc (lib/build.py links the library objects next
-   to static glibc). Covers exhaustive small sizes and alignments, selected
-   large sizes, every overlap direction, guard pages on both ends, and random
-   fuzzing; the whole suite runs for each level's table the host supports and
-   for the dispatched table. */
+/* Correctness test against the host C library. Covers exhaustive small sizes
+   and alignments, selected large sizes, every overlap direction, guard pages
+   on both ends, every pair of page offsets of two pointers (the page checks
+   of the two disagree in ways a sweep of one misses), every page offset of
+   one, random fuzzing; the whole suite runs for each configuration the host
+   can execute and for the dispatched table, then a quick suite with every
+   slot replaced by every other implementation in turn (the contracts between
+   first blocks and kernels hold for any mix), and the host decisions are made
+   again from synthetic cpuid snapshots of other machines. */
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>
@@ -28,7 +32,8 @@ static const struct str_table *Table;
 
 static size_t checks;
 static const char *phase = "start";
-#define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr, "FAIL %s line %d check %zu: %s\n", phase, __LINE__, checks, #x); exit(2); } } while (0)
+static char mix[160] = "";   /* which one-slot mix runs, for the message */
+#define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr, "FAIL %s%s line %d check %zu: %s\n", phase, mix, __LINE__, checks, #x); exit(2); } } while (0)
 static int sign(int v) { return (v > 0) - (v < 0); }
 static uint32_t state = 0x9e3779b9;
 static uint32_t rnd(void) { state ^= state << 13; state ^= state >> 17; state ^= state << 5; return state; }
@@ -57,7 +62,7 @@ static void check_copy(unsigned char *d, const unsigned char *s, size_t n, unsig
     CHECK(!memcmp(d < s ? d : s, ref, span));
 }
 
-static void suite(void)
+static void suite(int full)
 {
     CHECK(sysconf(_SC_PAGESIZE) == 4096);
     const size_t cap = 1u << 21;
@@ -111,6 +116,8 @@ static void suite(void)
                 CHECK(d[0] == 'x' && !memcmp(d + 1, s, n + 1) && d[n + 2] == 0x55);
             }
 
+    if (!full)
+        goto guards;
     phase = "overlap";
     const size_t sizes[] = {0, 1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 130, 200,
                             255, 256, 257, 300, 511, 512, 513, 1000, 2047, 2048, 2049, 4095, 4096, 4097, 8192,
@@ -169,6 +176,7 @@ static void suite(void)
                 }
             }
 
+guards:;
     phase = "guard pages";
     unsigned char *ga = guard_pages(3), *gb = guard_pages(3), *gs = guard_pages(1);
     for (size_t n = 0; n <= 12288; n += (n < 8192 ? 1 : 97)) {
@@ -237,6 +245,14 @@ static void suite(void)
         }
     }
 
+    if (!full) {
+        munmap(ga - 4096, 5 * 4096);
+        munmap(gb - 4096, 5 * 4096);
+        munmap(gs - 4096, 3 * 4096);
+        free(a); free(b); free(ref); free(ref2);
+        return;
+    }
+
     /* Two strings ending at different distances from their guards: the page
        checks of the two pointers disagree, near the end of one page and far
        from the end of the other. */
@@ -259,10 +275,100 @@ static void suite(void)
                 CHECK(T->strcpy((char *)d, (char *)s) == (char *)d && !memcmp(d, s, n + 1));
             }
 
+    /* Every pair of page offsets of two pointers. The decisions of a two-pointer
+       function depend on both offsets at once (and on their bits: both_in_page
+       ORs them), so a sweep of one pointer with the other fixed misses cases. The
+       strings start in the middle page of a three-page mapping and may run into
+       the next one; the lengths pin the first-block logic, with every offset pair
+       for a few of them and every offset of the first pointer against every
+       thirteenth of the second for the rest. */
+    phase = "offset pairs";
+    {
+        const size_t full_lens[] = {1, 33, 65};
+        const size_t grid_lens[] = {2, 5, 15, 16, 17, 31, 32, 47, 48, 63, 64, 100, 127, 128, 129, 255, 256, 257, 300};
+        for (int pass = 0; pass < 2; pass++) {
+            const size_t *lens = pass ? grid_lens : full_lens;
+            size_t nlens = pass ? sizeof grid_lens / sizeof *grid_lens : sizeof full_lens / sizeof *full_lens;
+            size_t step = pass ? 13 : 1;
+            for (size_t oa = 0; oa < 4096; oa++)
+                for (size_t ob = 0; ob < 4096; ob += step)
+                    for (size_t k = 0; k < nlens; k++) {
+                        size_t n = lens[k];
+                        unsigned char *s = ga + 4096 + oa, *d = gb + 4096 + ob;
+                        pattern(s, n, (unsigned)(oa * 7 + ob));
+                        s[n] = 0;
+                        memcpy(d, s, n + 1);
+                        CHECK(!T->strcmp((char *)s, (char *)d));
+                        CHECK(!T->memcmp(s, d, n));
+                        d[n - 1] ^= 0x40; /* the last byte differs */
+                        CHECK(sign(T->strcmp((char *)s, (char *)d)) == sign(strcmp((char *)s, (char *)d)));
+                        CHECK(sign(T->strcmp((char *)d, (char *)s)) == sign(strcmp((char *)d, (char *)s)));
+                        CHECK(sign(T->memcmp(s, d, n)) == sign(memcmp(s, d, n)));
+                        d[n - 1] ^= 0x40;
+                        d[0] ^= 0x40; /* the first byte differs */
+                        CHECK(sign(T->strcmp((char *)s, (char *)d)) == sign(strcmp((char *)s, (char *)d)));
+                        d[0] ^= 0x40;
+                        d[n] = 'x'; /* d longer than s */
+                        d[n + 1] = 0;
+                        CHECK(sign(T->strcmp((char *)s, (char *)d)) == sign(strcmp((char *)s, (char *)d)));
+                        memset(d, 0x55, n + 2);
+                        CHECK(T->strcpy((char *)d, (char *)s) == (char *)d && !memcmp(d, s, n + 1) && d[n + 1] == 0x55);
+                        CHECK(T->memcpy(d, s, n) == d && !memcmp(d, s, n));
+                    }
+        }
+    }
+
+    /* Every page offset of one pointer: the string ends before the guard when it
+       fits, else runs into the next page. */
+    phase = "single offsets";
+    {
+        const size_t one_lens[] = {0, 1, 2, 7, 8, 15, 16, 17, 31, 32, 33, 47, 48, 63, 64, 65, 95, 96, 127, 128, 129, 191, 192, 255, 256, 257, 383, 384, 511, 512, 513, 1000, 4095, 4096, 4097};
+        for (size_t oa = 0; oa < 4096; oa++)
+            for (size_t k = 0; k < sizeof one_lens / sizeof *one_lens; k++) {
+                size_t n = one_lens[k];
+                if (oa + n + 1 > 8192)
+                    continue;
+                unsigned char *s = ga + (oa + n + 1 <= 4096 ? 8192 : 4096) + oa, *d = gb + 4096 + (n > 300 ? 0 : oa * 3 % 4096);
+                pattern(s, n, (unsigned)(n + oa));
+                s[n] = 0;
+                CHECK(T->strlen((char *)s) == n);
+                CHECK(T->strcpy((char *)d, (char *)s) == (char *)d && !memcmp(d, s, n + 1));
+                CHECK(T->memset(d, (int)oa, n) == d && (n == 0 || (d[0] == (unsigned char)oa && d[n - 1] == (unsigned char)oa)));
+                if (n && k % 3 == 0) {
+                    for (size_t i = 0; i < n; i++)
+                        s[i] = (unsigned char)('a' + (i * 7 + oa) % 26);
+                    CHECK(T->strspn((char *)s, "abcdefghijklm") == strspn((char *)s, "abcdefghijklm"));
+                    CHECK(T->strcspn((char *)s, "xyz") == strcspn((char *)s, "xyz"));
+                    CHECK(T->strcspn((char *)s, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") == strcspn((char *)s, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+                    CHECK(T->strspn((char *)s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ") == strspn((char *)s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"));
+                }
+            }
+        /* and of the set: its load has page logic of its own */
+        for (size_t os = 0; os < 4096; os++) {
+            const size_t setlens[] = {1, 2, 15, 16, 17, 31, 32, 33, 40};
+            for (size_t k = 0; k < sizeof setlens / sizeof *setlens; k++) {
+                size_t m = setlens[k];
+                unsigned char *set = gs + (os + m + 1 <= 4096 ? 0 : 4096 - m - 1 - (os % 7)) + (os + m + 1 <= 4096 ? os : 0);
+                for (size_t i = 0; i < m; i++)
+                    set[i] = (unsigned char)('A' + i % 26);
+                set[m] = 0;
+                unsigned char *s = ga + 4096 + (os * 5 % 4096);
+                for (size_t i = 0; i < 70; i++)
+                    s[i] = (unsigned char)(i < 20 + os % 50 ? 'A' + i % (m < 26 ? m : 26) : 'a' + i % 26);
+                s[70] = 0;
+                CHECK(T->strspn((char *)s, (char *)set) == strspn((char *)s, (char *)set));
+                CHECK(T->strcspn((char *)s, (char *)set) == strcspn((char *)s, (char *)set));
+                s[0] = 'z';
+                CHECK(T->strspn((char *)s, (char *)set) == strspn((char *)s, (char *)set));
+                CHECK(T->strcspn((char *)s, (char *)set) == strcspn((char *)s, (char *)set));
+            }
+        }
+    }
+
     phase = "random";
     unsigned char set[520];
     for (int t = 0; t < 300000; t++) {
-        size_t n = rnd() % (t % 50 == 0 ? 70000 : 400), ao = rnd() % 64, bo = rnd() % 64;
+        size_t n = rnd() % (t % 50 == 0 ? 70000 : 400), ao = rnd() % 4096, bo = rnd() % 4096;
         unsigned char *s = a + 4096 + ao, *d = b + 4096 + bo;
         for (size_t i = 0; i < n; i++) s[i] = (unsigned char)(1 + rnd() % 255);
         s[n] = 0;
@@ -303,8 +409,61 @@ static void suite(void)
             }
         }
     }
-    printf("PASS %zu checks: small sizes x alignments, overlap directions, large sizes, guard pages, random\n", checks);
+    printf("PASS %zu checks: small sizes x alignments, overlap directions, large sizes, guard pages, offset pairs, single offsets, random\n", checks);
+    munmap(ga - 4096, 5 * 4096);
+    munmap(gb - 4096, 5 * 4096);
+    munmap(gs - 4096, 3 * 4096);
     free(a); free(b); free(ref); free(ref2);
+}
+
+/* The slots of a table as an array, for the mixes. */
+#define NSLOTS (sizeof(struct str_table) / sizeof(void *))
+static void slots_of(const struct str_table *t, void **slots) { memcpy(slots, t, sizeof *t); }
+static void table_of(struct str_table *t, void *const *slots) { memcpy(t, slots, sizeof *t); }
+
+/* Other hosts, as cpuid snapshots: the decisions are pure, so they can be made
+   here for machines this one is not. */
+#define B(i) (1u << (i))
+#define V2_ECX1 (B(0) | B(9) | B(13) | B(19) | B(20) | B(23))                     /* SSE3 SSSE3 CX16 SSE4.1 SSE4.2 POPCNT */
+#define V3_ECX1 (V2_ECX1 | B(12) | B(22) | B(27) | B(28) | B(29))                /* FMA MOVBE OSXSAVE AVX F16C */
+#define V3_EBX7 (B(3) | B(5) | B(8))                                             /* BMI1 AVX2 BMI2 */
+#define ERMS_EBX7 B(9)
+#define V4_EBX7 (V3_EBX7 | B(16) | B(17) | B(28) | B(30) | B(31))                /* AVX512 F DQ CD BW VL */
+#define V2_ECX81 B(0)                                                            /* LAHF/SAHF */
+#define V3_ECX81 (V2_ECX81 | B(5))                                               /* LZCNT */
+#define INTEL 0x756e6547, 0x49656e69, 0x6c65746e
+#define AMD 0x68747541, 0x69746e65, 0x444d4163
+
+static void hosts(void)
+{
+    const struct {
+        const char *name;
+        struct str_cpuid c;
+        unsigned bits;
+        const char *config;
+    } machines[] = {
+        {"no leaf 7", {6, INTEL, 0, 0, 0, 0, 0}, 0, "sse2"},
+        {"core 2", {7, INTEL, 0x6f6, B(0) | B(9) | B(13), 0, 0, 0}, 0, "sse2"},
+        {"nehalem", {7, INTEL, 0x106a5, V2_ECX1, 0, V2_ECX81, 0}, STR_SSE42, "sse42"},
+        {"haswell", {7, INTEL, 0x306c3, V3_ECX1, V3_EBX7 | ERMS_EBX7, V3_ECX81, 0x7}, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"},
+        {"haswell, os without ymm", {7, INTEL, 0x306c3, V3_ECX1, V3_EBX7 | ERMS_EBX7, V3_ECX81, 0x1}, STR_SSE42 | STR_ERMS, "sse42"},
+        {"avx2 without erms", {7, AMD, 0x800f12, V3_ECX1, V3_EBX7, V3_ECX81, 0x7}, STR_SSE42 | STR_AVX2, "sse42"},
+        {"skylake-sp", {7, INTEL, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ERMS, "evex"},
+        {"skylake-sp, os without zmm", {7, INTEL, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0x7}, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"},
+        {"ice lake", {7, INTEL, 0x606a6, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
+        {"zen 4", {7, AMD, 0xa60f12, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
+        {"avx-512 without erms", {7, AMD, 0xa60f12, V3_ECX1, V4_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM, "sse42"},
+    };
+    phase = "hosts";
+    for (size_t i = 0; i < sizeof machines / sizeof *machines; i++) {
+        unsigned bits = str_host_of(&machines[i].c);
+        if (bits != machines[i].bits || strcmp(str_choose_for(bits)->name, machines[i].config)) {
+            fprintf(stderr, "FAIL hosts: %s: bits %#x, configuration %s\n", machines[i].name, bits, str_choose_for(bits)->name);
+            exit(2);
+        }
+        checks++;
+    }
+    printf("hosts: PASS %zu machines\n", checks);
 }
 
 int main(void)
@@ -318,12 +477,49 @@ int main(void)
         Table = &str_table;
         printf("%s: ", str_configs[i].name);
         checks = 0;
-        suite();
+        suite(1);
     }
     str_dispatch();
     Table = &str_table;
     printf("dispatched (%s): ", str_choose()->name);
     checks = 0;
-    suite();
+    suite(1);
+    /* every slot of the first and of the best configuration replaced by every
+       other implementation the host can run, one at a time: the quick suite */
+    const struct str_config *bases[2] = {&str_configs[0], str_choose()};
+    size_t mixes = 0;
+    checks = 0;
+    for (int bi = 0; bi < 2; bi++) {
+        void *base[NSLOTS];
+        slots_of(&bases[bi]->table, base);
+        for (size_t j = 0; j < NSLOTS; j++) {
+            void *tried[16];
+            size_t ntried = 0;
+            for (unsigned k = 0; k < str_nconfigs; k++) {
+                if (str_configs[k].needs & ~host)
+                    continue;
+                void *other[NSLOTS];
+                slots_of(&str_configs[k].table, other);
+                int seen = other[j] == base[j];
+                for (size_t m = 0; m < ntried && !seen; m++)
+                    seen = tried[m] == other[j];
+                if (seen)
+                    continue;
+                tried[ntried++] = other[j];
+                void *slots[NSLOTS];
+                memcpy(slots, base, sizeof slots);
+                slots[j] = other[j];
+                table_of(&str_table, slots);
+                Table = &str_table;
+                snprintf(mix, sizeof mix, " (%s with slot %zu from %s)", bases[bi]->name, j, str_configs[k].name);
+                suite(0);
+                mixes++;
+            }
+        }
+    }
+    mix[0] = 0;
+    printf("mixes: PASS %zu checks in %zu one-slot mixes of %s and %s\n", checks, mixes, bases[0]->name, bases[1]->name);
+    checks = 0;
+    hosts();
     return 0;
 }

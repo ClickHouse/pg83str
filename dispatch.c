@@ -88,20 +88,40 @@ static inline void cpuid(unsigned leaf, unsigned sub, unsigned r[4])
 
 static inline int bit(unsigned word, unsigned i) { return (word >> i) & 1; }
 
-unsigned str_host(void)
+/* The instructions; everything the decisions need, so that they can be made
+   again from any snapshot (the test feeds it other hosts). */
+void str_cpuid_read(struct str_cpuid *c)
 {
     unsigned r[4];
     cpuid(0, 0, r);
-    if (r[0] < 7)
-        return 0;
-    int intel = r[1] == 0x756e6547 && r[3] == 0x49656e69 && r[2] == 0x6c65746e;
+    c->max_leaf = r[0];
+    c->vendor_ebx = r[1];
+    c->vendor_edx = r[3];
+    c->vendor_ecx = r[2];
+    c->eax1 = c->ecx1 = c->ebx7 = c->ecx81 = c->xcr0 = 0;
+    if (c->max_leaf < 7)
+        return;
     cpuid(1, 0, r);
-    unsigned ecx1 = r[2];
-    unsigned family = (r[0] >> 8) & 0xf, model = ((r[0] >> 4) & 0xf) | ((r[0] >> 12) & 0xf0);
+    c->eax1 = r[0];
+    c->ecx1 = r[2];
     cpuid(7, 0, r);
-    unsigned ebx7 = r[1];
+    c->ebx7 = r[1];
     cpuid(0x80000001u, 0, r);
-    unsigned ecx81 = r[2];
+    c->ecx81 = r[2];
+    if (bit(c->ecx1, 27)) { /* OSXSAVE: xgetbv exists */
+        unsigned lo, hi;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        c->xcr0 = lo;
+    }
+}
+
+unsigned str_host_of(const struct str_cpuid *c)
+{
+    if (c->max_leaf < 7)
+        return 0;
+    int intel = c->vendor_ebx == 0x756e6547 && c->vendor_edx == 0x49656e69 && c->vendor_ecx == 0x6c65746e;
+    unsigned family = (c->eax1 >> 8) & 0xf, model = ((c->eax1 >> 4) & 0xf) | ((c->eax1 >> 12) & 0xf0);
+    unsigned ecx1 = c->ecx1, ebx7 = c->ebx7, ecx81 = c->ecx81;
     unsigned have = bit(ebx7, 9) ? STR_ERMS : 0;   /* fast rep movsb/stosb */
     /* x86-64-v2: SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B, LAHF/SAHF */
     if (!(bit(ecx1, 0) && bit(ecx1, 9) && bit(ecx1, 19) && bit(ecx1, 20) && bit(ecx1, 23) && bit(ecx1, 13) && bit(ecx81, 0)))
@@ -111,30 +131,38 @@ unsigned str_host(void)
     if (!(bit(ecx1, 27) && bit(ecx1, 28) && bit(ecx1, 29) && bit(ecx1, 12) && bit(ecx1, 22)
           && bit(ebx7, 5) && bit(ebx7, 3) && bit(ebx7, 8) && bit(ecx81, 5)))
         return have;
-    unsigned lo, hi;
-    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-    if ((lo & 0x06) != 0x06)
+    if ((c->xcr0 & 0x06) != 0x06)
         return have;
     have |= STR_AVX2;
     /* x86-64-v4: AVX512F, BW, CD, DQ, VL with opmask and ZMM state */
-    if (!(bit(ebx7, 16) && bit(ebx7, 30) && bit(ebx7, 28) && bit(ebx7, 17) && bit(ebx7, 31) && (lo & 0xe0) == 0xe0))
+    if (!(bit(ebx7, 16) && bit(ebx7, 30) && bit(ebx7, 28) && bit(ebx7, 17) && bit(ebx7, 31) && (c->xcr0 & 0xe0) == 0xe0))
         return have;
     have |= STR_AVX512;
+    /* 512-bit registers lower the clock of Skylake-SP and its Cascade/Cooper Lake
+       siblings (family 6 model 0x55); glibc keeps to 256 bits there too */
     if (!(intel && family == 6 && model == 0x55))
         have |= STR_ZMM;
     return have;
 }
 
-/* The last configuration whose needs the host meets. */
-const struct str_config *str_choose(void)
+unsigned str_host(void)
 {
-    unsigned host = str_host();
+    struct str_cpuid c;
+    str_cpuid_read(&c);
+    return str_host_of(&c);
+}
+
+/* The last configuration whose needs the host meets. */
+const struct str_config *str_choose_for(unsigned host)
+{
     const struct str_config *best = &str_configs[0];
     for (unsigned i = 1; i < str_nconfigs; i++)
         if ((str_configs[i].needs & ~host) == 0)
             best = &str_configs[i];
     return best;
 }
+
+const struct str_config *str_choose(void) { return str_choose_for(str_host()); }
 
 void str_dispatch(void) { str_table = str_choose()->table; }
 

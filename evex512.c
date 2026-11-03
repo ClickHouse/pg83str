@@ -130,8 +130,20 @@ static inline void *fill_loop(u8 *d, int c, size_t n)
     RETURN_OPAQUE(d);
 }
 
+/* n > 64, the slot's contract: memset_evex512 settles up to 256 bytes itself,
+   but another first block may hand any size above 64 to this slot. */
 void *fill_large_evex512(u8 *d, int c, size_t n)
 {
+    if (n <= 256) {
+        __m512i v = _mm512_set1_epi8((char)c);
+        store512(d, v);
+        if (n > 128) {
+            store512(d + 64, v);
+            store512(d + n - 128, v);
+        }
+        store512(d + n - 64, v);
+        RETURN_OPAQUE(d);
+    }
     if (n >= REP_THRESHOLD)
         return str_fill_huge(d, c, n);
     return fill_loop(d, c, n);

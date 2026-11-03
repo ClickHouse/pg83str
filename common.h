@@ -70,6 +70,19 @@ extern struct str_table str_table;
    configuration from them. STR_ZMM: 512-bit registers cost nothing extra. */
 enum { STR_SSE42 = 1, STR_AVX2 = 2, STR_AVX512 = 4, STR_ZMM = 8, STR_ERMS = 16 };
 unsigned str_host(void);
+/* The decisions are pure functions of a cpuid snapshot, so that the test can
+   make them for any host on the one it runs on. */
+struct str_cpuid {
+    unsigned max_leaf;                             /* cpuid(0).eax */
+    unsigned vendor_ebx, vendor_edx, vendor_ecx;   /* cpuid(0) */
+    unsigned eax1, ecx1;                           /* cpuid(1) */
+    unsigned ebx7;                                 /* cpuid(7, 0) */
+    unsigned ecx81;                                /* cpuid(0x80000001) */
+    unsigned xcr0;                                 /* xgetbv(0), 0 without OSXSAVE */
+};
+void str_cpuid_read(struct str_cpuid *c);
+unsigned str_host_of(const struct str_cpuid *c);
+const struct str_config *str_choose_for(unsigned host);
 /* The configurations dispatch.c chooses from, by name; the test runs every
    one whose needs the host meets. */
 struct str_config {
