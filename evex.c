@@ -134,26 +134,31 @@ int memcmp_evex(const void *pa, const void *pb, size_t n)
 int strcmp_evex(const char *left, const char *right)
 {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
-    if (__builtin_expect(both_in_page(a, b, 32), 1)) {
-        /* k: the lanes that are equal and not NUL. k + 1 clears them up to the first
-           other lane, whose index is then the trailing zero count; all 32 equal and
-           nonzero wraps to 0. One dependent chain of two compares, no kor. Strings
-           differ or end within the block 9 times in 10: that path falls through. */
-        __m256i x = load256(a);
-        unsigned k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b)) + 1;
-        if (__builtin_expect(k != 0, 1))
-            return byte_diff(a, b, ctz(k));
-        return str_strcmp_tail(a + 32, b + 32);
+    for (;;) {
+        if (__builtin_expect(both_in_page(a, b, 32), 1)) {
+            /* k: the lanes that are equal and not NUL. k + 1 clears them up to the first
+               other lane, whose index is then the trailing zero count; all 32 equal and
+               nonzero wraps to 0. One dependent chain of two compares, no kor. Strings
+               differ or end within the block 9 times in 10: that path falls through. */
+            __m256i x = load256(a);
+            unsigned k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b)) + 1;
+            if (__builtin_expect(k != 0, 1))
+                return byte_diff(a, b, ctz(k));
+            return str_strcmp_tail(a + 32, b + 32);
+        }
+        /* one of the two is within 32 bytes of its page end: masked loads of the
+           bytes up to the nearer end never touch the next page. The lanes beyond
+           are zero, so the first lane that is not equal-and-nonzero is at most n:
+           an answer before n, else both advance to it and one is at a page start. */
+        size_t n = page_left(a) < page_left(b) ? page_left(a) : page_left(b);
+        __mmask32 k = low_mask32(n);
+        __m256i x = _mm256_maskz_loadu_epi8(k, a);
+        unsigned i = ctz(_mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, _mm256_maskz_loadu_epi8(k, b)) + 1);
+        if (i < n)
+            return byte_diff(a, b, i);
+        a += n;
+        b += n;
     }
-    if (both_in_page(a, b, 16)) {
-        __m128i x = load16(a);
-        unsigned k = _mm_mask_cmpeq_epi8_mask(_mm_test_epi8_mask(x, x), x, load16(b)) + 1;
-        if (k != 0x10000)
-            return byte_diff(a, b, ctz(k));
-        a += 16;
-        b += 16;
-    }
-    return str_strcmp_tail(a, b);
 }
 
 /* ---------------------------------------------------------- strcpy/strcat */
