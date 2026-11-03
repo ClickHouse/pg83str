@@ -14,6 +14,69 @@ static inline void store256a(void *p, __m256i v) { _mm256_store_si256((__m256i *
 static inline unsigned mask256(__m256i v) { return (unsigned)_mm256_movemask_epi8(v); }
 static inline __m256i eq_zero(__m256i v) { return _mm256_cmpeq_epi8(v, _mm256_setzero_si256()); }
 
+/* ------------------------------------------------------- strspn/strcspn */
+
+/* Byte classification by two shuffles (Hyperscan's "truffle"): a byte b is in
+   the set when bit (b >> 4 & 7) is set in table[(b >> 7) * 16 + (b & 15)].
+   pshufb indexes by the low four bits and gives 0 where bit 7 of the index is
+   set, so the first table answers for b < 0x80 as it is and the second for
+   b >= 0x80 after b ^ 0x80. Any set, 32 bytes per step, no pcmpistri. */
+static inline void truffle_tables(const u8 *set, u8 table[32], int with_nul)
+{
+    for (int i = 0; i < 32; i++)
+        table[i] = 0;
+    for (; *set; set++)
+        table[((*set >> 7) << 4) | (*set & 15)] |= (u8)(1 << ((*set >> 4) & 7));
+    if (with_nul)
+        table[0] |= 1;
+}
+
+/* The bytes of x that are in the set, one bit each. */
+static inline unsigned truffle_members(__m256i x, __m256i low, __m256i high, __m256i bits)
+{
+    __m256i t = _mm256_or_si256(_mm256_shuffle_epi8(low, x), _mm256_shuffle_epi8(high, _mm256_xor_si256(x, _mm256_set1_epi8((char)0x80))));
+    __m256i b = _mm256_shuffle_epi8(bits, _mm256_and_si256(_mm256_srli_epi16(x, 4), _mm256_set1_epi8(7)));
+    return ~mask256(_mm256_cmpeq_epi8(_mm256_and_si256(t, b), _mm256_setzero_si256()));
+}
+
+#define TRUFFLE_BITS _mm256_broadcastsi128_si256(_mm_setr_epi8(1, 2, 4, 8, 16, 32, 64, (char)128, 0, 0, 0, 0, 0, 0, 0, 0))
+
+size_t strcspn_avx2(const char *str, const char *reject)
+{
+    const u8 *s = (const u8 *)str;
+    u8 table[32] __attribute__((aligned(32)));
+    truffle_tables((const u8 *)reject, table, 1); /* the NUL ends the scan like a member */
+    __m256i low = _mm256_broadcastsi128_si256(load16(table)), high = _mm256_broadcastsi128_si256(load16(table + 16)), bits = TRUFFLE_BITS;
+    const u8 *a = align_down(s, 32); /* aligned blocks never cross a page */
+    unsigned m = truffle_members(load256a(a), low, high, bits) >> ((uintptr_t)s & 31);
+    if (m)
+        return ctz(m);
+    for (;;) {
+        a += 32;
+        m = truffle_members(load256a(a), low, high, bits);
+        if (m)
+            return (size_t)(a - s) + ctz(m);
+    }
+}
+
+size_t strspn_avx2(const char *str, const char *accept)
+{
+    const u8 *s = (const u8 *)str;
+    u8 table[32] __attribute__((aligned(32)));
+    truffle_tables((const u8 *)accept, table, 0); /* the NUL is not a member: it ends the scan */
+    __m256i low = _mm256_broadcastsi128_si256(load16(table)), high = _mm256_broadcastsi128_si256(load16(table + 16)), bits = TRUFFLE_BITS;
+    const u8 *a = align_down(s, 32);
+    unsigned m = ~truffle_members(load256a(a), low, high, bits) >> ((uintptr_t)s & 31);
+    if (m)
+        return ctz(m);
+    for (;;) {
+        a += 32;
+        m = ~truffle_members(load256a(a), low, high, bits);
+        if (m)
+            return (size_t)(a - s) + ctz(m);
+    }
+}
+
 /* ------------------------------------------------------------ NUL scans */
 
 /* a is 16-aligned, s <= a, no NUL in [s, a). The 32-byte block around a is

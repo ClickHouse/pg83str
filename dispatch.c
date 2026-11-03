@@ -6,7 +6,8 @@
  * freely, since implementations reach each other only through the table. A
  * Skylake-SP gets the 256-bit AVX-512 first blocks over the AVX2 kernels, a
  * Zen 4 the 512-bit ones, an AVX2 machine the AVX2 set; strspn and strcspn
- * stay SSE4.2 everywhere above the baseline; copies and fills of 4096 bytes
+ * are SSE4.2 (pcmpistri) on the SSE4.2 hosts and shuffle-based 32-byte scans
+ * above; copies and fills of 4096 bytes
  * and more go to the copy_huge and fill_huge slots, rep movsb/stosb on the
  * hosts with ERMS.
  *
@@ -46,7 +47,7 @@ const struct str_config str_configs[] = {
     {"avx2", STR_SSE42 | STR_AVX2 | STR_ERMS, {
         .memcpy = memcpy_avx2, .memmove = memmove_avx2, .memset = memset_avx2, .memcmp = memcmp_avx2,
         .strlen = strlen_avx2, .strcpy = strcpy_avx2, .strcat = strcat_avx2, .strcmp = strcmp_avx2,
-        .strspn = strspn_sse42, .strcspn = strcspn_sse42,
+        .strspn = strspn_avx2, .strcspn = strcspn_avx2,
         .copy_large = copy_large_avx2, .fill_large = fill_large_avx2, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_avx2, .strcmp_tail = strcmp_tail_avx2, .strcpy_long = strcpy_long_avx2,
         .copy_huge = copy_huge_rep, .fill_huge = fill_huge_rep,
@@ -58,7 +59,7 @@ const struct str_config str_configs[] = {
     {"evex", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ERMS, {
         .memcpy = memcpy_evex_jcc, .memmove = memmove_evex_jcc, .memset = memset_evex_jcc, .memcmp = memcmp_evex_jcc,
         .strlen = strlen_evex_jcc, .strcpy = strcpy_evex_jcc, .strcat = strcat_evex_jcc, .strcmp = strcmp_evex_jcc,
-        .strspn = strspn_sse42_jcc, .strcspn = strcspn_sse42_jcc,
+        .strspn = strspn_avx2_jcc, .strcspn = strcspn_avx2_jcc,
         .copy_large = copy_large_avx2_jcc, .fill_large = fill_large_avx2_jcc, .memcmp_large = memcmp_large_avx2_jcc,
         .strlen_tail = strlen_tail_avx2_jcc, .strcmp_tail = strcmp_tail_avx2_jcc, .strcpy_long = strcpy_long_avx2_jcc,
         .copy_huge = copy_huge_rep_jcc, .fill_huge = fill_huge_rep_jcc,
@@ -70,7 +71,7 @@ const struct str_config str_configs[] = {
     {"evex512", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, {
         .memcpy = memcpy_evex512, .memmove = memmove_evex512, .memset = memset_evex512, .memcmp = memcmp_evex512,
         .strlen = strlen_evex512, .strcpy = strcpy_evex, .strcat = strcat_evex, .strcmp = strcmp_evex,
-        .strspn = strspn_sse42, .strcspn = strcspn_sse42,
+        .strspn = strspn_avx2, .strcspn = strcspn_avx2,
         .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_evex512, .strcmp_tail = strcmp_tail_avx2, .strcpy_long = strcpy_long_avx2,
         .copy_huge = copy_huge_rep, .fill_huge = fill_huge_rep,
