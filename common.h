@@ -57,10 +57,10 @@ struct str_table {
     /* kernels; the contracts every implementation keeps: */
     void *(*copy_large)(u8 *d, const u8 *s, size_t n);         /* n > 64, any overlap */
     void *(*fill_large)(u8 *d, int c, size_t n);               /* n > 64 */
-    int (*memcmp_large)(const u8 *a, const u8 *b, size_t n);   /* n > 64 */
+    int (*memcmp_large)(const u8 *a, const u8 *b, size_t n);   /* n > 128, the first 64 bytes equal */
     size_t (*strlen_tail)(const u8 *a, const u8 *s);           /* a 16-aligned, s <= a, no NUL in [s, a) */
     int (*strcmp_tail)(const u8 *a, const u8 *b);              /* any pointers */
-    void *(*strcpy_long)(u8 *d, const u8 *s);                  /* no NUL before the 16-byte boundary after s */
+    void *(*strcpy_long)(u8 *d, const u8 *s, const u8 *a);     /* no NUL in [s, a), a 16-aligned and past s */
     void *(*copy_huge)(u8 *d, const u8 *s, size_t n);          /* n >= REP_THRESHOLD, no backward overlap */
     void *(*fill_huge)(u8 *d, int c, size_t n);                /* n >= REP_THRESHOLD */
 };
@@ -115,7 +115,7 @@ void *str_fill_large(u8 *d, int c, size_t n);
 int str_memcmp_large(const u8 *a, const u8 *b, size_t n);
 size_t str_strlen_tail(const u8 *a, const u8 *s);
 int str_strcmp_tail(const u8 *a, const u8 *b);
-void *str_strcpy_long(u8 *d, const u8 *s);
+void *str_strcpy_long(u8 *d, const u8 *s, const u8 *a);
 void *str_copy_huge(u8 *d, const u8 *s, size_t n);
 void *str_fill_huge(u8 *d, int c, size_t n);
 
@@ -135,7 +135,7 @@ void *fill_large_sse2(u8 *d, int c, size_t n);
 int memcmp_large_sse2(const u8 *a, const u8 *b, size_t n);
 size_t strlen_tail_sse2(const u8 *a, const u8 *s);
 int strcmp_tail_sse2(const u8 *a, const u8 *b);
-void *strcpy_long_sse2(u8 *d, const u8 *s);
+void *strcpy_long_sse2(u8 *d, const u8 *s, const u8 *a);
 void *copy_huge_sse2(u8 *d, const u8 *s, size_t n);
 void *fill_huge_sse2(u8 *d, int c, size_t n);
 void *copy_huge_rep(u8 *d, const u8 *s, size_t n);   /* rep movsb: the ERMS hosts */
@@ -158,12 +158,15 @@ char *strcat_avx2(char *, const char *);
 int strcmp_avx2(const char *, const char *);
 size_t strspn_avx2(const char *, const char *);
 size_t strcspn_avx2(const char *, const char *);
+size_t strspn_avx2_zen(const char *, const char *);   /* the shuffle scan's tables from 384 bytes, not 1.5 KiB */
+size_t strcspn_avx2_zen(const char *, const char *);
 void *copy_large_avx2(u8 *d, const u8 *s, size_t n);
 void *fill_large_avx2(u8 *d, int c, size_t n);
 int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n);
 size_t strlen_tail_avx2(const u8 *a, const u8 *s);
 int strcmp_tail_avx2(const u8 *a, const u8 *b);
-void *strcpy_long_avx2(u8 *d, const u8 *s);
+void *strcpy_long_avx2(u8 *d, const u8 *s, const u8 *a);
+void *copy_huge_avx2(u8 *d, const u8 *s, size_t n);           /* the loop below 32 KiB, rep movsb beyond */
 /* evex.c: AVX-512 with 256-bit registers */
 void *memcpy_evex(void *, const void *, size_t);
 void *memmove_evex(void *, const void *, size_t);
@@ -182,7 +185,7 @@ size_t strlen_evex512(const char *);
 void *fill_large_evex512(u8 *d, int c, size_t n);
 size_t strlen_tail_evex512(const u8 *a, const u8 *s);
 int strcmp_tail_evex512(const u8 *a, const u8 *b);
-void *strcpy_long_evex512(u8 *d, const u8 *s);
+void *strcpy_long_evex512(u8 *d, const u8 *s, const u8 *a);
 
 /* The same functions laid out by the post pass with the JCC-erratum padding
    (jcc-*.o, see dev/post.py), for Skylake-SP. */
@@ -203,8 +206,9 @@ void *fill_large_avx2_jcc(u8 *d, int c, size_t n);
 int memcmp_large_avx2_jcc(const u8 *a, const u8 *b, size_t n);
 size_t strlen_tail_avx2_jcc(const u8 *a, const u8 *s);
 int strcmp_tail_avx2_jcc(const u8 *a, const u8 *b);
-void *strcpy_long_avx2_jcc(u8 *d, const u8 *s);
+void *strcpy_long_avx2_jcc(u8 *d, const u8 *s, const u8 *a);
 void *copy_huge_rep_jcc(u8 *d, const u8 *s, size_t n);
+void *copy_huge_avx2_jcc(u8 *d, const u8 *s, size_t n);
 void *fill_huge_rep_jcc(u8 *d, int c, size_t n);
 
 /* -------------------------------------------------------------- basics */
@@ -218,9 +222,16 @@ static inline const u8 *align_down(const void *p, size_t a) {
 }
 
 /* True when `bytes` bytes from both a and b stay inside their pages.
-   Conservative: the OR can exceed the limit when each offset alone passes. */
+   Conservative: the OR can exceed the limit when each offset alone passes
+   (a at 0x7c0 and b at 0x800, say). Fine for an entry's first block, whose
+   fallback is a few bytes; a tail that compares byte by byte to the nearer
+   page end on a miss must use the exact test, or that walk can be 2 KiB. */
 static inline int both_in_page(const void *a, const void *b, size_t bytes) {
     return (((uintptr_t)a | (uintptr_t)b) & PAGE_MASK) <= PAGE_SIZE - bytes;
+}
+
+static inline int both_have(const void *a, const void *b, size_t bytes) {
+    return page_left(a) >= bytes && page_left(b) >= bytes;
 }
 
 static inline __m128i load16(const void *p) {
@@ -516,7 +527,7 @@ static inline size_t strlen_prefix64(const u8 *s, const u8 **next) {
 /* ---------------------------------------------------------- long strcpy */
 
 /* One pass over a string that has no NUL before the 16-byte boundary after s
-   (the caller checked the first block). Each aligned source block is tested
+   (the caller checked at least that much). Each aligned source block is tested
 
    for NUL before the previous one is stored, and the last 16 bytes of the
    string are copied as one overlapping pair, as in FreeBSD's stpcpy. */

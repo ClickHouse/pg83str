@@ -308,6 +308,27 @@ int memcmp_sse2(const void *pa, const void *pb, size_t n) {
         return memcmp_33_64(a, b, n);
     }
 
+    /* the first 64 bytes; then the last 64 for 65..128, the kernel beyond */
+    for (size_t i = 0; i < 64; i += 16) {
+        unsigned m = ne_mask16(load16(a + i), load16(b + i));
+
+        if (m) {
+            return byte_diff(a, b, i + ctz(m));
+        }
+    }
+
+    if (n <= 128) {
+        for (size_t i = n - 64; i < n; i += 16) {
+            unsigned m = ne_mask16(load16(a + i), load16(b + i));
+
+            if (m) {
+                return byte_diff(a, b, i + ctz(m));
+            }
+        }
+
+        return 0;
+    }
+
     return str_memcmp_large(a, b, n);
 }
 
@@ -317,7 +338,7 @@ int strcmp_tail_sse2(const u8 *a, const u8 *b) {
     int result;
 
     for (;;) {
-        if (both_in_page(a, b, 16)) {
+        if (both_have(a, b, 16)) {
             unsigned m = diff_or_zero_mask16(load16(a), load16(b));
 
             if (m) {
@@ -345,7 +366,8 @@ int strcmp_sse2(const char *left, const char *right) {
 
 /* ---------------------------------------------------------- strcpy/strcat */
 
-void *strcpy_long_sse2(u8 *d, const u8 *s) {
+void *strcpy_long_sse2(u8 *d, const u8 *s, const u8 *a) {
+    (void)a; /* the 16-byte kernel takes its own boundary */
     return strcpy_long16(d, s);
 }
 
@@ -361,7 +383,7 @@ char *strcpy_sse2(char *dst, const char *src) {
         return dst;
     }
 
-    return str_strcpy_long(d, s);
+    return str_strcpy_long(d, s, a + 16);
 }
 
 char *strcat_sse2(char *dst, const char *src) {

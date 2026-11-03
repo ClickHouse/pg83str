@@ -50,7 +50,7 @@ const struct str_config str_configs[] = {
         .strspn = strspn_avx2, .strcspn = strcspn_avx2,
         .copy_large = copy_large_avx2, .fill_large = fill_large_avx2, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_avx2, .strcmp_tail = strcmp_tail_avx2, .strcpy_long = strcpy_long_avx2,
-        .copy_huge = copy_huge_rep, .fill_huge = fill_huge_rep,
+        .copy_huge = copy_huge_avx2, .fill_huge = fill_huge_rep,
     }},
     /* AVX-512 at 256 bits: Skylake-SP and its Cascade/Cooper Lake siblings, where
        512-bit instructions lower the clock (glibc keeps to 256 bits there too).
@@ -72,10 +72,10 @@ const struct str_config str_configs[] = {
     {"evex512", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, {
         .memcpy = memcpy_evex512, .memmove = memmove_evex512, .memset = memset_evex512, .memcmp = memcmp_evex512,
         .strlen = strlen_evex512, .strcpy = strcpy_evex, .strcat = strcat_evex, .strcmp = strcmp_evex,
-        .strspn = strspn_avx2, .strcspn = strcspn_avx2,
+        .strspn = strspn_avx2_zen, .strcspn = strcspn_avx2_zen,
         .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_evex512, .strcmp_tail = strcmp_tail_evex512, .strcpy_long = strcpy_long_evex512,
-        .copy_huge = copy_huge_rep, .fill_huge = fill_huge_rep,
+        .copy_huge = copy_huge_avx2, .fill_huge = fill_huge_rep,
     }},
 };
 
@@ -253,8 +253,8 @@ int str_strcmp_tail(const u8 *a, const u8 *b) {
     return str_table.strcmp_tail(a, b);
 }
 
-void *str_strcpy_long(u8 *d, const u8 *s) {
-    return str_table.strcpy_long(d, s);
+void *str_strcpy_long(u8 *d, const u8 *s, const u8 *a) {
+    return str_table.strcpy_long(d, s, a);
 }
 
 void *str_copy_huge(u8 *d, const u8 *s, size_t n) {

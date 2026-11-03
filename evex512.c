@@ -246,13 +246,14 @@ int memcmp_evex512(const void *pa, const void *pb, size_t n) {
         return m ? byte_diff(a, b, ctz64(m)) : 0;
     }
 
+    /* the first block, then the last 64 bytes for 65..128, the kernel beyond */
+    m = _mm512_cmpneq_epu8_mask(load512(a), load512(b));
+
+    if (m) {
+        return byte_diff(a, b, ctz64(m));
+    }
+
     if (n <= 128) {
-        m = _mm512_cmpneq_epu8_mask(load512(a), load512(b));
-
-        if (m) {
-            return byte_diff(a, b, ctz64(m));
-        }
-
         m = _mm512_cmpneq_epu8_mask(load512(a + n - 64), load512(b + n - 64));
         return m ? byte_diff(a, b, n - 64 + ctz64(m)) : 0;
     }
@@ -370,7 +371,8 @@ static inline void copy_le128(u8 *d, const u8 *s, size_t n) {
    boundary and four at a time (a 256-aligned group never crosses a page),
    each tested before it is stored. The last 64 bytes of the string go out as
    one overlapping store ending at the NUL. */
-void *strcpy_long_evex512(u8 *d, const u8 *s) {
+void *strcpy_long_evex512(u8 *d, const u8 *s, const u8 *known) {
+    (void)known; /* the 64-byte block around s is taken whole */
     const u8 *a = align_down(s, 64);
     unsigned long long m = zero_mask64(load512a(a)) >> (s - a);
 

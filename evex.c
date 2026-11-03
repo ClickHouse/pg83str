@@ -161,12 +161,30 @@ int memcmp_evex(const void *pa, const void *pb, size_t n) {
         return m ? byte_diff(a, b, ctz(m)) : 0;
     }
 
+    /* the first block, then the last 32 bytes for 33..64, the second block
+       and the last 64 bytes for 65..128, the kernel beyond */
+    unsigned m = _mm256_cmpneq_epu8_mask(load256(a), load256(b));
+
+    if (m) {
+        return byte_diff(a, b, ctz(m));
+    }
+
     if (n <= 64) {
-        /* the first and the last 32 bytes */
-        unsigned m = _mm256_cmpneq_epu8_mask(load256(a), load256(b));
+        m = _mm256_cmpneq_epu8_mask(load256(a + n - 32), load256(b + n - 32));
+        return m ? byte_diff(a, b, n - 32 + ctz(m)) : 0;
+    }
+
+    m = _mm256_cmpneq_epu8_mask(load256(a + 32), load256(b + 32));
+
+    if (m) {
+        return byte_diff(a, b, 32 + ctz(m));
+    }
+
+    if (n <= 128) {
+        m = _mm256_cmpneq_epu8_mask(load256(a + n - 64), load256(b + n - 64));
 
         if (m) {
-            return byte_diff(a, b, ctz(m));
+            return byte_diff(a, b, n - 64 + ctz(m));
         }
 
         m = _mm256_cmpneq_epu8_mask(load256(a + n - 32), load256(b + n - 32));
@@ -193,7 +211,25 @@ int strcmp_evex(const char *left, const char *right) {
                 return byte_diff(a, b, ctz(k));
             }
 
-            return str_strcmp_tail(a + 32, b + 32);
+            a += 32;
+            b += 32;
+
+            /* a second block in line for the strings equal so far (33..64 bytes
+               through the tail measured 1.3x slower) */
+
+            if (both_in_page(a, b, 32)) {
+                x = load256(a);
+                k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b)) + 1;
+
+                if (k != 0) {
+                    return byte_diff(a, b, ctz(k));
+                }
+
+                a += 32;
+                b += 32;
+            }
+
+            return str_strcmp_tail(a, b);
         }
 
         /* one of the two may be within 32 bytes of its page end (both_in_page is
@@ -233,7 +269,7 @@ static NOINLINE void *strcpy_long(u8 *d, const u8 *s) {
         RETURN_OPAQUE(d);
     }
 
-    return str_strcpy_long(d, s);
+    return str_strcpy_long(d, s, a + 16);
 }
 
 char *strcpy_evex(char *dst, const char *src) {
