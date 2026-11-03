@@ -391,13 +391,19 @@ static NOINLINE void *strcpy_long(u8 *d, const u8 *s)
     return str_strcpy_long(d, s);
 }
 
+/* One 32-byte block first, as in strlen_avx2: unaligned when the page allows,
+   the aligned block around s shifted otherwise. A string ending in it is
+   copied in one pass; the rest go to the long copy with the 16-byte boundary
+   after s already known to be clear. */
 char *strcpy_avx2(char *dst, const char *src)
 {
     const u8 *s = (const u8 *)src;
     u8 *d = (u8 *)dst;
-    /* Strings ending in the first block are copied in one pass. */
-    const u8 *a = align_down(s, 16);
-    unsigned m = zero_mask16(load16a(a)) >> ((uintptr_t)s & 15);
+    unsigned m;
+    if (page_left(s) >= 32)
+        m = mask256(eq_zero(load256(s)));
+    else
+        m = mask256(eq_zero(load256a(align_down(s, 32)))) >> ((uintptr_t)s & 31);
     if (m) {
         copy_small(d, s, ctz(m) + 1);
         return dst;
