@@ -143,12 +143,16 @@ static inline void *copy(void *dst, const void *src, size_t n)
 {
     u8 *d = (u8 *)dst;
     const u8 *s = (const u8 *)src;
-    if (n <= 32)
+    if (n <= 32) {
         copy_small(d, s, n);
-    else if (n <= 64)
-        copy_33_64(d, s, n);
-    else
+    } else if (n <= 64) {
+        /* two 32-byte blocks from the ends, loads before stores (overlap-safe) */
+        __m256i x = load256(s), y = load256(s + n - 32);
+        store256(d, x);
+        store256(d + n - 32, y);
+    } else {
         return str_copy_large(d, s, n);
+    }
     return dst;
 }
 

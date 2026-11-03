@@ -19,6 +19,7 @@ static inline __mmask16 low_mask(size_t n) { return (__mmask16)_bzhi_u32(0xfffff
 static inline __m128i mload16(const void *p, __mmask16 k) { return _mm_maskz_loadu_epi8(k, p); }
 static inline void mstore16(void *p, __mmask16 k, __m128i v) { _mm_mask_storeu_epi8(p, k, v); }
 static inline __m256i load256(const void *p) { return _mm256_loadu_si256((const __m256i *)p); }
+static inline void store256(void *p, __m256i v) { _mm256_storeu_si256((__m256i *)p, v); }
 static inline __mmask32 low_mask32(size_t n) { return (__mmask32)_bzhi_u32(0xffffffffu, (unsigned)n); }
 /* Bits up to and including the lowest set bit of m (m != 0): the bytes of a
    string through its terminator, given the NUL compare mask. One blsmsk. */
@@ -69,7 +70,10 @@ static inline void *copy(void *dst, const void *src, size_t n, int masked)
     } else if (n <= 32) {
         copy_small(d, s, n);
     } else if (n <= 64) {
-        copy_33_64(d, s, n);
+        /* two 32-byte blocks from the ends, loads before stores (overlap-safe) */
+        __m256i x = load256(s), y = load256(s + n - 32);
+        store256(d, x);
+        store256(d + n - 32, y);
     } else {
         return str_copy_large(d, s, n);
     }
@@ -106,8 +110,14 @@ int memcmp_evex(const void *pa, const void *pb, size_t n)
         unsigned m = _mm256_mask_cmpneq_epu8_mask(k, _mm256_maskz_loadu_epi8(k, a), _mm256_maskz_loadu_epi8(k, b));
         return m ? byte_diff(a, b, ctz(m)) : 0;
     }
-    if (n <= 64)
-        return memcmp_33_64(a, b, n);
+    if (n <= 64) {
+        /* the first and the last 32 bytes */
+        unsigned m = _mm256_cmpneq_epu8_mask(load256(a), load256(b));
+        if (m)
+            return byte_diff(a, b, ctz(m));
+        m = _mm256_cmpneq_epu8_mask(load256(a + n - 32), load256(b + n - 32));
+        return m ? byte_diff(a, b, n - 32 + ctz(m)) : 0;
+    }
     return str_memcmp_large(a, b, n);
 }
 
