@@ -25,6 +25,7 @@ class ElfSection:
     align: int
     entsize: int
     data: bytes
+    addr: int = 0
 
 
 @dataclass
@@ -66,14 +67,16 @@ def cstring(data, offset):
     return data[offset:end].decode()
 
 
-def read(path):
+def read(path, executable=False):
+    """A relocatable object, or with executable a linked one (its sections
+    then carry their addresses)."""
     with open(path, 'rb') as f:
         data = f.read()
     if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
         raise ValueError('%s: not a little-endian ELF64 file' % path)
     e_type, e_machine = struct.unpack_from('<HH', data, 16)
-    if e_type != 1 or e_machine != 62:
-        raise ValueError('%s: not an x86-64 relocatable object' % path)
+    if e_type not in ((1, 2) if executable else (1,)) or e_machine != 62:
+        raise ValueError('%s: not an x86-64 %s' % (path, 'ELF file' if executable else 'relocatable object'))
     e_shoff = struct.unpack_from('<Q', data, 0x28)[0]
     e_shentsize, e_shnum, e_shstrndx = struct.unpack_from('<HHH', data, 0x3a)
     raw = []
@@ -84,7 +87,7 @@ def read(path):
     for i, (sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size, sh_link, sh_info, sh_align, sh_entsize) in enumerate(raw):
         body = b'' if sh_type == 8 else data[sh_offset:sh_offset + sh_size]
         elf.sections.append(ElfSection(i, cstring(shstr, sh_name), SECTION_TYPES.get(sh_type, 'SHT_%d' % sh_type), sh_flags,
-                                       sh_offset, sh_size, sh_link, sh_info, sh_align, sh_entsize, body))
+                                       sh_offset, sh_size, sh_link, sh_info, sh_align, sh_entsize, body, sh_addr))
     symtab = next((s for s in elf.sections if s.type == 'SHT_SYMTAB'), None)
     if symtab is not None:
         strtab = elf.sections[symtab.link].data

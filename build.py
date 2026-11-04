@@ -138,3 +138,17 @@ kbench_canary = command(
     color="cyan",
 )
 group("lab_canary", kbench_canary)
+
+# The library linked on its own for the prover (dev/proof): every function at
+# its address, the calls between them resolved; ./build proof.
+proof_elf = command(
+    name="proof_elf",
+    inputs=[],
+    outputs=["$(B)/proof/libstr.elf"],
+    deps=[libstr],
+    cmd=["clang", "--no-default-config", "-fuse-ld=lld", "-nostdlib", "-static", "-Wl,--whole-archive", "$(B)/libstr.a", "-Wl,--no-whole-archive",
+         "-Wl,-e,0", "-Wl,--unresolved-symbols=ignore-all", "-o", "$(B)/proof/libstr.elf"],
+    descr="LD",
+    color="cyan",
+)
+group("proof", proof_elf)
