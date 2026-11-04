@@ -113,6 +113,19 @@ trace = command(
     descr="GN",
 )
 group("lab", kbench, trace)
+# An A/B of two revisions of ours in one binary: dev/lab/base.py REV puts the
+# other revision's libstr.a and its name in .lab/base/, then ./build lab_base.
+kbench_base = command(
+    name="kbench_base",
+    inputs=[*kbench.inputs, *build.glob("$(S)/.lab/base/libstr.a"), *build.glob("$(S)/.lab/base/rev")],
+    outputs=["$(B)/lab/kbench-base"],
+    deps=[libstr, lab_deps],
+    cmd=["python3", "$(S)/dev/lab/lab.py", "--deps", "$(B)/lab/deps", "--libstr", "$(B)/libstr.a", "--post-report", "$(B)/post/report.txt", "--work",
+         "$(B)/lab/work-base", "--binary", "$(B)/lab/kbench-base", "--base", "$(S)/.lab/base/libstr.a", "--base-rev-file", "$(S)/.lab/base/rev"],
+    descr="LB",
+    color="cyan",
+)
+group("lab_base", kbench_base, trace)
 # The same with dev/lab/canary/*.c, kernels broken on purpose: validation must reject each.
 kbench_canary = command(
     name="kbench_canary",

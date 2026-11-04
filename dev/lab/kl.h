@@ -34,6 +34,13 @@ extern const KlSlot kl_slots[];
 extern const unsigned kl_nslots;
 extern const char *const kl_jcc_configs[]; /* the configurations laid out with the JCC padding, 0-terminated */
 
+/* Another revision of ours, its symbols prefixed base_ (lab.py --base): its
+   configurations, the table its code calls through, the revision. None: 0. */
+extern const struct str_config *const kl_base_configs;
+extern const unsigned kl_base_nconfigs;
+extern struct str_table *const kl_base_table;
+extern const char kl_base_rev[];
+
 /* glibc's variant at an address, and the implementation its IFUNC chose for
    a primitive (the address of memcpy & co. in a static binary is an IPLT stub). */
 const char *glibc_variant(void *p);

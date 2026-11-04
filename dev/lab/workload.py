@@ -17,11 +17,16 @@ the automemcpy paper's published histograms, which a log-normal matches within
     a uniform position; memset: 80% zero; memmove: 50% overlapping.
   strspn skips leading whitespace (" \t", 0-3 bytes, geometric); strcspn
     scans a token for one of 1-3 delimiters.
-  call mix (chunks of 32 calls of one function, so that the stand's own
-    dispatch stays predictable and only the functions' branches vary):
-    memcpy 25%, strlen 20%, strcmp 12%, memset 10%, memcmp 10%, strcpy 8%,
-    strcspn 5%, memmove 5%, strspn 3%, strcat 2%. Common sense, stated here
-    so it can be argued with; the per-function split does not depend on it.
+  call mix: each call's function drawn by the weights memcpy 25%, strlen
+    20%, strcmp 12%, memset 10%, memcmp 10%, strcpy 8%, strcspn 5%, memmove
+    5%, strspn 3%, strcat 2% (common sense, stated here so it can be argued
+    with), so that every function's branches see the others' in the history,
+    as in a program. The stand's own dispatch mispredicts then: noop, the
+    library of empty functions, measures it and libs.py subtracts it.
+  per-function traces: drawn on their own, not cut out of the mix, and long
+    (PER_FUNCTION calls): a pass of a short trace replays it many times, and
+    the branch predictor learns the replayed sequence (a trace of 5 000 strcat
+    calls: glibc's size branches at 0.05 mispredictions a call).
   working set - 2 MiB of sources and 2 MiB of destinations, L2-sized.
 
 File format (little-endian): 'STRW' u32 version u64 src_size u64 dst_size
@@ -40,8 +45,8 @@ MIX = {'memcpy': 25, 'strlen': 20, 'strcmp': 12, 'memset': 10, 'memcmp': 10, 'st
 SRC_SIZE = 8 << 20   # the first WORK_SET bytes are the working set of the mix (L2-sized); the long-string traces live beyond
 WORK_SET = 2 << 20
 DST_SIZE = 2 << 20
-CHUNK = 32
 RECORDS = 1 << 18
+PER_FUNCTION = 1 << 17
 
 
 # median, sigma of ln n, share of zero-length calls: the log-normal fits of the measured data
@@ -84,7 +89,7 @@ def text(rng, n):
     return bytes(rng.choice(LETTERS) for _ in range(n))
 
 
-def generate(seed=1, records=RECORDS):
+def generate(seed=1, records=RECORDS, per_function=PER_FUNCTION):
     rng = random.Random(seed)
     src, dst = Pool(SRC_SIZE), Pool(DST_SIZE)
     draw = make_draw(rng)
@@ -127,54 +132,48 @@ def generate(seed=1, records=RECORDS):
             buf[rng.randrange(n)] = ord(',')
             c = ord(',')
         objects['memchr'].append((n, src.place(bytes(buf), rng), c))
+    # strcat: a destination string of its own per object (the upper half of the
+    # destination pool), room after it for the source and its NUL
+    strcat_dst = Pool(DST_SIZE)
+    strcat_dst.pos = DST_SIZE // 2
+    for _ in range(8192):
+        n, a, _ = rng.choice(objects['strlen'])
+        m = min(draw('string'), 64)
+        slot = strcat_dst.place(text(rng, m) + b'\0' + bytes(n + 1), rng)
+        dst.data[slot:slot + m + 1] = strcat_dst.data[slot:slot + m + 1]
+        objects['strcat'].append((m, a, slot))   # n = the destination's own length: the runner re-terminates it before each call
     for _ in range(counts['strcspn']):
         n = draw('string')
         setname = rng.choice(['d1', 'd2', 'd3', 'd4'])
         delim = {'d1': b',', 'd2': b';', 'd3': b'=', 'd4': b','}[setname]
         s = text(rng, n) + delim + text(rng, rng.randrange(8)) + b'\0'
         objects['strcspn'].append((n, src.place(s, rng), sets[setname]))
-    # the trace, in chunks of one function
+    def record(op):
+        if op in ('memcpy', 'memmove'):
+            n = draw(op)
+            align = 8 if rng.random() < 0.5 else 1
+            a = rng.randrange(0, WORK_SET - 4096, align)
+            if op == 'memmove' and rng.random() < 0.5:
+                b = rng.randrange(DST_SIZE // 4, DST_SIZE // 2 - 8192, align)
+                delta = rng.randrange(1, max(2, n + 1)) * rng.choice((-1, 1))
+                return ('memmove_overlap', n, b, b + delta)
+            return (op, n, a, rng.randrange(0, DST_SIZE // 2 - 4096, align))
+        if op == 'memset':
+            n = draw('memset')
+            align = 8 if rng.random() < 0.5 else 1
+            b = rng.randrange(0, DST_SIZE // 2 - 4096, align)
+            return (op, n, 0 if rng.random() < 0.8 else rng.randrange(256), b)
+        if op == 'strcpy':
+            n, a, _ = rng.choice(objects['strcpy'])
+            return (op, n, a, rng.randrange(0, DST_SIZE // 2 - 4096))
+        n, a, b = rng.choice(objects[op])   # memcmp, strlen, strcmp, strspn, strcspn, memchr, strcat
+        return (op, n, a, b)
+
     ops = list(MIX)
     weights = [MIX[o] for o in ops]
-    trace = []
-    strcat_dst = Pool(DST_SIZE)
-    strcat_dst.pos = DST_SIZE // 2   # the upper half of the destination pool holds the strcat slots
-    while len(trace) < records:
-        op = rng.choices(ops, weights)[0]
-        for _ in range(CHUNK):
-            if op in ('memcpy', 'memmove'):
-                n = draw(op)
-                align = 8 if rng.random() < 0.5 else 1
-                a = rng.randrange(0, WORK_SET - 4096, align)
-                if op == 'memmove' and rng.random() < 0.5:
-                    b = rng.randrange(DST_SIZE // 4, DST_SIZE // 2 - 8192, align)
-                    delta = rng.randrange(1, max(2, n + 1)) * rng.choice((-1, 1))
-                    trace.append(('memmove_overlap', n, b, b + delta))
-                else:
-                    b = rng.randrange(0, DST_SIZE // 2 - 4096, align)
-                    trace.append((op, n, a, b))
-            elif op == 'memset':
-                n = draw('memset')
-                align = 8 if rng.random() < 0.5 else 1
-                b = rng.randrange(0, DST_SIZE // 2 - 4096, align)
-                trace.append((op, n, 0 if rng.random() < 0.8 else rng.randrange(256), b))
-            elif op in ('memcmp', 'strlen', 'strcmp', 'strspn', 'strcspn', 'memchr'):
-                n, a, b = rng.choice(objects[op])
-                trace.append((op, n, a, b))
-            elif op == 'strcpy':
-                n, a, _ = rng.choice(objects['strcpy'])
-                trace.append((op, n, a, rng.randrange(0, DST_SIZE // 2 - 4096)))
-            elif op == 'strcat':
-                n, a, _ = rng.choice(objects['strlen'])
-                m = draw('string')
-                m = min(m, 64)
-                slot = strcat_dst.place(text(rng, m) + b'\0' + bytes(n + 1), rng)
-                dst.data[slot:slot + m + 1] = strcat_dst.data[slot:slot + m + 1]
-                trace.append((op, m, a, slot))   # n = the destination's own length: the runner re-terminates it before each call
-    trace = trace[:records]
-    traces = [('mixed', trace)]
+    traces = [('mixed', [record(op) for op in rng.choices(ops, weights, k=records)])]
     for op in ops:
-        traces.append((op, [r for r in trace if r[0] == op or (op == 'memmove' and r[0] == 'memmove_overlap')]))
+        traces.append((op, [record(op) for _ in range(per_function)]))
     # the set scans on long strings with larger sets (a parser's whitespace and delimiter
     # sets, lines of 64-1024 bytes): not in the mix, a trace of their own
     src.pos = max(src.pos, WORK_SET)

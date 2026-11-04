@@ -11,8 +11,11 @@ run time), linked against Debian's static glibc, with:
   musl      its string files (C, x86_64 memcpy/memmove/memset in asm);
   llvm      LLVM libc's string functions, built for x86-64-v2, -v3 and -v4;
   asmlib    Agner Fog's ELF64 archive, its dispatchers and every variant;
-  kl        dev/lab/kernels/*.c, new kernels (canary/*.c with --canary).
-Every library's symbols get a prefix (fbsd_, musl_, llvm_v3_, asm_), so they
+  kl        dev/lab/kernels/*.c, new kernels (canary/*.c with --canary);
+  base      with --base, the libstr.a of another revision (base.py): an A/B
+            of two revisions of ours in one binary, the stand and the rest of
+            the layout the same for both.
+Every library's symbols get a prefix (fbsd_, musl_, llvm_v3_, asm_, base_), so they
 link side by side. kernels-gen.c, the registry kbench reads, is written from
 nm of all of it: a symbol is a kernel by the rules in classify().
 """
@@ -144,6 +147,8 @@ def main():
     ap.add_argument('--binary', required=True, type=Path)
     ap.add_argument('--canary', action='store_true', help='add canary/*.c, kernels broken on purpose: validation must reject every one')
     ap.add_argument('--only', help='comma list of globs under kernels/ to compile instead of all')
+    ap.add_argument('--base', type=Path, help="another revision's libstr.a (base.py), linked beside ours with its symbols prefixed base_")
+    ap.add_argument('--base-rev-file', type=Path, help='a file with its revision, for the meta')
     args = ap.parse_args()
     work = args.work.resolve()
     shutil.rmtree(work, ignore_errors=True)
@@ -242,6 +247,28 @@ def main():
         run([*base, *ISA_FLAGS[isa], *glibc_inc, '-I', ROOT, '-Wall', '-Wextra', '-c', src, '-o', obj], work, 'kl-' + src.stem)
         kl.append((obj, isa))
 
+    # the baseline: every symbol prefixed base_ but its calls out of the library (memcpy)
+    base_lib, base_gen = [], ['const struct str_config *const kl_base_configs = 0;', 'const unsigned kl_base_nconfigs = 0;',
+                              'struct str_table *const kl_base_table = 0;', 'const char kl_base_rev[] = "";']
+    if args.base:
+        a = work / 'base.a'
+        run(['llvm-objcopy', '--prefix-symbols=base_', args.base, a], work, 'base-prefix')
+        listing = subprocess.run(['llvm-nm', '-S', str(args.base)], capture_output=True, text=True, check=True).stdout.splitlines()
+        defined = {f[-1]: f for f in (line.split() for line in listing) if len(f) >= 3 and f[-2] != 'U'}
+        external = sorted({f[-1] for f in (line.split() for line in listing) if len(f) == 2 and f[0] == 'U'} - set(defined))
+        if external:
+            run(['llvm-objcopy', *['--redefine-sym=base_%s=%s' % (s, s) for s in external], a], work, 'base-externals')
+        size = {s: int(defined[s][1], 16) for s in ('str_configs', 'str_table')}
+        base_lib = [a]
+        # the tables must have this revision's layout: kbench reads its configurations as ours
+        base_gen = ['extern const struct str_config base_str_configs[];', 'extern struct str_table base_str_table;',
+                    '_Static_assert(%d == sizeof(struct str_table), "the base revision\'s struct str_table differs from this one\'s");' % size['str_table'],
+                    '_Static_assert(%d %% sizeof(struct str_config) == 0, "the base revision\'s struct str_config differs from this one\'s");'
+                    % size['str_configs'],
+                    'const struct str_config *const kl_base_configs = base_str_configs;',
+                    'const unsigned kl_base_nconfigs = %d / sizeof(struct str_config);' % size['str_configs'],
+                    'struct str_table *const kl_base_table = &base_str_table;', 'const char kl_base_rev[] = "%s";' % (args.base_rev_file.read_text().strip() if args.base_rev_file else '')]
+
     # the registry
     defs, slots = [], []
     for path, source in inputs.items():
@@ -281,6 +308,7 @@ def main():
     # <config>.<name> copies are the code of <name>_jcc, not of <name>
     jcc = re.findall(r'^(\w+): \d+ functions, the JCC padding$', args.post_report.read_text(), re.M) if args.post_report else []
     gen += ['const char *const kl_jcc_configs[] = {%s};' % ', '.join(['"%s"' % c for c in jcc] + ['0'])]
+    gen += base_gen
     # glibc's choice on this host: the IPLT stub of each primitive jumps through the slot IFUNC filled
     gen.append('const char *glibc_variant(void *p) {')
     gen += ['    if (p == (void *)kl_d%d) return "%s";' % (i, d[1]) for i, d in enumerate(defs) if d[0] == 'glibc']
@@ -294,14 +322,34 @@ def main():
         counts[d[0]] = counts.get(d[0], 0) + 1
     print('registry: %d kernels (%s), %d slot implementations of ours' % (len(defs), ', '.join('%s %d' % kv for kv in sorted(counts.items())), len(slots)))
 
-    # kbench
+    # kbench. The stand (its loops over a trace) is part of every measurement and
+    # must keep one shape wherever it lands: no branch cut by or ending at a
+    # 32-byte boundary (Skylake's JCC erratum: such a branch leaves the uop
+    # cache; moving the stand by 16 bytes changed its own legacy-decoded uops
+    # from 14 to 36 a call on Skylake-SP and ours' strcmp by 25%), and every
+    # block not reached by falling through (the loop's head, the switch's
+    # cases) at the start of a 64-byte line of its own (Broadwell: the empty
+    # stand at 9 or 11 cycles a call by the same 16 bytes; Skylake-SP, the
+    # branches clear of the boundaries and the blocks 32-aligned: 8 or 12
+    # cycles a call on the strcat trace by the half of the line the loop
+    # starts in).
+    stand = ['-ffunction-sections', '-mllvm', '-x86-align-branch-boundary=32', '-mllvm', '-x86-align-branch=fused+jcc+jmp+call+ret+indirect', '-mllvm',
+             '-align-all-nofallthru-blocks=6', '-mllvm', '-align-all-functions=6']
     objs = []
     for src, name in ((HERE / 'kbench.c', 'kbench.o'), (work / 'kernels-gen.c', 'kernels-gen.o')):
-        run([*base[:2], '-O2', '-march=x86-64', '-fno-pic', '-fno-pie', '-fno-builtin', '-fno-vectorize', '-fno-slp-vectorize', *glibc_inc, '-I', ROOT,
-             '-Wall', '-Wextra', '-c', src, '-o', work / name], work, name)
+        run([*base[:2], '-O2', '-march=x86-64', '-fno-pic', '-fno-pie', '-fno-builtin', '-fno-vectorize', '-fno-slp-vectorize', *stand, *glibc_inc,
+             '-I', ROOT, '-Wall', '-Wextra', '-c', src, '-o', work / name], work, name)
         objs.append(work / name)
-    run(['clang', '--no-default-config', '-fuse-ld=lld', '-nostdlib', '-static', '-no-pie', '-Wl,-z,noexecstack', glibc / 'crt1.o', glibc / 'crti.o',
-         gcc / 'crtbeginT.o', *objs, *[o for o, _ in kl], args.libstr, *inputs, '-Wl,--start-group', glibc / 'libc.a', gcc / 'libgcc.a',
+    # the stand, the empty functions and glibc's variants first in .text, in a fixed
+    # order: their addresses then do not move with a change of ours, of the lab's
+    # kernels or of the rest of kbench (glibc is not laid out against the JCC
+    # erratum, and its time on Skylake-SP follows its place)
+    order = work / 'order.txt'
+    order.write_text('\n'.join(['trace_run_%d' % k for k in range(4)] + ['mixed_run_%d' % k for k in range(4)] +
+                               ['noop_cpy', 'noop_set', 'noop_cmp', 'noop_len', 'noop_scpy', 'noop_scmp', 'noop_spn', 'noop_chr'] + variants) + '\n')
+    run(['clang', '--no-default-config', '-fuse-ld=lld', '-nostdlib', '-static', '-no-pie', '-Wl,-z,noexecstack', '-Wl,--symbol-ordering-file=' + str(order),
+         '-Wl,--no-warn-symbol-ordering', glibc / 'crt1.o', glibc / 'crti.o',
+         gcc / 'crtbeginT.o', *objs, *[o for o, _ in kl], args.libstr, *base_lib, *inputs, '-Wl,--start-group', glibc / 'libc.a', gcc / 'libgcc.a',
          gcc / 'libgcc_eh.a', '-Wl,--end-group', gcc / 'crtend.o', glibc / 'crtn.o', '-o', args.binary], work, 'link')
     print(args.binary)
 

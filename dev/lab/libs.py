@@ -8,7 +8,9 @@ Reads the runs .lab/<TAG*>/<host>/ of kbench --libs (run.py --tag ... -- --libs
 over the passes less noop's (the stand's own cost per call: the record, the
 switch, the call); a library's figure is the minimum over the runs, and the
 range is its ratio to glibc in each run on its own. "ours" is the
-configuration the host's dispatch installs. A library runs a trace only with
+configuration the host's dispatch installs, "base" the same configuration of
+another revision linked into the same binary (base.py), for an A/B of two
+revisions with the stand and the rest of the layout the same. A library runs a trace only with
 a function for every primitive in it (asmlib has no strcmp, strspn, strcspn
 or memchr that passes validation: no mixed trace).
 """
@@ -21,7 +23,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-LIBS = ['ours', 'glibc', 'freebsd', 'llvm', 'musl', 'asmlib']
+LIBS = ['ours', 'base', 'glibc', 'freebsd', 'llvm', 'musl', 'asmlib']
 TRACES = ['mixed', 'memcpy', 'memmove', 'memset', 'memcmp', 'strlen', 'strcpy', 'strcat', 'strcmp', 'strspn', 'strcspn', 'memchr', 'strspn_long',
           'strcspn_long']
 
@@ -33,13 +35,13 @@ def host_data(pattern, host):
         if not (p / 'out.csv.gz').exists():
             continue
         meta = json.loads((p / 'meta.json').read_text())
-        ours = 'ours/' + meta['ours_config']
+        ours, base = 'ours/' + meta['ours_config'], 'base/' + meta['ours_config']
         t = {}
         with gzip.open(p / 'out.csv.gz', 'rt') as f:
             for r in csv.DictReader(f):
                 if r['prim'] != 'lib':
                     continue
-                name = {ours: 'ours', 'glibc/dispatch': 'glibc'}.get(r['kernel'], r['kernel'])
+                name = {ours: 'ours', base: 'base', 'glibc/dispatch': 'glibc'}.get(r['kernel'], r['kernel'])
                 t[(name, r['scenario'][6:])] = float(r['min_ns'])
         net = {(lib, tr): max(v - t.get(('noop', tr), 0), 0.01) for (lib, tr), v in t.items() if lib != 'noop'}
         runs.append(net)

@@ -16,6 +16,12 @@ dev/lab/run.py --tag m1 --hosts lab2 --clock free -- --prims none --no-matrix --
 dev/lab/report.py r1 --regime lat                   # winners per size bucket, where ours lose
 dev/lab/run.py --tag lib-1 -- --prims none --no-matrix --libs   # whole libraries on the workload (repeat: lib-2..5)
 dev/lab/libs.py 'lib-*'                             # the platform x library table, glibc = 1
+dev/lab/run.py --tag h-1 --hosts lab3 -- --prims none --no-matrix --libs --hybrid --pmu cycles,branch-misses,r0479
+                                                    # ours with each function glibc's in the mix; counters per call
+ix run lib/c bld/compiler -- python3 dev/lab/base.py HEAD   # .build/lab/kbench-base: ours and HEAD's in one binary
+dev/lab/run.py --tag ab-1 --binary .build/lab/kbench-base -- --prims none --no-matrix --libs && dev/lab/libs.py 'ab-*'
+dev/lab/split.py .build/lab/workload.bin .lab/split.bin --traces memset --edges 0,128,256,512,4096
+dev/lab/run.py --tag s-1 --trace .lab/split.bin -- --prims memset --no-matrix   # a trace per size bucket
 ix run lib/c bld/compiler -- ./build lab_canary     # kernels broken on purpose: every one must be rejected
 ```
 
@@ -80,10 +86,45 @@ caches all of it by content.
   sees).
 - **Traces** (`workload.py`): every function's trace of the workload and the
   long strspn/strcspn ones, each kernel, 7 passes, checksums against glibc.
-  `--mixed`: the whole workload, all functions in their proportions, for
-  whole tables: every configuration of ours, glibc as dispatched, and
-  `--table NAME=CONFIG:SLOT=FN,...` (a configuration with slots replaced).
-  A clock license one function takes slows the others, which only this shows.
+  `--mixed`: the whole workload, each call's function drawn by the mix's
+  weights, for whole tables: every configuration of ours, glibc as
+  dispatched, and `--table NAME=CONFIG:SLOT=FN,...` (a configuration with
+  slots replaced; a public slot takes any kernel of its primitive by
+  symbol). In the mix each function's branches see the others' in the
+  history and the store buffer drains between calls: the per-function trace
+  of memset is a benchmark of back-to-back memsets, where the order of the
+  stores counts 1.3x, and the mix is not (there the branches on the size
+  count). A clock license one function takes slows the others, which only
+  the mix shows. The per-function traces are drawn on their own and long
+  (131 072 calls): a short one replayed many times is learned by the branch
+  predictor. `split.py` cuts a trace into size buckets (short, so the
+  predictor learns them: for stores and loads, not for branches).
+- **Hybrids** (`--hybrid`): the host's configuration of ours with one public
+  function glibc's, for each function: which of ours lose to glibc's in the
+  mix, the trace's change divided by the function's share being its cost a
+  call there.
+- **Two revisions in one binary** (`base.py REV`, `./build lab_base`): the
+  libstr.a of REV linked beside this tree's with its symbols prefixed
+  `base_`, the kernels `base/<config>`, the library `base` in `libs.py`, and
+  with `--hybrid` ours with each function the base's. Two kbench builds
+  differ in the place of everything; an A/B across binaries measured the
+  stand, not the change.
+- **The stand**, the loops over a trace, is in every number: built with
+  every branch clear of 32-byte boundaries (Skylake's JCC erratum: a branch
+  cut by one leaves the uop cache) and every block not reached by falling
+  through on a 64-byte line of its own, and linked first in `.text` with
+  glibc's variants after it in a fixed order (`order.txt`), so that neither
+  moves with a change of ours or of kbench. `--stand 0..3` runs one of four
+  copies 16 bytes apart. Before, moving the stand by 16 bytes took its
+  legacy-decoded uops from 14 to 36 a call on Skylake-SP and moved ours'
+  strcmp by 25% and glibc's memcmp by 7%, in opposite directions; after, the
+  four copies agree within 0.5-2% except memcpy on Skylake-SP (6%) and one
+  copy's strcmp on Broadwell (7%, ours and glibc alike).
+- **Counters** (`--pmu cycles,instructions,branches,branch-misses,rHEX`):
+  perf_event_open for the thread in user mode, one more pass of each trace
+  after the timed ones, per call in the column `pmu`; rHEX is a raw event
+  (Intel: umask << 8 | event, cmask << 24), more events than counters take
+  turns, scaled.
 - **Whole libraries** (`--libs`, the workload stand of the old bench.c
   `--workload`): ours as dispatched, glibc as dispatched, FreeBSD, LLVM libc
   at the host's level, musl, asmlib, each with its own function for every
@@ -99,6 +140,6 @@ turbo off, the performance governor, or on a host without cpufreq every core's
 HWP request pinned at its guaranteed ratio) and given back after; kbench
 measures it at the start and the end with a chain of dependent adds.
 
-`out.csv.gz` has `prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters,ghz`;
+`out.csv.gz` has `prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters,ghz,pmu`;
 `meta.json` the host, its features, glibc's and our dispatch, every kernel and
 its validation; `run.json` the commit, the binary's hash and the options.

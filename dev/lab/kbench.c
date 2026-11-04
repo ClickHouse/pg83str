@@ -15,7 +15,7 @@
  * and lat (each call's pointers depend on the previous result). Then the
  * workload traces (workload.py) per primitive with every kernel.
  *
- * Output: CSV on stdout (prim,scenario,regime,n,ao,bo,kernel,min_ns,med_ns,iters),
+ * Output: CSV on stdout (prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters,ghz,pmu),
  * progress on stderr, facts (host, features, kernels, validation, the glibc
  * and our dispatch) as JSON in --meta FILE.
  */
@@ -150,6 +150,7 @@ typedef struct {
     unsigned needs;
     int ours;
     struct str_table table;
+    struct str_table *tgt; /* where installing it writes: str_table, or the base revision's (0: str_table) */
     int status; /* 0 untested, 1 valid, -1 failed, -2 not for this host */
     char why[160];
     double est;   /* ns per call, for the batch size */
@@ -318,6 +319,20 @@ static void build_kernels(void) {
             k->needs = (n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0);
         }
 
+        /* the base revision's configurations whole (lab.py --base) */
+        for (unsigned c = 0; c < kl_base_nconfigs; c++) {
+            Kernel *k = add_kernel();
+            snprintf(k->name, sizeof k->name, "base/%s", kl_base_configs[c].name);
+            k->origin = "base";
+            k->prim = p;
+            k->ours = 1;
+            k->table = kl_base_configs[c].table;
+            k->tgt = kl_base_table;
+            k->fn = ((void *const *)&k->table)[p];
+            unsigned n = kl_base_configs[c].needs;
+            k->needs = (n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0);
+        }
+
         if (!have_ours(p, &plain)) {
             Kernel *k = add_kernel();
             snprintf(k->name, sizeof k->name, "ours/%s.t", base_config->name);
@@ -360,7 +375,7 @@ static void build_kernels(void) {
 
 static void install(const Kernel *k) {
     if (k->ours) {
-        str_table = k->table;
+        *(k->tgt ? k->tgt : &str_table) = k->table;
     }
 }
 
@@ -1148,6 +1163,77 @@ static void msr_open(int cpu) {
     tsc_ghz = (double)(rdtsc() - c0) / (double)((t1.tv_sec - t0.tv_sec) * 1000000000l + (t1.tv_nsec - t0.tv_nsec));
 }
 
+/* --pmu EV,...: the core's counters over one more pass of each trace per
+   kernel or table, after the timed passes, per call in the column pmu
+   (EV=count;...). perf_event_open and ioctl by their numbers (the kernel's
+   headers again), for this thread in user mode. EV: cycles, instructions,
+   branches, branch-misses, or rHEX, a raw event of the CPU (Intel: umask << 8
+   | event, cmask << 24; r20c4 the taken branches retired, Broadwell to Ice
+   Lake). More events than the core has counters take turns, each scaled. */
+static int pmu_n, pmu_fd[8];
+static const char *pmu_ev[8];
+
+static void pmu_open(char *spec) {
+    static const char *hw[] = {"cycles", "instructions", "cache-references", "cache-misses", "branches", "branch-misses"};
+    char *sv;
+
+    for (char *e = strtok_r(spec, ",", &sv); e; e = strtok_r(0, ",", &sv)) {
+        struct { uint32_t type, size; uint64_t config, period, sample_type, read_format, flags; uint32_t wakeup, bp_type; uint64_t config1; } at = {0};
+        at.size = sizeof at; /* PERF_ATTR_SIZE_VER0 */
+        at.config = ~0ull;
+        at.flags = 1 | 1 << 5 | 1 << 6; /* disabled, exclude_kernel, exclude_hv */
+        at.read_format = 1 | 2;          /* the time enabled and running: more events than counters share them */
+
+        for (unsigned i = 0; i < sizeof hw / sizeof *hw; i++) {
+            if (!strcmp(e, hw[i])) {
+                at.config = i; /* PERF_TYPE_HARDWARE */
+            }
+        }
+
+        if (e[0] == 'r' && e[1]) {
+            at.type = 4; /* PERF_TYPE_RAW */
+            at.config = strtoull(e + 1, 0, 16);
+        }
+
+        CHECK(at.config != ~0ull && pmu_n < 8);
+        long fd = syscall(298, &at, 0, -1, -1, 0);
+
+        if (fd < 0) {
+            fprintf(stderr, "kbench: --pmu %s: perf_event_open failed\n", e);
+            exit(2);
+        }
+
+        pmu_fd[pmu_n] = (int)fd;
+        pmu_ev[pmu_n++] = e;
+    }
+}
+
+static void pmu_start(void) {
+    for (int i = 0; i < pmu_n; i++) {
+        syscall(16, pmu_fd[i], 0x2403, 0); /* PERF_EVENT_IOC_RESET */
+    }
+
+    for (int i = 0; i < pmu_n; i++) {
+        syscall(16, pmu_fd[i], 0x2400, 0); /* PERF_EVENT_IOC_ENABLE */
+    }
+}
+
+static void pmu_stop(char *out, size_t cap, double calls) {
+    size_t w = 0;
+    out[0] = 0;
+
+    for (int i = 0; i < pmu_n; i++) {
+        syscall(16, pmu_fd[i], 0x2401, 0); /* PERF_EVENT_IOC_DISABLE */
+    }
+
+    for (int i = 0; i < pmu_n && w < cap; i++) {
+        uint64_t v[3] = {0};
+        CHECK(read(pmu_fd[i], v, sizeof v) == sizeof v);
+        double n = v[2] ? (double)v[0] * (double)v[1] / (double)v[2] : 0; /* the count over the time it ran, scaled to the time enabled */
+        w += (size_t)snprintf(out + w, cap - w, "%s%s=%.3f", i ? ";" : "", pmu_ev[i], n / calls);
+    }
+}
+
 static unsigned long long rng_state = 88172645463325252ull;
 static unsigned rnd(void) {
     rng_state ^= rng_state << 13;
@@ -1222,7 +1308,7 @@ static void time_cell(Kernel **ks, int nk, const Cell *c, const char *regime) {
         memcpy(v, k->s, samples * sizeof *v);
         qsort(v, samples, sizeof *v, cmp_double);
         k->est = v[0];
-        printf("%s,%s,%s,%zu,%s,%s,%.4f,%.4f,%zu,\n", PN[c->prim], c->scenario, regime, c->n, c->aname, k->name, v[0], v[samples / 2], k->iters);
+        printf("%s,%s,%s,%zu,%s,%s,%.4f,%.4f,%zu,,\n", PN[c->prim], c->scenario, regime, c->n, c->aname, k->name, v[0], v[samples / 2], k->iters);
     }
 }
 
@@ -1361,7 +1447,7 @@ static void setup(Cell *c, const Align *al) {
 }
 
 static int want_prim[P_N];
-static int want_mixed, want_libs;
+static int want_mixed, want_libs, no_trace, want_hybrid;
 static const char *kfilter, *kexclude;
 
 static int kernel_wanted(const Kernel *k) {
@@ -1471,7 +1557,7 @@ static void matrix(const char *regimes) {
 typedef struct { uint8_t op, pad[3]; uint32_t n; uint64_t a, b; } Rec;
 enum { W_MEMCPY, W_MEMMOVE, W_MEMMOVE_OVL, W_MEMSET, W_MEMCMP, W_STRLEN, W_STRCPY, W_STRCAT, W_STRCMP, W_STRSPN, W_STRCSPN, W_MEMCHR };
 
-__attribute__((noinline)) static uint64_t trace_run(const Kernel *k, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {
+static inline __attribute__((always_inline)) uint64_t trace_body(const Kernel *k, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {
     uint64_t sum = 0;
 
     for (uint64_t i = 0; i < count; i++) {
@@ -1503,13 +1589,24 @@ typedef struct {
     char name[64];
     struct str_table t; /* public slots only for the other libraries; a null one: the library has no such function */
     int ours;
+    struct str_table *tgt; /* as Kernel's */
+    const struct str_table *base; /* --hybrid: the base revision's configuration, installed beside (its functions call through it) */
     int on; /* runs the current trace: has every function it calls */
     double s[64], ghz[64];
     size_t iters;
     uint64_t sum;
 } Table;
 
-static Table tables[32];
+static Table tables[64];
+
+static void table_install(const Table *x) {
+    *(x->tgt ? x->tgt : &str_table) = x->t;
+
+    if (x->base) {
+        *kl_base_table = *x->base;
+    }
+}
+
 static int ntables;
 static const char *table_specs[16];
 static int ntable_specs;
@@ -1618,12 +1715,52 @@ static void build_tables(void) {
         x->ours = 1;
     }
 
+    for (unsigned c = 0; c < kl_base_nconfigs; c++) {
+        unsigned n = kl_base_configs[c].needs;
+
+        if (((n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0)) & ~host) {
+            continue;
+        }
+
+        Table *x = &tables[ntables++];
+        snprintf(x->name, sizeof x->name, "base/%s", kl_base_configs[c].name);
+        x->t = kl_base_configs[c].table;
+        x->ours = 1;
+        x->tgt = kl_base_table;
+
+        /* --hybrid: the host's configuration of ours with one public function the
+           base revision's, for each: which of them a difference of the two on
+           the mixed trace comes from */
+
+        for (int p = 0; want_hybrid && strcmp(kl_base_configs[c].name, base_config->name) == 0 && p < P_N; p++) {
+            Table *h = &tables[ntables++];
+            CHECK(ntables <= (int)(sizeof tables / sizeof *tables));
+            snprintf(h->name, sizeof h->name, "hyb/%s", PN[p]);
+            h->t = base_config->table;
+            ((void **)&h->t)[p] = ((void *const *)&kl_base_configs[c].table)[p];
+            h->ours = 1;
+            h->base = &kl_base_configs[c].table;
+        }
+    }
+
     Table *g = &tables[ntables++];
     snprintf(g->name, sizeof g->name, "glibc/dispatch");
     void *const pub[] = {resolved_glibc((void *)memcpy), resolved_glibc((void *)memmove), resolved_glibc((void *)memset), resolved_glibc((void *)memcmp),
                          resolved_glibc((void *)strlen), resolved_glibc((void *)strcpy), resolved_glibc((void *)strcat), resolved_glibc((void *)strcmp),
                          resolved_glibc((void *)strspn), resolved_glibc((void *)strcspn), resolved_glibc((void *)memchr)};
     memcpy(&g->t, pub, sizeof pub);
+
+    /* --hybrid: the host's configuration of ours with one public function
+       glibc's, for each: which of ours lose to glibc's in the mix */
+
+    for (int p = 0; want_hybrid && p < P_N; p++) {
+        Table *h = &tables[ntables++];
+        CHECK(ntables <= (int)(sizeof tables / sizeof *tables));
+        snprintf(h->name, sizeof h->name, "hybg/%s", PN[p]);
+        h->t = base_config->table;
+        ((void **)&h->t)[p] = pub[p];
+        h->ours = 1;
+    }
 
     if (want_libs) {
         library("freebsd", "fbsd_", 0);
@@ -1674,6 +1811,16 @@ static void build_tables(void) {
                 }
             }
 
+            /* a public slot: any kernel of the primitive (dev/lab/kernels, the
+               other libraries), by its symbol */
+
+            for (unsigned j = 0; !done && slot < P_N && j < kl_ndefs; j++) {
+                if (kl_defs[j].prim == slot && !strcmp(kl_defs[j].name, e + 1)) {
+                    ((void **)&x->t)[slot] = kl_defs[j].fn;
+                    done = 1;
+                }
+            }
+
             if (!done) {
                 fprintf(stderr, "kbench: --table: no %s implementation %s\n", a, e + 1);
                 exit(2);
@@ -1682,7 +1829,7 @@ static void build_tables(void) {
     }
 }
 
-__attribute__((noinline)) static uint64_t mixed_run(const struct str_table *t, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {
+static inline __attribute__((always_inline)) uint64_t mixed_body(const struct str_table *t, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {
     uint64_t sum = 0;
 
     for (uint64_t i = 0; i < count; i++) {
@@ -1705,6 +1852,41 @@ __attribute__((noinline)) static uint64_t mixed_run(const struct str_table *t, c
     }
 
     return sum;
+}
+
+/* The stand: the loops over a trace, four copies 64-aligned with 0, 16, 32 or
+   48 bytes of nops (run once a replay) before the loop, --stand K picks one.
+   The loop's place against the 32- and 64-byte boundaries is the stand's own
+   share of a measurement: its compare-and-branch pairs and the indirect call
+   are cut by a 32-byte boundary or not (Skylake's JCC erratum: such a branch
+   is not kept in the decoded-uop cache), and its uops share the frontend with
+   the function's. */
+#define STAND(K)                                                                                                                                    \
+    __attribute__((noinline, aligned(64))) static uint64_t trace_run_##K(const Kernel *k, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {  \
+        __asm__ volatile(".skip " #K " * 16, 0x90");                                                                                            \
+        return trace_body(k, recs, count, src, dst);                                                                                            \
+    }                                                                                                                                           \
+    __attribute__((noinline, aligned(64))) static uint64_t mixed_run_##K(const struct str_table *t, const Rec *recs, uint64_t count, u8x *src,      \
+                                                                       u8x *dst) {                                                               \
+        __asm__ volatile(".skip " #K " * 16, 0x90");                                                                                            \
+        return mixed_body(t, recs, count, src, dst);                                                                                            \
+    }
+
+STAND(0)
+STAND(1)
+STAND(2)
+STAND(3)
+
+static int stand;
+static uint64_t (*const trace_runs[])(const Kernel *, const Rec *, uint64_t, u8x *, u8x *) = {trace_run_0, trace_run_1, trace_run_2, trace_run_3};
+static uint64_t (*const mixed_runs[])(const struct str_table *, const Rec *, uint64_t, u8x *, u8x *) = {mixed_run_0, mixed_run_1, mixed_run_2, mixed_run_3};
+
+static uint64_t trace_run(const Kernel *k, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {
+    return trace_runs[stand](k, recs, count, src, dst);
+}
+
+static uint64_t mixed_run(const struct str_table *t, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {
+    return mixed_runs[stand](t, recs, count, src, dst);
 }
 
 /* The functions a record calls, as public slots of a table. */
@@ -1741,7 +1923,7 @@ static void tables_trace(const char *name, const Rec *recs, uint64_t count, u8x 
         non++;
 
         if (x->ours) {
-            str_table = x->t;
+            table_install(x);
         }
 
         memcpy(dst, image, dsz);
@@ -1782,7 +1964,7 @@ static void tables_trace(const char *name, const Rec *recs, uint64_t count, u8x 
             }
 
             if (x->ours) {
-                str_table = x->t;
+                table_install(x);
             }
 
             memcpy(dst, image, dsz);
@@ -1808,14 +1990,43 @@ static void tables_trace(const char *name, const Rec *recs, uint64_t count, u8x 
         memcpy(g, tables[i].ghz, np * sizeof *g);
         qsort(v, np, sizeof *v, cmp_double);
         qsort(g, np, sizeof *g, cmp_double);
-        printf("lib,trace:%s,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f\n", name, count, tables[i].name, v[0], v[np / 2], tables[i].iters, g[np / 2]);
+        char pm[256] = "";
+
+        if (pmu_n) {
+            Table *x = &tables[i];
+
+            if (x->ours) {
+                table_install(x);
+            }
+
+            memcpy(dst, image, dsz);
+            pmu_start();
+
+            for (size_t it = 0; it < x->iters; it++) {
+                vsink += mixed_run(&x->t, recs, count, src, dst);
+            }
+
+            pmu_stop(pm, sizeof pm, (double)(count * x->iters));
+        }
+
+        printf("lib,trace:%s,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f,%s\n", name, count, tables[i].name, v[0], v[np / 2], tables[i].iters, g[np / 2], pm);
     }
 
     fflush(stdout);
     fprintf(stderr, "trace %s: %d tables, %ld s\n", name, non, (long)(time(0) - t0));
 }
 
-static int trace_prim(const char *name) {
+/* The primitive a trace calls, by its name: NAME, or NAME/... for a part of
+   NAME's trace (split.py's buckets of sizes). */
+static int trace_prim(const char *full) {
+    char name[64];
+    snprintf(name, sizeof name, "%s", full);
+    char *slash = strchr(name, '/');
+
+    if (slash) {
+        *slash = 0;
+    }
+
     static const struct { const char *t; int p; } map[] = {{"memcpy", P_MEMCPY}, {"memmove", P_MEMMOVE}, {"memset", P_MEMSET}, {"memcmp", P_MEMCMP},
         {"strlen", P_STRLEN}, {"strcpy", P_STRCPY}, {"strcat", P_STRCAT}, {"strcmp", P_STRCMP}, {"strspn", P_STRSPN}, {"strcspn", P_STRCSPN},
         {"memchr", P_MEMCHR}, {"strspn_long", P_STRSPN}, {"strcspn_long", P_STRCSPN}};
@@ -1933,7 +2144,22 @@ static void traces(const char *path, int passes) {
             double g[64];
             memcpy(g, ks[i]->ghz, np * sizeof *g);
             qsort(g, np, sizeof *g, cmp_double);
-            printf("%s,trace:%s,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f\n", PN[p], name, count, ks[i]->name, v[0], v[np / 2], ks[i]->iters, g[np / 2]);
+            char pm[256] = "";
+
+            if (pmu_n) {
+                Kernel *k = ks[i];
+                install(k);
+                memcpy(dst, image, dsz);
+                pmu_start();
+
+                for (size_t it = 0; it < k->iters; it++) {
+                    vsink += trace_run(k, recs, count, src, dst);
+                }
+
+                pmu_stop(pm, sizeof pm, (double)(count * k->iters));
+            }
+
+            printf("%s,trace:%s,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f,%s\n", PN[p], name, count, ks[i]->name, v[0], v[np / 2], ks[i]->iters, g[np / 2], pm);
         }
 
         fflush(stdout);
@@ -2015,8 +2241,8 @@ static void parse_aligns(const char *spec, Align *out, int *n, int two) {
 static void meta(const char *path) {
     FILE *f = fopen(path, "w");
     CHECK(f);
-    fprintf(f, "{\n \"brand\": \"%s\",\n \"features\": %u,\n \"clock_ghz\": [%.3f, %.3f],\n \"ours_config\": \"%s\",\n \"glibc\": {", brand, host,
-            ghz_start, ghz_end, base_config->name);
+    fprintf(f, "{\n \"brand\": \"%s\",\n \"features\": %u,\n \"clock_ghz\": [%.3f, %.3f],\n \"ours_config\": \"%s\",\n \"base_rev\": \"%s\",\n \"stand\": %d,\n \"glibc\": {",
+            brand, host, ghz_start, ghz_end, base_config->name, kl_base_rev, stand);
     static void *const gl[] = {(void *)memcpy, (void *)memmove, (void *)memset, (void *)memcmp, (void *)strlen, (void *)strcpy,
                                (void *)strcat, (void *)strcmp, (void *)strspn, (void *)strcspn, (void *)memchr};
 
@@ -2051,7 +2277,9 @@ static void meta(const char *path) {
 static void usage(void) {
     fprintf(stderr, "kbench [--cpu N] [--samples S] [--target-us T] [--prims list] [--kernels substrings] [--exclude substrings]\n"
                     "       [--sizes quick|full|list] [--aligns2 list] [--aligns1 list] [--regimes thr,lat] [--trace FILE] [--passes P]\n"
-                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--no-matrix] [--mixed|--libs [--table NAME=CONFIG:SLOT=FN,...]]\n");
+                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--no-matrix] [--no-trace] [--mixed|--libs [--table NAME=CONFIG:SLOT=FN,...]]\n"
+                    "       [--pmu cycles,instructions,branches,branch-misses,rHEX] [--stand 0..3]\n"
+                    "       [--hybrid: ours with each public function glibc's, and the base revision's if linked]\n");
     exit(2);
 }
 
@@ -2089,8 +2317,16 @@ int main(int argc, char **argv) {
         } else if (OPT("--table")) {
             CHECK(ntable_specs < 16);
             table_specs[ntable_specs++] = v;
+        } else if (OPT("--stand")) {
+            stand = atoi(v) & 3;
+        } else if (OPT("--pmu")) {
+            pmu_open(argv[i]);
+        } else if (!strcmp(a, "--no-trace")) {
+            no_trace = 1;
         } else if (!strcmp(a, "--mixed")) {
             want_mixed = 1;
+        } else if (!strcmp(a, "--hybrid")) {
+            want_hybrid = 1;
         } else if (!strcmp(a, "--libs")) {
             want_libs = 1;
         } else if (OPT("--passes")) {
@@ -2202,13 +2438,13 @@ int main(int argc, char **argv) {
     CHECK(!posix_memalign((void **)&bufA, 4096, bufcap) && !posix_memalign((void **)&bufB, 4096, bufcap));
     memset(bufA, 1, bufcap);
     memset(bufB, 1, bufcap);
-    printf("prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters,ghz\n");
+    printf("prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters,ghz,pmu\n");
 
     if (!no_matrix) {
         matrix(regimes);
     }
 
-    if (trace) {
+    if (trace && !no_trace) {
         if (want_mixed || want_libs) {
             build_tables();
         }
