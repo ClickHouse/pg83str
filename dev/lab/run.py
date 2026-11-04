@@ -5,8 +5,9 @@
 
 Takes .build/lab/kbench and .build/lab/workload.bin as ./build lab made them
 (one binary for every host), ships both to the lab hosts over ssh (they have
-no sftp: files go through cat), starts kbench there under setsid on the
-idlest core but CPU 0, polls for its end and fetches out.csv.gz, err.log and
+no sftp: files go through cat), starts kbench there on the
+idlest core but CPU 0 in an ssh session held open for the run (the lab hosts
+end a session's processes with it), and fetches out.csv.gz, err.log and
 meta.json; run.json records the commit, the binary's sha256, the options and
 the times. The clock is held at the nominal frequency for the run (freq.py:
 boost off, every core at its base) and given back after; on this machine
@@ -77,25 +78,27 @@ def run_host(name, tag, kargs, binary, trace, info, failed):
             sh(['gzip', '-f', str(out / 'out.csv')])
         else:
             host, remote = h['ssh'], '/root/lab/' + tag
-            sh(ssh(host) + ['mkdir -p %s && rm -f %s/done %s/out.csv %s/out.csv.gz %s/freq.json' % (remote, remote, remote, remote, remote)])
+            sh(ssh(host) + ['mkdir -p %s && rm -f %s/out.csv %s/out.csv.gz %s/freq.json' % (remote, remote, remote, remote)])
             for local, rname in ((binary, 'kbench'), (trace, 'workload.bin'), (ROOT / 'dev/lab/freq.py', 'freq.py')):
                 with open(local, 'rb') as f:
                     sh(ssh(host) + ['cat > %s/%s' % (remote, rname)], stdin=f)
             cpu = subprocess.run(ssh(host) + [IDLEST], capture_output=True, text=True, check=True).stdout.strip()
             inner = ('python3 freq.py fix --state freq.json > freq.log 2>&1; '
                      'nice -n -5 ./kbench --cpu %s --jobs 8 --meta meta.json --trace workload.bin %s > out.csv 2> err.log; rc=$?; '
-                     'python3 freq.py restore --state freq.json >> freq.log 2>&1; echo $rc > done') % (cpu, ' '.join(shlex.quote(a) for a in kargs))
-            # setsid: a session of its own, so that the end of this ssh session does not take it along
-            sh(ssh(host) + ['cd %s && chmod +x kbench && setsid sh -c %s < /dev/null > /dev/null 2>&1 &' % (remote, shlex.quote(inner))])
+                     'python3 freq.py restore --state freq.json >> freq.log 2>&1; rm -f freq.json; exit $rc') % (cpu, ' '.join(shlex.quote(a) for a in kargs))
+            # the session stays open for the whole run: the lab hosts end a session's
+            # processes with it, setsid and nohup included
             print('%s: running on cpu %s' % (name, cpu), flush=True)
-            while subprocess.run(ssh(host) + ['test -f %s/done' % remote]).returncode:
-                time.sleep(60)
-            rc = subprocess.run(ssh(host) + ['cat %s/done' % remote], capture_output=True, text=True).stdout.strip()
+            try:
+                rc = subprocess.run(ssh(host) + ['cd %s && chmod +x kbench && sh -c %s' % (remote, shlex.quote(inner))]).returncode
+            finally:
+                # a lost session leaves the clock held: give it back from the saved state
+                subprocess.run(ssh(host) + ['cd %s && test -f freq.json && python3 freq.py restore --state freq.json >> freq.log 2>&1 && rm -f freq.json' % remote])
             sh(ssh(host) + ['cd %s && gzip -f out.csv' % remote])
             for rname in ('out.csv.gz', 'err.log', 'meta.json', 'freq.log'):
                 with open(out / rname, 'wb') as f:
                     sh(ssh(host) + ['cat %s/%s' % (remote, rname)], stdout=f)
-            if rc != '0':
+            if rc:
                 raise RuntimeError('kbench exited with %s, see %s' % (rc, out / 'err.log'))
         (out / 'run.json').write_text(json.dumps(dict(info, host=name, note=h['note'], cpu=cpu, started=started,
                                                       ended=datetime.datetime.now(datetime.timezone.utc).isoformat()), indent=2) + '\n')
