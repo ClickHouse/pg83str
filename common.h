@@ -207,6 +207,10 @@ void *strcpy_long_evex512(u8 *d, const u8 *s, const u8 *a);
 
 /* The same functions laid out by the post pass with the JCC-erratum padding
    (jcc-*.o, see dev/post.py), for Skylake-SP. */
+void *memmove_evex512_jcc(void *, const void *, size_t);
+void *memset_evex512_jcc(void *, int, size_t);
+int memcmp_evex512_jcc(const void *, const void *, size_t);
+size_t strlen_evex512_jcc(const char *);
 void *memcpy_evex_jcc(void *, const void *, size_t);
 void *memmove_evex_jcc(void *, const void *, size_t);
 void *memset_evex_jcc(void *, int, size_t);

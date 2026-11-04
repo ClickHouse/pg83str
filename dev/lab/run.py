@@ -55,7 +55,7 @@ def sh(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)
 
 
-def run_host(name, tag, kargs, binary, trace, info, failed):
+def run_host(name, tag, kargs, binary, trace, info, failed, hold):
     h = HOSTS[name]
     out = ROOT / '.lab' / tag / name
     out.mkdir(parents=True, exist_ok=True)
@@ -63,10 +63,11 @@ def run_host(name, tag, kargs, binary, trace, info, failed):
     try:
         if not h['ssh']:
             cpu = h['cpu']
-            freq = subprocess.run([sys.executable, str(ROOT / 'dev/lab/freq.py'), 'fix', '--state', str(out / 'freq.json')], capture_output=True, text=True)
-            fixed = freq.returncode == 0
+            freq = subprocess.run([sys.executable, str(ROOT / 'dev/lab/freq.py'), 'fix' if hold else 'show', '--state', str(out / 'freq.json')],
+                                  capture_output=True, text=True)
+            fixed = hold and freq.returncode == 0
             (out / 'freq.log').write_text(freq.stdout + freq.stderr)
-            if not fixed:
+            if hold and not fixed:
                 print('%s: the clock is not held (freq.py needs root): the run goes on with a moving clock' % name, flush=True)
             cmd = [str(binary), '--cpu', str(cpu), '--jobs', '8', '--meta', str(out / 'meta.json'), '--trace', str(trace), *kargs]
             try:
@@ -83,9 +84,9 @@ def run_host(name, tag, kargs, binary, trace, info, failed):
                 with open(local, 'rb') as f:
                     sh(ssh(host) + ['cat > %s/%s' % (remote, rname)], stdin=f)
             cpu = subprocess.run(ssh(host) + [IDLEST], capture_output=True, text=True, check=True).stdout.strip()
-            inner = ('python3 freq.py fix --state freq.json > freq.log 2>&1; '
+            inner = ('python3 freq.py %s --state freq.json > freq.log 2>&1; ' % ('fix' if hold else 'show') +
                      'nice -n -5 ./kbench --cpu %s --jobs 8 --meta meta.json --trace workload.bin %s > out.csv 2> err.log; rc=$?; '
-                     'python3 freq.py restore --state freq.json >> freq.log 2>&1; rm -f freq.json; exit $rc') % (cpu, ' '.join(shlex.quote(a) for a in kargs))
+                     'test -f freq.json && python3 freq.py restore --state freq.json >> freq.log 2>&1; rm -f freq.json; exit $rc') % (cpu, ' '.join(shlex.quote(a) for a in kargs))
             # the session stays open for the whole run: the lab hosts end a session's
             # processes with it, setsid and nohup included
             print('%s: running on cpu %s' % (name, cpu), flush=True)
@@ -119,6 +120,8 @@ def main():
     ap.add_argument('--hosts', default='local,lab2,lab3')
     ap.add_argument('--binary', type=Path, default=ROOT / '.build/lab/kbench')
     ap.add_argument('--trace', type=Path, default=ROOT / '.build/lab/workload.bin')
+    ap.add_argument('--clock', choices=('hold', 'free'), default='hold',
+                    help='free: leave the clock alone (turbo and the AVX-512 frequency licenses as they come)')
     args = ap.parse_args(argv)
     binary, trace = args.binary.resolve(), args.trace.resolve()
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout.strip()
@@ -126,7 +129,8 @@ def main():
     info = dict(tag=args.tag, commit=commit, dirty=dirty, kbench_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
                 trace_sha256=hashlib.sha256(trace.read_bytes()).hexdigest(), options=kargs)
     failed = {}
-    threads = [threading.Thread(target=run_host, args=(n, args.tag, kargs, binary, trace, info, failed)) for n in args.hosts.split(',')]
+    info['clock'] = args.clock
+    threads = [threading.Thread(target=run_host, args=(n, args.tag, kargs, binary, trace, info, failed, args.clock == 'hold')) for n in args.hosts.split(',')]
     for t in threads:
         t.start()
     for t in threads:

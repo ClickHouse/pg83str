@@ -59,10 +59,15 @@ const struct str_config str_configs[] = {
     /* AVX-512 at 256 bits: Skylake-SP and its Cascade/Cooper Lake siblings, where
        512-bit instructions lower the clock (glibc keeps to 256 bits there too).
        The same CPUs have the JCC erratum, so the code is the copy the post pass
-       laid out with branches kept off 32-byte boundaries (*_jcc). */
+       laid out with branches kept off 32-byte boundaries (*_jcc). memmove,
+       memset, memcmp and strlen take their 64-byte entries all the same: on
+       the workload traces of a Xeon Gold 6148 with turbo they run 0.63x, 0.80x,
+       0.86x and 0.71x the time of the 256-bit ones, the clock licenses
+       included (dev/lab, 2026-11-04); strcpy, strcat, strspn and strcmp lose
+       there (up to 1.23x), memcpy and memchr come out even. */
     {"evex", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ERMS, {
-        .memcpy = memcpy_evex_jcc, .memmove = memmove_evex_jcc, .memset = memset_evex_jcc, .memcmp = memcmp_evex_jcc,
-        .strlen = strlen_evex_jcc, .strcpy = strcpy_evex_jcc, .strcat = strcat_evex_jcc, .strcmp = strcmp_evex_jcc,
+        .memcpy = memcpy_evex_jcc, .memmove = memmove_evex512_jcc, .memset = memset_evex512_jcc, .memcmp = memcmp_evex512_jcc,
+        .strlen = strlen_evex512_jcc, .strcpy = strcpy_evex_jcc, .strcat = strcat_evex_jcc, .strcmp = strcmp_evex_jcc,
         .strspn = strspn_avx2_jcc, .strcspn = strcspn_avx2_jcc,
         .copy_large = copy_large_avx2_jcc, .fill_large = fill_large_avx2_jcc, .memcmp_large = memcmp_large_avx2_jcc,
         .strlen_tail = strlen_tail_avx2_jcc, .strcmp_tail = strcmp_tail_evex_jcc, .strcpy_long = strcpy_long_avx2_jcc,
