@@ -59,6 +59,7 @@ const struct str_config str_configs[] = {
     /* Skylake-SP and its Cascade/Cooper Lake siblings: AVX-512 mostly at 256
        bits (glibc keeps to 256 bits there for the clock licenses), and the
        copies the post pass laid out with branches kept off 32-byte boundaries
+
        for the JCC erratum (*_jcc). memmove, memset, memcmp and strlen take
        their 64-byte entries: on a Xeon Gold 6148 with turbo, the workload's
        traces of them run 0.63x, 0.80x, 0.86x and 0.71x the time of the
