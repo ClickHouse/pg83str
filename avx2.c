@@ -247,6 +247,102 @@ size_t strlen_avx2(const char *str) {
     return str_strlen_tail(a, s);
 }
 
+/* ---------------------------------------------------------------- memchr */
+
+/* n > 64: four 32-byte blocks per step, joined by or, then single blocks,
+   then the last 32 bytes as one block that may overlap what was scanned
+   (the bytes before the block's start are known not to match). */
+void *memchr_large_avx2(const u8 *s, u8 c, size_t n) {
+    __m256i v = _mm256_set1_epi8((char)c);
+    const u8 *end = s + n, *a = s;
+
+    while (end - a >= 128) {
+        __m256i e0 = _mm256_cmpeq_epi8(load256(a), v), e1 = _mm256_cmpeq_epi8(load256(a + 32), v);
+        __m256i e2 = _mm256_cmpeq_epi8(load256(a + 64), v), e3 = _mm256_cmpeq_epi8(load256(a + 96), v);
+
+        if (mask256(_mm256_or_si256(_mm256_or_si256(e0, e1), _mm256_or_si256(e2, e3)))) {
+            unsigned m = mask256(e0);
+
+            if (m) {
+                return (void *)(a + ctz(m));
+            }
+
+            m = mask256(e1);
+
+            if (m) {
+                return (void *)(a + 32 + ctz(m));
+            }
+
+            m = mask256(e2);
+
+            if (m) {
+                return (void *)(a + 64 + ctz(m));
+            }
+
+            return (void *)(a + 96 + ctz(mask256(e3)));
+        }
+
+        a += 128;
+    }
+
+    while (end - a >= 32) {
+        unsigned m = mask256(_mm256_cmpeq_epi8(load256(a), v));
+
+        if (m) {
+            return (void *)(a + ctz(m));
+        }
+
+        a += 32;
+    }
+
+    if (a < end) {
+        unsigned m = mask256(_mm256_cmpeq_epi8(load256(end - 32), v)) >> (32 - (end - a));
+
+        if (m) {
+            return (void *)(a + ctz(m));
+        }
+    }
+
+    return 0;
+}
+
+/* n <= 32 in one block: unaligned when the page allows, else the aligned
+   block around s shifted; the bits at n and beyond dropped. 33..64 as the
+   first and the last 32 bytes, the kernel beyond. */
+void *memchr_avx2(const void *p, int c, size_t n) {
+    const u8 *s = (const u8 *)p;
+    __m256i v = _mm256_set1_epi8((char)c);
+    unsigned m;
+
+    if (n <= 32) {
+        if (n == 0) {
+            return 0; /* the pointer may be unreadable */
+        }
+
+        if (page_left(s) >= 32) {
+            m = mask256(_mm256_cmpeq_epi8(load256(s), v));
+        } else {
+            m = mask256(_mm256_cmpeq_epi8(load256a(align_down(s, 32)), v)) >> ((uintptr_t)s & 31);
+        }
+
+        m = _bzhi_u32(m, (unsigned)n);
+        return m ? (void *)(s + ctz(m)) : 0;
+    }
+
+    m = mask256(_mm256_cmpeq_epi8(load256(s), v));
+
+    if (m) {
+        return (void *)(s + ctz(m));
+    }
+
+    if (n <= 64) {
+        m = mask256(_mm256_cmpeq_epi8(load256(s + n - 32), v));
+        return m ? (void *)(s + n - 32 + ctz(m)) : 0;
+    }
+
+    return str_memchr_large(s, (u8)c, n);
+}
+
 /* ------------------------------------------------------------------ copy */
 
 /* n > 64. Head and tail vectors are loaded first and stored last, so an

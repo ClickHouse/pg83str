@@ -25,6 +25,7 @@ struct str_table str_table = {
     .copy_large = copy_large_sse2, .fill_large = fill_large_sse2, .memcmp_large = memcmp_large_sse2,
     .strlen_tail = strlen_tail_sse2, .strcmp_tail = strcmp_tail_sse2, .strcpy_long = strcpy_long_sse2,
     .copy_huge = copy_huge_sse2, .fill_huge = fill_huge_sse2,
+    .memchr = memchr_sse2, .memchr_large = memchr_large_sse2,
 };
 
 const struct str_config str_configs[] = {
@@ -35,6 +36,7 @@ const struct str_config str_configs[] = {
         .copy_large = copy_large_sse2, .fill_large = fill_large_sse2, .memcmp_large = memcmp_large_sse2,
         .strlen_tail = strlen_tail_sse2, .strcmp_tail = strcmp_tail_sse2, .strcpy_long = strcpy_long_sse2,
         .copy_huge = copy_huge_sse2, .fill_huge = fill_huge_sse2,
+        .memchr = memchr_sse2, .memchr_large = memchr_large_sse2,
     }},
     {"sse42", STR_SSE42, {
         .memcpy = memcpy_sse2, .memmove = memmove_sse2, .memset = memset_sse2, .memcmp = memcmp_sse2,
@@ -43,6 +45,7 @@ const struct str_config str_configs[] = {
         .copy_large = copy_large_sse2, .fill_large = fill_large_sse2, .memcmp_large = memcmp_large_sse2,
         .strlen_tail = strlen_tail_sse2, .strcmp_tail = strcmp_tail_sse2, .strcpy_long = strcpy_long_sse2,
         .copy_huge = copy_huge_sse2, .fill_huge = fill_huge_sse2,
+        .memchr = memchr_sse2, .memchr_large = memchr_large_sse2,
     }},
     {"avx2", STR_SSE42 | STR_AVX2 | STR_ERMS, {
         .memcpy = memcpy_avx2, .memmove = memmove_avx2, .memset = memset_avx2, .memcmp = memcmp_avx2,
@@ -51,6 +54,7 @@ const struct str_config str_configs[] = {
         .copy_large = copy_large_avx2, .fill_large = fill_large_avx2, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_avx2, .strcmp_tail = strcmp_tail_avx2, .strcpy_long = strcpy_long_avx2,
         .copy_huge = copy_huge_avx2, .fill_huge = fill_huge_rep,
+        .memchr = memchr_avx2, .memchr_large = memchr_large_avx2,
     }},
     /* AVX-512 at 256 bits: Skylake-SP and its Cascade/Cooper Lake siblings, where
        512-bit instructions lower the clock (glibc keeps to 256 bits there too).
@@ -63,6 +67,7 @@ const struct str_config str_configs[] = {
         .copy_large = copy_large_avx2_jcc, .fill_large = fill_large_avx2_jcc, .memcmp_large = memcmp_large_avx2_jcc,
         .strlen_tail = strlen_tail_avx2_jcc, .strcmp_tail = strcmp_tail_evex_jcc, .strcpy_long = strcpy_long_avx2_jcc,
         .copy_huge = copy_huge_rep_jcc, .fill_huge = fill_huge_rep_jcc,
+        .memchr = memchr_evex_jcc, .memchr_large = memchr_large_avx2_jcc,
     }},
     /* AVX-512 at 512 bits: Zen 4 and 5, Ice Lake and later. The memory functions
        and strlen take one 64-byte block first; strcpy, strcat and strcmp keep
@@ -76,6 +81,7 @@ const struct str_config str_configs[] = {
         .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,
         .strlen_tail = strlen_tail_evex512, .strcmp_tail = strcmp_tail_evex512, .strcpy_long = strcpy_long_evex512,
         .copy_huge = copy_huge_avx2, .fill_huge = fill_huge_rep,
+        .memchr = memchr_evex512, .memchr_large = memchr_large_avx2,
     }},
 };
 
@@ -233,6 +239,10 @@ size_t str_strcspn(const char *s, const char *set) {
     return str_table.strcspn(s, set);
 }
 
+void *str_memchr(const void *s, int c, size_t n) {
+    return str_table.memchr(s, c, n);
+}
+
 void *str_copy_large(u8 *d, const u8 *s, size_t n) {
     return str_table.copy_large(d, s, n);
 }
@@ -263,4 +273,8 @@ void *str_copy_huge(u8 *d, const u8 *s, size_t n) {
 
 void *str_fill_huge(u8 *d, int c, size_t n) {
     return str_table.fill_huge(d, c, n);
+}
+
+void *str_memchr_large(const u8 *s, u8 c, size_t n) {
+    return str_table.memchr_large(s, c, n);
 }

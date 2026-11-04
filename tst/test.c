@@ -97,6 +97,21 @@ static void suite(int full) {
                     CHECK(sign(T->memcmp(s, d, n)) == sign(memcmp(s, d, n)));
                 }
 
+                /* memchr: a byte that is there, with the int's high bits set as the
+                   standard converts it, the first of several, and one that is not */
+                CHECK(T->memchr(s, 0x100 | s[n / 2], n) == memchr(s, s[n / 2], n));
+                CHECK(T->memchr(s, 0x9a, n) == memchr(s, 0x9a, n));
+                CHECK(T->memchr(s, s[n + 1], 0) == 0);
+
+                if (n) {
+                    size_t at = rnd() % n;
+                    unsigned char old = s[at];
+                    s[at] = 0x9a;
+                    CHECK(T->memchr(s, 0x9a, n) == memchr(s, 0x9a, n)); /* at `at` unless the pattern has one before */
+                    CHECK(T->memchr(s, 0x9a, at) == memchr(s, 0x9a, at));
+                    s[at] = old;
+                }
+
                 const int fills[] = {0, 0x5a, -1, 0x1ff};
 
                 for (size_t k = 0; k < 4; k++) {
@@ -283,6 +298,10 @@ guards:;
             /* strings ending exactly at the guard: NUL is the last mapped byte */
             s[n - 1] = 0;
             CHECK(T->strlen((char *)s) == n - 1);
+            CHECK(T->memchr(s, 0x9a, n) == memchr(s, 0x9a, n));     /* scans to the guard */
+            CHECK(T->memchr(s, 0, n) == memchr(s, 0, n));           /* the last byte before it at the latest */
+            CHECK(T->memchr(s, s[0], n) == s);
+            CHECK(T->memchr(s, 0x9a, n - 1) == memchr(s, 0x9a, n - 1));
             CHECK(T->strcpy((char *)d, (char *)s) == (char *)d && !memcmp(d, s, n));
             CHECK(!T->strcmp((char *)s, (char *)d));
 
@@ -611,6 +630,7 @@ static void entries(void) {
     CHECK(str_memset(d, 'x', 5) == d && d[0] == 'x' && d[4] == 'x' && d[5] == 'o');
     CHECK(str_memcmp(s, d, 13) < 0);
     CHECK(str_strspn(s, "ehl") == 4 && str_strcspn(s, ",") == 5);
+    CHECK(str_memchr(s, 'w', 13) == s + 7 && str_memchr(s, 'z', 13) == 0);
     printf("entry points: PASS %zu checks\n", checks);
 }
 

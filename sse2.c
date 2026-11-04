@@ -388,6 +388,119 @@ char *strcat_sse2(char *dst, const char *src) {
     return dst;
 }
 
+/* ---------------------------------------------------------------- memchr */
+
+/* n > 64: four 16-byte blocks per step, joined by or, then single blocks,
+   then the last 16 bytes as one block that may overlap what was scanned
+   (the bytes before the block's start are known not to match). */
+void *memchr_large_sse2(const u8 *s, u8 c, size_t n) {
+    __m128i v = splat16(c);
+    const u8 *end = s + n, *a = s;
+
+    while (end - a >= 64) {
+        __m128i e0 = _mm_cmpeq_epi8(load16(a), v), e1 = _mm_cmpeq_epi8(load16(a + 16), v);
+        __m128i e2 = _mm_cmpeq_epi8(load16(a + 32), v), e3 = _mm_cmpeq_epi8(load16(a + 48), v);
+
+        if (mask16(_mm_or_si128(_mm_or_si128(e0, e1), _mm_or_si128(e2, e3)))) {
+            unsigned m = mask16(e0);
+
+            if (m) {
+                return (void *)(a + ctz(m));
+            }
+
+            m = mask16(e1);
+
+            if (m) {
+                return (void *)(a + 16 + ctz(m));
+            }
+
+            m = mask16(e2);
+
+            if (m) {
+                return (void *)(a + 32 + ctz(m));
+            }
+
+            return (void *)(a + 48 + ctz(mask16(e3)));
+        }
+
+        a += 64;
+    }
+
+    while (end - a >= 16) {
+        unsigned m = eq_mask16(load16(a), v);
+
+        if (m) {
+            return (void *)(a + ctz(m));
+        }
+
+        a += 16;
+    }
+
+    if (a < end) {
+        unsigned m = eq_mask16(load16(end - 16), v) >> (16 - (end - a));
+
+        if (m) {
+            return (void *)(a + ctz(m));
+        }
+    }
+
+    return 0;
+}
+
+/* n <= 16 in one block: unaligned when the page allows, else the aligned
+   block around s shifted; the bits at n and beyond dropped. 17..64 in
+   overlapping blocks, the kernel beyond. */
+void *memchr_sse2(const void *p, int c, size_t n) {
+    const u8 *s = (const u8 *)p;
+    __m128i v = splat16(c);
+    unsigned m;
+
+    if (n <= 16) {
+        if (n == 0) {
+            return 0; /* the pointer may be unreadable */
+        }
+
+        if (page_left(s) >= 16) {
+            m = eq_mask16(load16(s), v);
+        } else {
+            m = eq_mask16(load16a(align_down(s, 16)), v) >> ((uintptr_t)s & 15);
+        }
+
+        m &= (1u << n) - 1;
+        return m ? (void *)(s + ctz(m)) : 0;
+    }
+
+    m = eq_mask16(load16(s), v);
+
+    if (m) {
+        return (void *)(s + ctz(m));
+    }
+
+    if (n <= 32) {
+        m = eq_mask16(load16(s + n - 16), v);
+        return m ? (void *)(s + n - 16 + ctz(m)) : 0;
+    }
+
+    if (n <= 64) {
+        m = eq_mask16(load16(s + 16), v);
+
+        if (m) {
+            return (void *)(s + 16 + ctz(m));
+        }
+
+        m = eq_mask16(load16(s + n - 32), v);
+
+        if (m) {
+            return (void *)(s + n - 32 + ctz(m));
+        }
+
+        m = eq_mask16(load16(s + n - 16), v);
+        return m ? (void *)(s + n - 16 + ctz(m)) : 0;
+    }
+
+    return str_memchr_large(s, (u8)c, n);
+}
+
 /* --------------------------------------------------------- strspn/strcspn */
 
 /* 256-entry membership table. Byte stores are independent of each other;

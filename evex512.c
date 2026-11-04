@@ -117,6 +117,35 @@ size_t strlen_evex512(const char *str) {
     return str_strlen_tail(align_down(s, 64) + 64, s);
 }
 
+/* ---------------------------------------------------------------- memchr */
+
+/* n <= 64 in one masked load and compare (n == 0 loads nothing), 65..128
+   as the first and the last 64 bytes, the kernel beyond. */
+void *memchr_evex512(const void *p, int c, size_t n) {
+    const u8 *s = (const u8 *)p;
+    __m512i v = _mm512_set1_epi8((char)c);
+    unsigned long long m;
+
+    if (n <= 64) {
+        __mmask64 k = low_mask64(n);
+        m = _mm512_mask_cmpeq_epi8_mask(k, mload64(s, k), v);
+        return m ? (void *)(s + ctz64(m)) : 0;
+    }
+
+    m = _mm512_cmpeq_epi8_mask(load512(s), v);
+
+    if (m) {
+        return (void *)(s + ctz64(m));
+    }
+
+    if (n <= 128) {
+        m = _mm512_cmpeq_epi8_mask(load512(s + n - 64), v);
+        return m ? (void *)(s + n - 64 + ctz64(m)) : 0;
+    }
+
+    return str_memchr_large(s, (u8)c, n);
+}
+
 /* ------------------------------------------------------------------ copy */
 
 static inline void *copy(u8 *d, const u8 *s, size_t n) {
@@ -368,25 +397,47 @@ static inline void copy_le128(u8 *d, const u8 *s, size_t n) {
    each tested before it is stored. The last 64 bytes of the string go out as
    one overlapping store ending at the NUL. */
 void *strcpy_long_evex512(u8 *d, const u8 *s, const u8 *known) {
-    (void)known; /* the 64-byte block around s is taken whole */
-    const u8 *a = align_down(s, 64);
-    unsigned long long m = zero_mask64(load512a(a)) >> (s - a);
-
-    if (m) {
-        copy_le128(d, s, ctz64(m) + 1);
-        RETURN_OPAQUE(d);
-    }
-
-    a += 64;
+    /* the 64-byte block holding the first byte not known clear, the known
+       bytes (and any before s) shifted out of its mask */
+    const u8 *a = align_down(known, 64);
     __m512i x = load512a(a);
-    m = zero_mask64(x);
+    unsigned long long m = zero_mask64(x) >> (known - a);
 
     if (m) {
-        copy_le128(d, s, (size_t)(a - s) + ctz64(m) + 1);
+        size_t n = (size_t)(known - s) + ctz64(m) + 1; /* at most 192: known is at most 128 past s */
+
+        if (n <= 128) {
+            copy_le128(d, s, n);
+        } else {
+            store512(d, load512(s));
+            store512(d + 64, load512(s + 64));
+            store512(d + n - 64, load512(s + n - 64));
+        }
+
         RETURN_OPAQUE(d);
     }
 
-    store512(d, load512(s)); /* [s, s+64) lies within the two blocks checked */
+    if (a < s) {
+        /* the block holds s itself: the next one too, before a head store can take 64 bytes */
+        a += 64;
+        x = load512a(a);
+        m = zero_mask64(x);
+
+        if (m) {
+            copy_le128(d, s, (size_t)(a - s) + ctz64(m) + 1);
+            RETURN_OPAQUE(d);
+        }
+
+        store512(d, load512(s)); /* within the two blocks checked */
+    } else {
+        /* [s, a + 64) has no NUL: the bytes before a in whole blocks, the last
+           reaching into the block at a at most */
+
+        for (size_t off = 0; off < (size_t)(a - s); off += 64) {
+            store512(d + off, load512(s + off));
+        }
+    }
+
     store512(d + (a - s), x);
     a += 64;
 

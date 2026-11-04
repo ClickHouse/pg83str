@@ -104,6 +104,35 @@ size_t strlen_evex(const char *str) {
     return n != SIZE_MAX ? n : str_strlen_tail(next, s);
 }
 
+/* ---------------------------------------------------------------- memchr */
+
+/* n <= 32 in one masked load and compare (n == 0 loads nothing), 33..64 as
+   the first and the last 32 bytes, the kernel beyond. */
+void *memchr_evex(const void *p, int c, size_t n) {
+    const u8 *s = (const u8 *)p;
+    __m256i v = _mm256_set1_epi8((char)c);
+    unsigned m;
+
+    if (n <= 32) {
+        __mmask32 k = low_mask32(n);
+        m = _mm256_mask_cmpeq_epi8_mask(k, _mm256_maskz_loadu_epi8(k, s), v);
+        return m ? (void *)(s + ctz(m)) : 0;
+    }
+
+    m = _mm256_cmpeq_epi8_mask(load256(s), v);
+
+    if (m) {
+        return (void *)(s + ctz(m));
+    }
+
+    if (n <= 64) {
+        m = _mm256_cmpeq_epi8_mask(load256(s + n - 32), v);
+        return m ? (void *)(s + n - 32 + ctz(m)) : 0;
+    }
+
+    return str_memchr_large(s, (u8)c, n);
+}
+
 /* ------------------------------------------------------------------ copy */
 
 /* masked: one masked load and store for n <= 16. memmove skips it: after a
