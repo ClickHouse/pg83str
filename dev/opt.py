@@ -53,6 +53,16 @@ prove the rewrites safe:
            need B. Measured neutral (the copy is eliminated at rename anyway).
   zcmp     load + vptestnmb -> vpcmpeqb against a zeroed register; off, see
            zero_compares.
+  frame    push %rbp; mov %rsp,%rbp at the entry and every pop %rbp or leave,
+           in a function that calls nothing and touches rbp and rsp nowhere
+           else: a build whose environment asks for frame pointers everywhere
+           (ix: -fno-omit-frame-pointer, after the library's own flags) gives
+           every leaf of the library three instructions it does not need; the
+           post pass drops .eh_frame anyway.
+  vzu      vzeroupper where no path from the entry writes a 256- or 512-bit
+           register (calls count as writes): the compiler puts one before every
+           ret of a function that touches ymm anywhere, also on the paths of a
+           few bytes that only use xmm and general registers.
 The layout (layout.py) keeps branches and fused compare+branch pairs off
 32-byte boundaries (the Skylake JCC erratum); POST_JCC_ALIGN=0 turns it off.
 
@@ -1127,6 +1137,82 @@ def through_trampolines(fn, trampolines):
     return done
 
 
+# ---------------------------------------------------------------- frame
+
+def reg_op(i, k):
+    ops = i.j['ops']
+    return ops[k]['reg'] if k < len(ops) and ops[k]['kind'] == 'Register' else None
+
+
+def drop_frame(fn):
+    """push %rbp; mov %rsp,%rbp first (after padding), pop %rbp / leave at the exits,
+    nothing else that reads or writes rbp or rsp and no call: all of it goes."""
+    live = [i for i in fn.ins if i.gas and not i.mnemonic.startswith('nop')]
+    if len(live) < 2:
+        return []
+    push, mov = live[0], live[1]
+    if not (push.mnemonic == 'push' and reg_op(push, 0) == 'rbp' and mov.mnemonic == 'mov' and reg_op(mov, 0) == 'rbp' and reg_op(mov, 1) == 'rsp'):
+        return []
+    frame = [push, mov]
+    for i in live[2:]:
+        if i.flow in ('Call', 'IndirectCall'):
+            return []
+        if (i.mnemonic == 'pop' and reg_op(i, 0) == 'rbp') or i.mnemonic == 'leave':
+            frame.append(i)
+            continue
+        if i.flow in ('Return', 'UnconditionalBranch', 'ConditionalBranch', 'IndirectBranch') and not ({'rbp'} & (uses(i) | defs(i))):
+            continue  # ret reads rsp to pop the return address: unchanged once the frame is gone
+        if {'rbp', 'rsp'} & (uses(i) | defs(i)):
+            return []
+    for i in frame:
+        delete(i)
+    return ['%s: the frame (%d instructions) dropped' % (fn.name, len(frame))]
+
+
+# ---------------------------------------------------------------- vzu
+
+def dirties(i):
+    """Whether i may leave an upper half of ymm0-15 / zmm0-15 nonzero."""
+    if i.flow in ('Call', 'IndirectCall'):
+        return True
+    return any(r['name'][:3] in ('ymm', 'zmm') and r['access'] in WRITES for r in i.j['regs'])
+
+
+def clean_vzeroupper(fn):
+    """Forward: may the upper state be dirty at each point? vzeroupper where it cannot goes."""
+    # a block with no way in on the graph but the entry (a jump table's target) may be dirty
+    entered = {id(s) for b in fn.blocks for s in b.succ}
+    dirty_in = {id(b): b is not fn.blocks[0] and id(b) not in entered for b in fn.blocks}
+    changed = True
+    while changed:
+        changed = False
+        for b in fn.blocks:
+            d = dirty_in[id(b)]
+            for k in range(b.start, b.end):
+                i = fn.ins[k]
+                if i.mnemonic == 'vzeroupper':
+                    d = False
+                elif i.gas and dirties(i):
+                    d = True
+            for s in b.succ:
+                if d and not dirty_in[id(s)]:
+                    dirty_in[id(s)] = True
+                    changed = True
+    done = []
+    for b in fn.blocks:
+        d = dirty_in[id(b)]
+        for k in range(b.start, b.end):
+            i = fn.ins[k]
+            if i.mnemonic == 'vzeroupper':
+                if not d:
+                    delete(i)
+                    done.append('%s: vzeroupper at %04x on a clean path dropped' % (fn.name, i.offset))
+                d = False
+            elif i.gas and dirties(i):
+                d = True
+    return done
+
+
 def full_gpr(name):
     return {'eax': 'rax', 'ecx': 'rcx', 'edx': 'rdx', 'esi': 'rsi', 'edi': 'rdi'}.get(name, 'r' + name[1:-1] if name.endswith('d') else name)
 
@@ -1136,9 +1222,9 @@ def optimize(obj, ins, evex, section='.text', trampolines=None):
     section: the code section the instructions came from (-ffunction-sections puts each function in its own).
     trampolines: the one-jump entry points of the whole run, see trampolines_of."""
     report = []
-    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,kor,kfirst,lea,copy,tramp').split(',')
+    passes = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,kor,kfirst,lea,copy,tramp,frame,vzu').split(',')
     if not evex:  # layout passes apply to every unit; the mask/EVEX ones only to the AVX-512 ones
-        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy', 'tramp')]
+        passes = [p for p in passes if p in ('tail', 'hot', 'thread', 'lea', 'copy', 'tramp', 'frame', 'vzu')]
     functions = split_functions(obj, ins, section)
     for fn in functions:
         analyze(fn)
@@ -1167,6 +1253,10 @@ def optimize(obj, ins, evex, section='.text', trampolines=None):
                 report += sink_copies(fn)
             elif name == 'rename':
                 report += rename_vectors(fn)
+            elif name == 'frame':
+                report += drop_frame(fn)
+            elif name == 'vzu':
+                report += clean_vzeroupper(fn)
             elif name:
                 raise ValueError('unknown pass ' + name)
             analyze(fn)
