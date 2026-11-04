@@ -519,7 +519,8 @@ static int vcase(const Kernel *k, u8x *s, size_t sroom, u8x *d, size_t droom, si
             VFAIL("equal blocks compare unequal");
         }
 
-        size_t ps[] = {0, 1, 7, 8, 15, 16, 31, 32, 63, 64, n / 2, n - 1};
+        size_t pl = page_left(s); /* and positions around the page boundary */
+        size_t ps[] = {0, 1, 7, 8, 15, 16, 31, 32, 63, 64, n / 2, n - 1, pl - 1, pl, pl + 1, pl + 15, pl + 16, pl + 31, pl + 32, pl + 63};
 
         for (size_t i = 0; i < sizeof ps / sizeof *ps && n; i++) {
             size_t p = ps[i];
@@ -629,7 +630,8 @@ static int vcase(const Kernel *k, u8x *s, size_t sroom, u8x *d, size_t droom, si
             VFAIL("equal strings compare unequal");
         }
 
-        size_t ps[] = {0, 1, 15, 16, 31, 32, 63, 64, n / 2, n - 1};
+        size_t pl = page_left(s); /* and positions around the page boundary */
+        size_t ps[] = {0, 1, 15, 16, 31, 32, 63, 64, n / 2, n - 1, pl - 1, pl, pl + 1, pl + 15, pl + 16, pl + 31, pl + 32, pl + 63};
 
         for (size_t i = 0; i < sizeof ps / sizeof *ps && n; i++) {
             size_t p = ps[i];
@@ -674,7 +676,8 @@ static int vcase(const Kernel *k, u8x *s, size_t sroom, u8x *d, size_t droom, si
             VFAIL("finds an absent byte");
         }
 
-        size_t ps[] = {0, 1, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, n / 2, n - 1};
+        size_t pl = page_left(s); /* and positions around the page boundary */
+        size_t ps[] = {0, 1, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, n / 2, n - 1, pl - 1, pl, pl + 1, pl + 15, pl + 16, pl + 17, pl + 31, pl + 32, pl + 33, pl + 63, pl + 64};
 
         for (size_t i = 0; i < sizeof ps / sizeof *ps && n; i++) {
             size_t p = ps[i];
@@ -871,6 +874,27 @@ static int validate_kernel(Kernel *k) {
                         if (ref_cmp(A.lo, ref, span)) {
                             VFAIL("overlap %ld, n %zu: differs", delta, n);
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /* across a page boundary inside the area: the object starts k bytes before
+       a page end and goes on into the next page, readable; the page-end paths
+       of the entries hand over to kernels there */
+    {
+        static const size_t ks[] = {1, 2, 3, 7, 8, 13, 15, 16, 17, 24, 31, 32, 33, 47, 48, 63, 64, 65, 96, 127};
+        static const size_t kd[] = {1, 7, 16, 31, 33, 63, 200};
+        int two = k->prim == P_MEMCPY || k->prim == P_MEMMOVE || k->prim == P_MEMCMP || k->prim == P_STRCPY || k->prim == P_STRCAT || k->prim == P_STRCMP;
+
+        for (size_t n = 0; n <= 300; n += (n < 140 ? 1 : 7)) {
+            for (size_t i = 0; i < sizeof ks / sizeof *ks; i++) {
+                for (size_t j = 0; j < (two ? sizeof kd / sizeof *kd : 1); j++) {
+                    u8x *s = A.lo + 4096 - ks[i], *d = B.lo + 2 * 4096 - (two ? kd[j] : ks[i]);
+
+                    if (!vcase(k, s, (size_t)(A.hi - s), d, (size_t)(B.hi - d), n)) {
+                        return 0;
                     }
                 }
             }

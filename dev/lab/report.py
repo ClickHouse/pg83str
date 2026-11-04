@@ -78,7 +78,8 @@ def main():
         meta = json.loads((d / 'meta.json').read_text())
         cells, traces = load(d / 'out.csv.gz', args.regime, prims, args.stat)
         ours_cfg = 'ours/' + meta['ours_config']
-        glibc_of = {p: 'glibc/' + v for p, v in meta['glibc'].items()}
+        # memcpy and memmove are one function in glibc: the variant comes back under either name
+        glibc_of = {p: 'glibc/' + v.replace('__memcpy_', '__%s_' % p) if p in ('memcpy', 'memmove') else 'glibc/' + v for p, v in meta['glibc'].items()}
         print('== %s: %s; ours %s; regime %s, %s' % (host, meta['brand'].strip(), meta['ours_config'], args.regime, args.stat))
         bad = [k for k in meta['kernels'] if k['status'] == -1]
         if bad:
