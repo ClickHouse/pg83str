@@ -111,15 +111,20 @@ caches all of it by content.
   stand, not the change.
 - **The stand**, the loops over a trace, is in every number: built with
   every branch clear of 32-byte boundaries (Skylake's JCC erratum: a branch
-  cut by one leaves the uop cache) and every block not reached by falling
-  through on a 64-byte line of its own, and linked first in `.text` with
+  cut by one leaves the uop cache) and every block on a 64-byte line of its
+  own (the switch's first case right after its jump cost the empty stand
+  5.4 legacy-decoded uops a call of the memcpy trace on Broadwell; now none
+  on any trace), and linked first in `.text` with
   glibc's variants after it in a fixed order (`order.txt`), so that neither
   moves with a change of ours or of kbench. `--stand 0..3` runs one of four
   copies 16 bytes apart. Before, moving the stand by 16 bytes took its
   legacy-decoded uops from 14 to 36 a call on Skylake-SP and moved ours'
   strcmp by 25% and glibc's memcmp by 7%, in opposite directions; after, the
-  four copies agree within 0.5-2% except memcpy on Skylake-SP (6%) and one
-  copy's strcmp on Broadwell (7%, ours and glibc alike).
+  four copies (same shape, different addresses) agree on the mixed trace
+  within 1-2%, on the short calls' gross times within 4% (ours and glibc
+  alike); a net time can move more, as the empty stand's own does (memcmp
+  on Skylake-SP: the gross time of ours equal in all four, the stand 5.2
+  or 4.9 ns, the net 2.5..2.9).
 - **Counters** (`--pmu cycles,instructions,branches,branch-misses,rHEX`):
   perf_event_open for the thread in user mode, one more pass of each trace
   after the timed ones, per call in the column `pmu`; rHEX is a raw event

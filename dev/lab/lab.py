@@ -327,14 +327,15 @@ def main():
     # 32-byte boundary (Skylake's JCC erratum: such a branch leaves the uop
     # cache; moving the stand by 16 bytes changed its own legacy-decoded uops
     # from 14 to 36 a call on Skylake-SP and ours' strcmp by 25%), and every
-    # block not reached by falling through (the loop's head, the switch's
-    # cases) at the start of a 64-byte line of its own (Broadwell: the empty
+    # block (the loop's head, the switch's cases: the first case right after
+    # the switch's jump cost the empty stand 5.4 legacy-decoded uops a call
+    # of the memcpy trace on Broadwell) at the start of a 64-byte line of its own (Broadwell: the empty
     # stand at 9 or 11 cycles a call by the same 16 bytes; Skylake-SP, the
     # branches clear of the boundaries and the blocks 32-aligned: 8 or 12
     # cycles a call on the strcat trace by the half of the line the loop
     # starts in).
     stand = ['-ffunction-sections', '-mllvm', '-x86-align-branch-boundary=32', '-mllvm', '-x86-align-branch=fused+jcc+jmp+call+ret+indirect', '-mllvm',
-             '-align-all-nofallthru-blocks=6', '-mllvm', '-align-all-functions=6']
+             '-align-all-blocks=6', '-mllvm', '-align-all-functions=6']
     objs = []
     for src, name in ((HERE / 'kbench.c', 'kbench.o'), (work / 'kernels-gen.c', 'kernels-gen.o')):
         run([*base[:2], '-O2', '-march=x86-64', '-fno-pic', '-fno-pie', '-fno-builtin', '-fno-vectorize', '-fno-slp-vectorize', *stand, *glibc_inc,
