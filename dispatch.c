@@ -56,15 +56,17 @@ const struct str_config str_configs[] = {
         .copy_huge = copy_huge_avx2, .fill_huge = fill_huge_rep,
         .memchr = memchr_avx2, .memchr_large = memchr_large_avx2,
     }},
-    /* AVX-512 at 256 bits: Skylake-SP and its Cascade/Cooper Lake siblings, where
-       512-bit instructions lower the clock (glibc keeps to 256 bits there too).
-       The same CPUs have the JCC erratum, so the code is the copy the post pass
-       laid out with branches kept off 32-byte boundaries (*_jcc). memmove,
-       memset, memcmp and strlen take their 64-byte entries all the same: on
-       the workload traces of a Xeon Gold 6148 with turbo they run 0.63x, 0.80x,
-       0.86x and 0.71x the time of the 256-bit ones, the clock licenses
-       included (dev/lab, 2026-11-04); strcpy, strcat, strspn and strcmp lose
-       there (up to 1.23x), memcpy and memchr come out even. */
+    /* Skylake-SP and its Cascade/Cooper Lake siblings: AVX-512 mostly at 256
+       bits (glibc keeps to 256 bits there for the clock licenses), and the
+       copies the post pass laid out with branches kept off 32-byte boundaries
+       for the JCC erratum (*_jcc). memmove, memset, memcmp and strlen take
+       their 64-byte entries: on a Xeon Gold 6148 with turbo, the workload's
+       traces of them run 0.63x, 0.80x, 0.86x and 0.71x the time of the
+       256-bit ones, and the mixed trace 0.90x (11.6 ns a call against 12.8;
+       glibc 14.7). The core's clock is the same either way (3.20 GHz against
+       3.18 by APERF/MPERF): the EVEX code at 256 bits takes the license too.
+       strcpy, strcat, strspn and strcmp lose with 64-byte entries (up to
+       1.23x), memcpy and memchr come out even (dev/lab, 2026-11-04). */
     {"evex", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ERMS, {
         .memcpy = memcpy_evex_jcc, .memmove = memmove_evex512_jcc, .memset = memset_evex512_jcc, .memcmp = memcmp_evex512_jcc,
         .strlen = strlen_evex512_jcc, .strcpy = strcpy_evex_jcc, .strcat = strcat_evex_jcc, .strcmp = strcmp_evex_jcc,
