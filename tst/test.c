@@ -682,6 +682,14 @@ static void hosts(void) {
         {"skylake-sp, os without zmm", {7, INTEL, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0x7}, STR_SSE42 | STR_AVX2 | STR_ERMS, "avx2"},
         {"ice lake", {7, INTEL, 0x606a6, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
         {"zen 4", {7, AMD, 0xa60f12, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
+        {"zen 5", {7, AMD, 0xb20f40, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7, 0x30, 0x80000028, 0x597fffcf},
+         STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS | STR_FSRS, "evex512r"},
+        {"zen 5, extended leaves short of 0x80000021", {7, AMD, 0xb20f40, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7, 0x30, 0x80000020, 0x597fffcf},
+         STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
+        {"sapphire rapids", {7, INTEL, 0x806f8, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7, 1u << 11, 0x80000008, 1u << 10},
+         STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS | STR_FSRS, "evex512r"},
+        {"skylake-sp with garbage past its extended leaves", {7, INTEL, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7, 0, 0x80000008, 0x960},
+         STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ERMS, "evex"},
         {"avx-512 without erms", {7, AMD, 0xa60f12, V3_ECX1, V4_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM, "sse42"},
         {"vendor like intel in ebx only", {7, 0x756e6547, 0, 0, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
         {"vendor like intel in ebx and edx", {7, 0x756e6547, 0x49656e69, 0, 0x50654, V3_ECX1, V4_EBX7 | ERMS_EBX7, V3_ECX81, 0xe7}, STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, "evex512"},
@@ -729,12 +737,16 @@ static void hosts(void) {
     printf("hosts: PASS %zu machines\n", checks);
 }
 
+/* The bits of a configuration's needs that say what it executes; the others
+   (ERMS, ZMM, FSRS) say where it is fast, and the test runs it anyway. */
+#define EXECUTES (STR_SSE42 | STR_AVX2 | STR_AVX512)
+
 int main(void) {
-    /* every configuration the host runs, then the host's own choice */
+    /* every configuration the host can execute, then the host's own choice */
     unsigned host = str_host();
 
     for (unsigned i = 0; i < str_nconfigs; i++) {
-        if (str_configs[i].needs & ~host) {
+        if (str_configs[i].needs & EXECUTES & ~host) {
             continue;
         }
 
@@ -765,7 +777,7 @@ int main(void) {
             size_t ntried = 0;
 
             for (unsigned k = 0; k < str_nconfigs; k++) {
-                if (str_configs[k].needs & ~host) {
+                if (str_configs[k].needs & EXECUTES & ~host) {
                     continue;
                 }
 

@@ -66,10 +66,12 @@ const struct str_config str_configs[] = {
        256-bit ones, and the mixed trace 0.90x (11.6 ns a call against 12.8;
        glibc 14.7). The core's clock is the same either way (3.20 GHz against
        3.18 by APERF/MPERF): the EVEX code at 256 bits takes the license too.
-       strcpy, strcat, strspn and strcmp lose with 64-byte entries (up to
-       1.23x), memcpy and memchr come out even (dev/lab, 2026-11-04). */
+       memcpy's 64-byte entry: the mixed trace 0.987x with turbo, 0.971x with
+       the clock held. strcpy, strcat, strspn and strcmp lose with 64-byte
+       entries (up to 1.23x), memchr comes out even (dev/lab, 2026-11-04;
+       dev/lab/tune.py proposes, the mixed trace decides). */
     {"evex", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ERMS, {
-        .memcpy = memcpy_evex_jcc, .memmove = memmove_evex512_jcc, .memset = memset_evex512_jcc, .memcmp = memcmp_evex512_jcc,
+        .memcpy = memcpy_evex512_jcc, .memmove = memmove_evex512_jcc, .memset = memset_evex512_jcc, .memcmp = memcmp_evex512_jcc,
         .strlen = strlen_evex512_jcc, .strcpy = strcpy_evex_jcc, .strcat = strcat_evex_jcc, .strcmp = strcmp_evex_jcc,
         .strspn = strspn_avx2_jcc, .strcspn = strcspn_avx2_jcc,
         .copy_large = copy_large_avx2_jcc, .fill_large = fill_large_avx2_jcc, .memcmp_large = memcmp_large_avx2_jcc,
@@ -84,6 +86,21 @@ const struct str_config str_configs[] = {
        32-byte. */
     {"evex512", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS, {
         .memcpy = memcpy_evex512, .memmove = memmove_evex512, .memset = memset_evex512, .memcmp = memcmp_evex512,
+        .strlen = strlen_evex512, .strcpy = strcpy_evex, .strcat = strcat_evex, .strcmp = strcmp_evex,
+        .strspn = strspn_avx2_zen, .strcspn = strcspn_avx2_zen,
+        .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,
+        .strlen_tail = strlen_tail_evex512, .strcmp_tail = strcmp_tail_evex512, .strcpy_long = strcpy_long_evex512,
+        .copy_huge = copy_huge_avx2, .fill_huge = fill_huge_rep,
+        .memchr = memchr_evex512, .memchr_large = memchr_large_avx2,
+    }},
+    /* evex512 where the CPU starts a short rep stosb fast (FSRS: Zen 5 among
+       them): memset by rep stosb for every size, one path where the vector
+       memset's size tree mispredicts on the workload's fills. A Ryzen AI 9 HX
+       370: the memset trace 0.80x (clock held) and 0.83x (turbo), the mixed
+       trace 0.964x and 0.965x (dev/lab, 2026-11-04). Skylake-SP and Broadwell,
+       without FSRS, run it 1.4x and 1.03x slower. */
+    {"evex512r", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS | STR_FSRS, {
+        .memcpy = memcpy_evex512, .memmove = memmove_evex512, .memset = memset_rep, .memcmp = memcmp_evex512,
         .strlen = strlen_evex512, .strcpy = strcpy_evex, .strcat = strcat_evex, .strcmp = strcmp_evex,
         .strspn = strspn_avx2_zen, .strcspn = strcspn_avx2_zen,
         .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,
@@ -122,6 +139,12 @@ void str_cpuid_read(struct str_cpuid *c) {
     c->ebx7 = r[1];
     cpuid(0x80000001u, 0, r);
     c->ecx81 = r[2];
+    cpuid(7, 1, r);
+    c->eax71 = r[0];
+    cpuid(0x80000000u, 0, r);
+    c->max_ext = r[0];
+    cpuid(0x80000021u, 0, r); /* past the highest extended leaf garbage: str_host_of looks at max_ext */
+    c->eax8021 = r[0];
     c->xcr0 = 0;
 
     if (bit(c->ecx1, 27)) { /* uncoverable: xgetbv faults without OSXSAVE, a CPU this test does not run on */
@@ -140,6 +163,11 @@ unsigned str_host_of(const struct str_cpuid *c) {
     unsigned family = (c->eax1 >> 8) & 0xf, model = ((c->eax1 >> 4) & 0xf) | ((c->eax1 >> 12) & 0xf0);
     unsigned ecx1 = c->ecx1, ebx7 = c->ebx7, ecx81 = c->ecx81;
     unsigned have = bit(ebx7, 9) ? STR_ERMS : 0;   /* fast rep movsb/stosb */
+
+    /* fast short rep stosb: Intel says so in leaf 7.1, AMD in 0x80000021 */
+    if (bit(c->eax71, 11) || (!intel && c->max_ext >= 0x80000021u && bit(c->eax8021, 10))) {
+        have |= STR_FSRS;
+    }
 
     /* x86-64-v2: SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B, LAHF/SAHF */
     if (!(bit(ecx1, 0) && bit(ecx1, 9) && bit(ecx1, 19) && bit(ecx1, 20) && bit(ecx1, 23) && bit(ecx1, 13) && bit(ecx81, 0))) {
