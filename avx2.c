@@ -883,6 +883,7 @@ int strcmp_avx2(const char *left, const char *right) {
            overlap under speculation; a group joined by a tree costs its whole
            latency on the hit (2x on 65..127 bytes), and blocks moved to the
            32-byte boundary first wait for that arithmetic. */
+
         if (both_in_page(a, b, 128)) {
             m = mask256(same_and_nonzero(load256(a + 32), load256(b + 32))) + 1;
 

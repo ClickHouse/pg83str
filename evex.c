@@ -299,6 +299,7 @@ int strcmp_evex(const char *left, const char *right) {
                overlap under speculation; a group joined by a tree costs its
                whole latency on the hit (2x on 65..127 bytes), and blocks moved
                to the 32-byte boundary first wait for that arithmetic (1.4x). */
+
             if (both_in_page(a, b, 128)) {
                 x = load256(a + 32);
                 k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b + 32)) + 1;
