@@ -80,3 +80,47 @@ coverage = command(
     descr="CV",
     color="cyan",
 )
+
+# The kernel lab (dev/lab/README.md): every implementation of every primitive
+# from glibc, FreeBSD, musl, LLVM libc, asmlib, ours and dev/lab/kernels,
+# validated and timed over sizes, alignments and traces. Built on request
+# only (./build lab); its outside inputs are pinned by hash in dev/lab/deps.py.
+lab_deps = command(
+    name="lab_deps",
+    inputs=["$(S)/dev/lab/deps.py", "$(S)/dev/lab/freebsd.lock", "$(S)/dev/lab/llvm-libc.lock"],
+    outputs=[f"$(B)/lab/deps/{name}" for name in ("libc6-dev.deb", "libgcc-dev.deb", "musl.tar.gz", "asmlib.zip", "freebsd.tar", "llvm-libc.tar")],
+    cmd=["python3", "$(S)/dev/lab/deps.py", "--out", "$(B)/lab/deps"],
+    descr="FE",
+    color="yellow",
+)
+kbench = command(
+    name="kbench",
+    inputs=["$(S)/dev/lab/lab.py", "$(S)/dev/lab/kbench.c", "$(S)/dev/lab/kl.h", "$(S)/common.h", *build.glob("$(S)/dev/lab/kernels/*.c"),
+            *build.glob("$(S)/dev/lab/canary/*.c"),
+            *build.glob("$(S)/dev/lab/freebsd/*.h"), *build.glob("$(S)/dev/lab/freebsd/machine/*.h")],
+    outputs=["$(B)/lab/kbench"],
+    deps=[libstr, lab_deps],
+    cmd=["python3", "$(S)/dev/lab/lab.py", "--deps", "$(B)/lab/deps", "--libstr", "$(B)/libstr.a", "--work", "$(B)/lab/work", "--binary", "$(B)/lab/kbench"],
+    descr="LB",
+    color="cyan",
+)
+trace = command(
+    name="lab_trace",
+    inputs=["$(S)/dev/lab/workload.py"],
+    outputs=["$(B)/lab/workload.bin"],
+    cmd=["python3", "$(S)/dev/lab/workload.py", "$(B)/lab/workload.bin"],
+    descr="GN",
+)
+group("lab", kbench, trace)
+# The same with dev/lab/canary/*.c, kernels broken on purpose: validation must reject each.
+kbench_canary = command(
+    name="kbench_canary",
+    inputs=kbench.inputs,
+    outputs=["$(B)/lab/kbench-canary"],
+    deps=[libstr, lab_deps],
+    cmd=["python3", "$(S)/dev/lab/lab.py", "--deps", "$(B)/lab/deps", "--libstr", "$(B)/libstr.a", "--work", "$(B)/lab/work-canary", "--binary",
+         "$(B)/lab/kbench-canary", "--canary"],
+    descr="LB",
+    color="cyan",
+)
+group("lab_canary", kbench_canary)
