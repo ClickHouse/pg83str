@@ -122,6 +122,10 @@ static unsigned detect(void) {
             f |= F_ERMS;
         }
 
+        if (b & (1u << 11)) {
+            f |= F_RTM;
+        }
+
         if (d & (1u << 4)) {
             f |= F_FSRM;
         }
@@ -152,6 +156,7 @@ typedef struct {
     size_t iters; /* this cell's batch */
     double s[64]; /* this cell's samples */
     uint64_t sum; /* a trace's checksum */
+    double ghz[64]; /* the core's average clock in each trace pass, when the MSRs can be read */
 } Kernel;
 
 static Kernel *K;
@@ -317,7 +322,7 @@ static void build_kernels(void) {
         }
 
         int sl[8], n = prim_slots(p, sl);
-        int vary = p == P_STRCAT ? 1 : n; /* strcat: its entry only; strlen and strcpy have rows of their own */
+        int vary = n; /* strcat too: its strlen and strcpy slots change it as much as its entry */
 
         for (int j = 0; j < vary; j++) {
             for (unsigned i = 0; i < kl_nslots; i++) {
@@ -417,7 +422,6 @@ static int sgn(int x) {
 
 /* -------------------------------------------------------------- validation */
 
-static Kernel *vk;
 static char vwhy[160];
 #define VFAIL(...) do { snprintf(vwhy, sizeof vwhy, __VA_ARGS__); return 0; } while (0)
 
@@ -970,7 +974,6 @@ static void validate_all(int jobs) {
             if (!pid) {
                 close(fd[0]);
                 alarm(120); /* a kernel that loops forever is a failure too */
-                vk = k;
                 install(k);
                 int ok = validate_kernel(k);
 
@@ -1097,6 +1100,46 @@ static double clock_ghz(void) {
 
 static double ghz_start, ghz_end;
 
+/* The core's real clock over a stretch of code: IA32_APERF counts its cycles,
+   IA32_MPERF counts at the TSC's rate, both only while it runs; the TSC rate
+   times their ratio is the average clock, AVX-512 licenses and turbo in it.
+   Needs /dev/cpu/N/msr (root): the lab hosts have it. */
+static int msr_fd = -1;
+static double tsc_ghz;
+
+static uint64_t rdmsr(unsigned reg) {
+    uint64_t v = 0;
+    return pread(msr_fd, &v, 8, reg) == 8 ? v : 0;
+}
+
+static uint64_t rdtsc(void) {
+    unsigned lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return (uint64_t)hi << 32 | lo;
+}
+
+static void msr_open(int cpu) {
+    char path[64];
+    snprintf(path, sizeof path, "/dev/cpu/%d/msr", cpu);
+    FILE *f = fopen(path, "r"); /* <fcntl.h> wants the kernel's headers; pread on the stream's descriptor */
+    msr_fd = f ? fileno(f) : -1;
+
+    if (msr_fd < 0 || !rdmsr(0xe7)) {
+        msr_fd = -1;
+        return;
+    }
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    uint64_t c0 = rdtsc();
+
+    do {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+    } while ((t1.tv_sec - t0.tv_sec) * 1000000000l + (t1.tv_nsec - t0.tv_nsec) < 50000000);
+
+    tsc_ghz = (double)(rdtsc() - c0) / (double)((t1.tv_sec - t0.tv_sec) * 1000000000l + (t1.tv_nsec - t0.tv_nsec));
+}
+
 static unsigned long long rng_state = 88172645463325252ull;
 static unsigned rnd(void) {
     rng_state ^= rng_state << 13;
@@ -1171,7 +1214,7 @@ static void time_cell(Kernel **ks, int nk, const Cell *c, const char *regime) {
         memcpy(v, k->s, samples * sizeof *v);
         qsort(v, samples, sizeof *v, cmp_double);
         k->est = v[0];
-        printf("%s,%s,%s,%zu,%s,%s,%.4f,%.4f,%zu\n", PN[c->prim], c->scenario, regime, c->n, c->aname, k->name, v[0], v[samples / 2], k->iters);
+        printf("%s,%s,%s,%zu,%s,%s,%.4f,%.4f,%zu,\n", PN[c->prim], c->scenario, regime, c->n, c->aname, k->name, v[0], v[samples / 2], k->iters);
     }
 }
 
@@ -1310,6 +1353,7 @@ static void setup(Cell *c, const Align *al) {
 }
 
 static int want_prim[P_N];
+static int want_mixed;
 static const char *kfilter, *kexclude;
 
 static int kernel_wanted(const Kernel *k) {
@@ -1442,6 +1486,190 @@ __attribute__((noinline)) static uint64_t trace_run(const Kernel *k, const Rec *
     return sum;
 }
 
+/* Whole tables on the mixed trace: every function in the workload's
+   proportions, as a program calls them. A clock license one function takes
+   (AVX-512 on Skylake-SP) slows the others too, which the per-function
+   traces cannot show. A table: each configuration of ours the host runs,
+   glibc as its IFUNCs chose, and --table NAME=CONFIG:SLOT=FN,... */
+typedef struct {
+    char name[64];
+    struct str_table t;
+    int ours;
+    double s[64], ghz[64];
+    size_t iters;
+    uint64_t sum;
+} Table;
+
+static Table tables[32];
+static int ntables;
+static const char *table_specs[16];
+static int ntable_specs;
+
+static void build_tables(void) {
+    for (unsigned c = 0; c < str_nconfigs; c++) {
+        unsigned n = str_configs[c].needs;
+        unsigned needs = (n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0);
+
+        if (needs & ~host) {
+            continue;
+        }
+
+        Table *x = &tables[ntables++];
+        snprintf(x->name, sizeof x->name, "ours/%s", str_configs[c].name);
+        x->t = str_configs[c].table;
+        x->ours = 1;
+    }
+
+    Table *g = &tables[ntables++];
+    snprintf(g->name, sizeof g->name, "glibc/dispatch");
+    void *const pub[] = {resolved_glibc((void *)memcpy), resolved_glibc((void *)memmove), resolved_glibc((void *)memset), resolved_glibc((void *)memcmp),
+                         resolved_glibc((void *)strlen), resolved_glibc((void *)strcpy), resolved_glibc((void *)strcat), resolved_glibc((void *)strcmp),
+                         resolved_glibc((void *)strspn), resolved_glibc((void *)strcspn), resolved_glibc((void *)memchr)};
+    memcpy(&g->t, pub, sizeof pub);
+
+    for (int i = 0; i < ntable_specs; i++) {
+        char buf[512], *sv;
+        snprintf(buf, sizeof buf, "%s", table_specs[i]);
+        char *eq = strchr(buf, '='), *colon = eq ? strchr(eq, ':') : 0;
+        CHECK(eq && colon); /* NAME=CONFIG:SLOT=FN,... */
+        *eq = *colon = 0;
+        Table *x = &tables[ntables++];
+        snprintf(x->name, sizeof x->name, "ours/%s", buf);
+        x->ours = 1;
+        int found = 0;
+
+        for (unsigned c = 0; c < str_nconfigs; c++) {
+            if (!strcmp(str_configs[c].name, eq + 1)) {
+                x->t = str_configs[c].table;
+                found = 1;
+            }
+        }
+
+        CHECK(found);
+
+        for (char *a = strtok_r(colon + 1, ",", &sv); a; a = strtok_r(0, ",", &sv)) {
+            char *e = strchr(a, '=');
+            CHECK(e);
+            *e = 0;
+            int slot = -1, done = 0;
+
+            for (int s = 0; s < NSLOTS; s++) {
+                if (!strcmp(SLOTN[s], a)) {
+                    slot = s;
+                }
+            }
+
+            CHECK(slot >= 0);
+
+            for (unsigned j = 0; j < kl_nslots; j++) {
+                if (kl_slots[j].slot == slot && !strcmp(kl_slots[j].name, e + 1)) {
+                    ((void **)&x->t)[slot] = kl_slots[j].fn;
+                    done = 1;
+                }
+            }
+
+            if (!done) {
+                fprintf(stderr, "kbench: --table: no %s implementation %s\n", a, e + 1);
+                exit(2);
+            }
+        }
+    }
+}
+
+__attribute__((noinline)) static uint64_t mixed_run(const struct str_table *t, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {
+    uint64_t sum = 0;
+
+    for (uint64_t i = 0; i < count; i++) {
+        const Rec *q = &recs[i];
+
+        switch (q->op) {
+        case W_MEMCPY: sum += (uintptr_t)t->memcpy(dst + q->b, src + q->a, q->n) - (uintptr_t)(dst + q->b); break;
+        case W_MEMMOVE: sum += (uintptr_t)t->memmove(dst + q->b, src + q->a, q->n) - (uintptr_t)(dst + q->b); break;
+        case W_MEMMOVE_OVL: sum += (uintptr_t)t->memmove(dst + q->b, dst + q->a, q->n) - (uintptr_t)(dst + q->b); break;
+        case W_MEMSET: sum += (uintptr_t)t->memset(dst + q->b, (int)q->a, q->n) - (uintptr_t)(dst + q->b); break;
+        case W_MEMCMP: sum += (uint64_t)(sgn(t->memcmp(src + q->a, src + q->b, q->n)) + 1); break;
+        case W_STRLEN: sum += t->strlen((const char *)src + q->a); break;
+        case W_STRCPY: sum += (uintptr_t)t->strcpy((char *)dst + q->b, (const char *)src + q->a) - (uintptr_t)(dst + q->b); break;
+        case W_STRCAT: dst[q->b + q->n] = 0; sum += (uintptr_t)t->strcat((char *)dst + q->b, (const char *)src + q->a) - (uintptr_t)(dst + q->b); break;
+        case W_STRCMP: sum += (uint64_t)(sgn(t->strcmp((const char *)src + q->a, (const char *)src + q->b)) + 1); break;
+        case W_STRSPN: sum += t->strspn((const char *)src + q->a, (const char *)src + q->b); break;
+        case W_STRCSPN: sum += t->strcspn((const char *)src + q->a, (const char *)src + q->b); break;
+        case W_MEMCHR: { const u8x *r = (t->memchr)(src + q->a, (int)q->b, q->n); /* glibc's string.h has a memchr macro */ sum += r ? (uint64_t)(r - (src + q->a)) : q->n; break; }
+        }
+    }
+
+    return sum;
+}
+
+static void mixed(const Rec *recs, uint64_t count, u8x *src, u8x *dst, const u8x *image, size_t dsz, int passes) {
+    time_t t0 = time(0);
+
+    for (int i = 0; i < ntables; i++) {
+        Table *x = &tables[i];
+
+        if (x->ours) {
+            str_table = x->t;
+        }
+
+        memcpy(dst, image, dsz);
+        uint64_t a = now();
+        x->sum = mixed_run(&x->t, recs, count, src, dst);
+        double est = (double)(now() - a) / (double)count;
+        x->iters = est * count > 1e7 ? 1 : (size_t)(1e7 / (est * count)) + 1;
+    }
+
+    for (int i = 1; i < ntables; i++) {
+        if (tables[i].sum != tables[0].sum) {
+            fprintf(stderr, "MIXED: %s checksum %" PRIu64 " != %s %" PRIu64 "\n", tables[i].name, tables[i].sum, tables[0].name, tables[0].sum);
+        }
+    }
+
+    int order[32], np = passes < 63 ? passes : 63;
+
+    for (int r = 0; r < np; r++) {
+        for (int i = 0; i < ntables; i++) {
+            order[i] = i;
+        }
+
+        for (int i = ntables - 1; i > 0; i--) {
+            int j = (int)(rnd() % (unsigned)(i + 1)), x = order[i];
+            order[i] = order[j];
+            order[j] = x;
+        }
+
+        for (int i = 0; i < ntables; i++) {
+            Table *x = &tables[order[i]];
+
+            if (x->ours) {
+                str_table = x->t;
+            }
+
+            memcpy(dst, image, dsz);
+            uint64_t a = now(), ap = msr_fd >= 0 ? rdmsr(0xe8) : 0, mp = msr_fd >= 0 ? rdmsr(0xe7) : 0;
+
+            for (size_t it = 0; it < x->iters; it++) {
+                vsink += mixed_run(&x->t, recs, count, src, dst);
+            }
+
+            uint64_t b = now();
+            x->s[r] = (double)(b - a) / (double)(count * x->iters);
+            x->ghz[r] = msr_fd >= 0 ? tsc_ghz * (double)(rdmsr(0xe8) - ap) / (double)(rdmsr(0xe7) - mp + 1) : 0;
+        }
+    }
+
+    for (int i = 0; i < ntables; i++) {
+        double v[64], g[64];
+        memcpy(v, tables[i].s, np * sizeof *v);
+        memcpy(g, tables[i].ghz, np * sizeof *g);
+        qsort(v, np, sizeof *v, cmp_double);
+        qsort(g, np, sizeof *g, cmp_double);
+        printf("mixed,trace:mixed,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f\n", count, tables[i].name, v[0], v[np / 2], tables[i].iters, g[np / 2]);
+    }
+
+    fflush(stdout);
+    fprintf(stderr, "trace mixed: %d tables, %ld s\n", ntables, (long)(time(0) - t0));
+}
+
 static int trace_prim(const char *name) {
     static const struct { const char *t; int p; } map[] = {{"memcpy", P_MEMCPY}, {"memmove", P_MEMMOVE}, {"memset", P_MEMSET}, {"memcmp", P_MEMCMP},
         {"strlen", P_STRLEN}, {"strcpy", P_STRCPY}, {"strcat", P_STRCAT}, {"strcmp", P_STRCMP}, {"strspn", P_STRSPN}, {"strcspn", P_STRCSPN},
@@ -1479,6 +1707,10 @@ static void traces(const char *path, int passes) {
         Rec *recs = malloc(count * sizeof *recs);
         CHECK(recs && fread(recs, sizeof *recs, count, f) == count);
         int p = trace_prim(name);
+
+        if (!strcmp(name, "mixed") && want_mixed && count) {
+            mixed(recs, count, src, dst, image, dsz, passes);
+        }
 
         if (p < 0 || !want_prim[p] || !count) {
             free(recs);
@@ -1536,7 +1768,7 @@ static void traces(const char *path, int passes) {
                 Kernel *k = ks[order[i]];
                 install(k);
                 memcpy(dst, image, dsz);
-                uint64_t a = now();
+                uint64_t a = now(), ap = msr_fd >= 0 ? rdmsr(0xe8) : 0, mp = msr_fd >= 0 ? rdmsr(0xe7) : 0;
 
                 for (size_t it = 0; it < k->iters; it++) {
                     vsink += trace_run(k, recs, count, src, dst);
@@ -1544,6 +1776,7 @@ static void traces(const char *path, int passes) {
 
                 uint64_t b = now();
                 k->s[r] = (double)(b - a) / (double)(count * k->iters);
+                k->ghz[r] = msr_fd >= 0 ? tsc_ghz * (double)(rdmsr(0xe8) - ap) / (double)(rdmsr(0xe7) - mp + 1) : 0;
             }
         }
 
@@ -1552,7 +1785,10 @@ static void traces(const char *path, int passes) {
             int np = passes < 63 ? passes : 63;
             memcpy(v, ks[i]->s, np * sizeof *v);
             qsort(v, np, sizeof *v, cmp_double);
-            printf("%s,trace:%s,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu\n", PN[p], name, count, ks[i]->name, v[0], v[np / 2], ks[i]->iters);
+            double g[64];
+            memcpy(g, ks[i]->ghz, np * sizeof *g);
+            qsort(g, np, sizeof *g, cmp_double);
+            printf("%s,trace:%s,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f\n", PN[p], name, count, ks[i]->name, v[0], v[np / 2], ks[i]->iters, g[np / 2]);
         }
 
         fflush(stdout);
@@ -1670,7 +1906,7 @@ static void meta(const char *path) {
 static void usage(void) {
     fprintf(stderr, "kbench [--cpu N] [--samples S] [--target-us T] [--prims list] [--kernels substrings] [--exclude substrings]\n"
                     "       [--sizes quick|full|list] [--aligns2 list] [--aligns1 list] [--regimes thr,lat] [--trace FILE] [--passes P]\n"
-                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--no-matrix]\n");
+                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--no-matrix] [--mixed [--table NAME=CONFIG:SLOT=FN,...]]\n");
     exit(2);
 }
 
@@ -1705,6 +1941,11 @@ int main(int argc, char **argv) {
             regimes = v;
         } else if (OPT("--trace")) {
             trace = v;
+        } else if (OPT("--table")) {
+            CHECK(ntable_specs < 16);
+            table_specs[ntable_specs++] = v;
+        } else if (!strcmp(a, "--mixed")) {
+            want_mixed = 1;
         } else if (OPT("--passes")) {
             passes = atoi(v);
         } else if (OPT("--jobs")) {
@@ -1798,8 +2039,9 @@ int main(int argc, char **argv) {
         CHECK(!pin(cpu));
     }
 
+    msr_open(cpu >= 0 ? cpu : 0);
     ghz_start = clock_ghz();
-    fprintf(stderr, "clock: %.3f GHz\n", ghz_start);
+    fprintf(stderr, "clock: %.3f GHz%s\n", ghz_start, msr_fd >= 0 ? "; APERF/MPERF readable: traces report the clock of each pass" : "");
     parse_sizes(sizespec);
     parse_aligns(a2, al2, &nal2, 1);
     parse_aligns(a1, al1, &nal1, 0);
@@ -1813,13 +2055,17 @@ int main(int argc, char **argv) {
     CHECK(!posix_memalign((void **)&bufA, 4096, bufcap) && !posix_memalign((void **)&bufB, 4096, bufcap));
     memset(bufA, 1, bufcap);
     memset(bufB, 1, bufcap);
-    printf("prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters\n");
+    printf("prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters,ghz\n");
 
     if (!no_matrix) {
         matrix(regimes);
     }
 
     if (trace) {
+        if (want_mixed) {
+            build_tables();
+        }
+
         traces(trace, passes);
     }
 

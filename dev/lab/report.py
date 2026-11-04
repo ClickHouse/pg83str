@@ -79,7 +79,8 @@ def main():
         cells, traces = load(d / 'out.csv.gz', args.regime, prims, args.stat)
         ours_cfg = 'ours/' + meta['ours_config']
         # memcpy and memmove are one function in glibc: the variant comes back under either name
-        glibc_of = {p: 'glibc/' + v.replace('__memcpy_', '__%s_' % p) if p in ('memcpy', 'memmove') else 'glibc/' + v for p, v in meta['glibc'].items()}
+        glibc_of = {p: 'glibc/' + (v.replace('__memcpy_', '__%s_' % p).replace('__memmove_', '__%s_' % p) if p in ('memcpy', 'memmove') else v)
+                    for p, v in meta['glibc'].items()}
         print('== %s: %s; ours %s; regime %s, %s' % (host, meta['brand'].strip(), meta['ours_config'], args.regime, args.stat))
         bad = [k for k in meta['kernels'] if k['status'] == -1]
         if bad:
@@ -88,7 +89,7 @@ def main():
         print('\n-- traces, ns per call: ours, glibc, the best five')
         for (prim, name), ks in sorted(traces.items()):
             best = sorted(ks.items(), key=lambda kv: kv[1])
-            o, g, b = ks.get(ours_cfg), ks.get(glibc_of[prim]), best[0][1]
+            o, g, b = ks.get(ours_cfg, float('nan')), ks.get(glibc_of.get(prim, 'glibc/dispatch'), float('nan')), best[0][1]
             print('%-8s %-13s ours %6.2f (%.2f)  glibc %6.2f (%.2f)  | %s' % (
                 prim, name, o, o / b, g, g / b, '  '.join('%s %.2f' % (short(k, 40), v) for k, v in best[:5])))
 

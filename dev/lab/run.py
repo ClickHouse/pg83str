@@ -10,15 +10,17 @@ idlest core but CPU 0 in an ssh session held open for the run (the lab hosts
 end a session's processes with it), and fetches out.csv.gz, err.log and
 meta.json; run.json records the commit, the binary's sha256, the options and
 the times. The clock is held at the nominal frequency for the run (freq.py:
-boost off, every core at its base) and given back after; on this machine
-that needs root: without it the run goes on with a moving clock and says so
-(or fix it first: doas python3 dev/lab/freq.py fix --state F, restore after).
+boost off, every core at its base) and given back after, here through sudo,
+on the lab hosts as root; --clock free leaves it alone. One saved state per
+host (.lab/freq.state here, /root/lab/freq.state there): a run that dies
+holding the clock leaves it, and the next run gives back what it says.
 The kbench options after -- go to every host; --trace, --meta, --cpu and
 --jobs are added here.
 """
 import argparse
 import datetime
 import hashlib
+import os
 import json
 import shlex
 import subprocess
@@ -34,6 +36,7 @@ HOSTS = {
     'lab2': dict(ssh='root@lab2.mesh', note='Intel Xeon Gold 6148 (Skylake-SP), AVX-512'),
     'lab3': dict(ssh='root@lab3.mesh', note='Intel Xeon E5-2690 v4 (Broadwell-EP), AVX2'),
 }
+STATE = '/root/lab/freq.state'  # the lab hosts' clock settings from before a run that holds it
 IDLEST = r'''python3 -c "
 import time
 def t():
@@ -62,31 +65,36 @@ def run_host(name, tag, kargs, binary, trace, info, failed, hold):
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
         if not h['ssh']:
+            # root by sudo here: the clock (freq.py) and the MSRs kbench reads for the core's clock
             cpu = h['cpu']
-            freq = subprocess.run([sys.executable, str(ROOT / 'dev/lab/freq.py'), 'fix' if hold else 'show', '--state', str(out / 'freq.json')],
-                                  capture_output=True, text=True)
-            fixed = hold and freq.returncode == 0
-            (out / 'freq.log').write_text(freq.stdout + freq.stderr)
-            if hold and not fixed:
-                print('%s: the clock is not held (freq.py needs root): the run goes on with a moving clock' % name, flush=True)
-            cmd = [str(binary), '--cpu', str(cpu), '--jobs', '8', '--meta', str(out / 'meta.json'), '--trace', str(trace), *kargs]
+            state = ROOT / '.lab/freq.state'
+            freq = [sys.executable, str(ROOT / 'dev/lab/freq.py')]
+            log = subprocess.run(['sudo', *freq, 'fix' if hold else 'restore', '--state', str(state)], capture_output=True, text=True)
+            (out / 'freq.log').write_text(log.stdout + log.stderr)
+            cmd = ['sudo', str(binary), '--cpu', str(cpu), '--jobs', '8', '--meta', str(out / 'meta.json'), '--trace', str(trace), *kargs]
             try:
                 with open(out / 'out.csv', 'w') as o, open(out / 'err.log', 'w') as e:
                     sh(cmd, stdout=o, stderr=e)
             finally:
-                if fixed:
-                    sh([sys.executable, str(ROOT / 'dev/lab/freq.py'), 'restore', '--state', str(out / 'freq.json')])
+                if hold:
+                    subprocess.run(['sudo', *freq, 'restore', '--state', str(state)], stdout=open(out / 'freq.log', 'a'), stderr=subprocess.STDOUT)
+                subprocess.run(['sudo', 'chown', '-R', '%d:%d' % (os.getuid(), os.getgid()), str(out)])
             sh(['gzip', '-f', str(out / 'out.csv')])
         else:
             host, remote = h['ssh'], '/root/lab/' + tag
-            sh(ssh(host) + ['mkdir -p %s && rm -f %s/out.csv %s/out.csv.gz %s/freq.json' % (remote, remote, remote, remote)])
-            for local, rname in ((binary, 'kbench'), (trace, 'workload.bin'), (ROOT / 'dev/lab/freq.py', 'freq.py')):
+            sh(ssh(host) + ['mkdir -p %s && rm -f %s/out.csv %s/out.csv.gz' % (remote, remote, remote)])
+            for local, rname in ((binary, remote + '/kbench'), (trace, remote + '/workload.bin'), (ROOT / 'dev/lab/freq.py', '/root/lab/freq.py')):
                 with open(local, 'rb') as f:
-                    sh(ssh(host) + ['cat > %s/%s' % (remote, rname)], stdin=f)
+                    sh(ssh(host) + ['cat > %s' % rname], stdin=f)
             cpu = subprocess.run(ssh(host) + [IDLEST], capture_output=True, text=True, check=True).stdout.strip()
-            inner = ('python3 freq.py %s --state freq.json > freq.log 2>&1; ' % ('fix' if hold else 'show') +
-                     'nice -n -5 ./kbench --cpu %s --jobs 8 --meta meta.json --trace workload.bin %s > out.csv 2> err.log; rc=$?; '
-                     'test -f freq.json && python3 freq.py restore --state freq.json >> freq.log 2>&1; rm -f freq.json; exit $rc') % (cpu, ' '.join(shlex.quote(a) for a in kargs))
+            # one saved state per host, outside the run's directory: a run that loses
+            # its session leaves it, and the next run restores what it says
+            back = 'python3 /root/lab/freq.py restore --state %s >> freq.log 2>&1' % STATE
+            inner = ('trap "%s; exit 129" HUP INT TERM; ' % back +
+                     'python3 /root/lab/freq.py %s --state %s > freq.log 2>&1; ' % ('fix' if hold else 'restore', STATE) +
+                     'nice -n -5 ./kbench --cpu %s --jobs 8 --meta meta.json --trace workload.bin %s > out.csv 2> err.log; rc=$?; ' % (
+                         cpu, ' '.join(shlex.quote(a) for a in kargs)) +
+                     '%s; exit $rc' % (back if hold else 'true'))
             # the session stays open for the whole run: the lab hosts end a session's
             # processes with it, setsid and nohup included
             print('%s: running on cpu %s' % (name, cpu), flush=True)
@@ -94,7 +102,8 @@ def run_host(name, tag, kargs, binary, trace, info, failed, hold):
                 rc = subprocess.run(ssh(host) + ['cd %s && chmod +x kbench && sh -c %s' % (remote, shlex.quote(inner))]).returncode
             finally:
                 # a lost session leaves the clock held: give it back from the saved state
-                subprocess.run(ssh(host) + ['cd %s && test -f freq.json && python3 freq.py restore --state freq.json >> freq.log 2>&1 && rm -f freq.json' % remote])
+                if hold:
+                    subprocess.run(ssh(host) + ['cd %s && python3 /root/lab/freq.py restore --state %s >> freq.log 2>&1' % (remote, STATE)])
             sh(ssh(host) + ['cd %s && gzip -f out.csv' % remote])
             for rname in ('out.csv.gz', 'err.log', 'meta.json', 'freq.log'):
                 with open(out / rname, 'wb') as f:

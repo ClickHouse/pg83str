@@ -12,7 +12,7 @@ ix run lib/c bld/compiler -- ./build lab            # .build/lab/kbench, .build/
 .build/lab/kbench --validate-only --jobs 12
 .build/lab/kbench --cpu 2 --prims strlen --kernels kl/,glibc/__strlen_evex,ours/evex512 --sizes quick --regimes lat
 dev/lab/run.py --tag r1 -- --regimes thr,lat        # local, lab2, lab3 in parallel: .lab/r1/<host>/, the clock held
-doas python3 dev/lab/freq.py fix --state F          # here run.py is not root: hold the clock by hand, restore after
+dev/lab/run.py --tag m1 --hosts lab2 --clock free -- --prims none --no-matrix --mixed --table 'old=evex:strlen=strlen_evex_jcc'
 dev/lab/report.py r1 --regime lat                   # winners per size bucket, where ours lose
 ix run lib/c bld/compiler -- ./build lab_canary     # kernels broken on purpose: every one must be rejected
 ```
@@ -20,7 +20,8 @@ ix run lib/c bld/compiler -- ./build lab_canary     # kernels broken on purpose:
 ## The kernels
 
 - **glibc 2.44** (Debian's static `libc.a`, also kbench's C runtime): every IFUNC
-  variant of the eleven primitives but the `_rtm` ones.
+  variant of the eleven primitives, the `_rtm` ones too (glibc runs them on
+  CPUs with RTM, Broadwell among them).
 - **ours**: every configuration of `str_configs` as dispatch installs it
   (`ours/evex512`, the post pass's copies with direct calls); the host's
   configuration through the table (`ours/evex512.t`); and that with one slot
@@ -34,7 +35,7 @@ ix run lib/c bld/compiler -- ./build lab_canary     # kernels broken on purpose:
 - **asmlib**: Agner Fog's dispatchers and variants (`asm_memcpyAVX512BW`).
 - **kl**: `kernels/*.c`, new ones.
 
-What a kernel needs (SSE4.2, AVX2 = x86-64-v3, AVX-512 = x86-64-v4, ERMS) comes
+What a kernel needs (SSE4.2, AVX2 = x86-64-v3, AVX-512 = x86-64-v4, ERMS, RTM) comes
 from its name; a host runs the kernels it can. One binary serves every host.
 
 ## A new kernel
@@ -77,12 +78,19 @@ caches all of it by content.
   sees).
 - **Traces** (`workload.py`): every function's trace of the workload and the
   long strspn/strcspn ones, each kernel, 7 passes, checksums against glibc.
+  `--mixed`: the whole workload, all functions in their proportions, for
+  whole tables: every configuration of ours, glibc as dispatched, and
+  `--table NAME=CONFIG:SLOT=FN,...` (a configuration with slots replaced).
+  A clock license one function takes slows the others, which only this shows.
+- **The core's clock** of every trace pass from APERF/MPERF where
+  `/dev/cpu/N/msr` can be read (root: the lab hosts; here run.py uses sudo):
+  turbo and the AVX-512 licenses in numbers (the `ghz` column).
 
 The clock is held at the nominal frequency for a run (`freq.py`: boost or
 turbo off, the performance governor, or on a host without cpufreq every core's
 HWP request pinned at its guaranteed ratio) and given back after; kbench
 measures it at the start and the end with a chain of dependent adds.
 
-`out.csv.gz` has `prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters`;
+`out.csv.gz` has `prim,scenario,regime,n,align,kernel,min_ns,med_ns,iters,ghz`;
 `meta.json` the host, its features, glibc's and our dispatch, every kernel and
 its validation; `run.json` the commit, the binary's hash and the options.

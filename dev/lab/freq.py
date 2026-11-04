@@ -2,7 +2,9 @@
 """Hold the CPU clock at its base frequency for a measurement, and give it back.
 
     freq.py fix --state FILE      save the current settings to FILE, then fix the clock
-    freq.py restore --state FILE  put back what FILE holds
+                                  (FILE there already: an earlier run still holds it;
+                                  FILE is kept, it has the settings from before)
+    freq.py restore --state FILE  put back what FILE holds, remove FILE
     freq.py show                  what the controls say now
 
 Root only. Turbo or boost off and the cores at their nominal frequency, by
@@ -72,6 +74,13 @@ def state():
     return s
 
 
+def state_like(saved):
+    """The current settings in the shape of a saved state, for fix() to act on."""
+    now = state()
+    return {'boost': now['boost'], 'no_turbo': now['no_turbo'], 'policies': now['policies'],
+            'msr': {int(c): dict(m) for c, m in (saved['msr'] or now['msr']).items()}}
+
+
 def fix(s):
     done = []
     if s['boost'] is not None:
@@ -118,12 +127,21 @@ def main():
     if not args.state:
         sys.exit('--state FILE')
     if args.action == 'fix':
-        s = state()
-        args.state.write_text(json.dumps(s))
-        print('fixed: ' + ', '.join(fix(s) or ['nothing to fix']))
-    else:
+        if args.state.exists():
+            # a run that never gave the clock back: FILE holds the settings from
+            # before it, the current ones are held; keep FILE, hold again
+            s = json.loads(args.state.read_text())
+            print('held already (%s from an earlier run kept): ' % args.state + ', '.join(fix(state_like(s)) or ['nothing to fix']))
+        else:
+            s = state()
+            args.state.write_text(json.dumps(s))
+            print('fixed: ' + ', '.join(fix(s) or ['nothing to fix']))
+    elif args.state.exists():
         restore(json.loads(args.state.read_text()))
+        args.state.unlink()
         print('restored from %s' % args.state)
+    else:
+        print('nothing held (%s absent)' % args.state)
 
 
 if __name__ == '__main__':

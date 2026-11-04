@@ -69,6 +69,8 @@ def needs_of(variant):
         out.add('F_ERMS')
     if 'movbe' in v:
         out.add('F_MOVBE')
+    if 'rtm' in v:
+        out.add('F_RTM')
     return sorted(out)
 
 
@@ -77,7 +79,7 @@ def classify(sym, source):
     P = '|'.join(PRIMS)
     if source == 'glibc':
         m = re.match(r'^__(%s)_(.+)$' % P, sym)
-        if m and not re.search(r'rtm|chk|explicit', m.group(2)):
+        if m and not re.search(r'chk|explicit', m.group(2)):  # _rtm too: glibc runs them where the CPU has RTM
             return 'glibc', m.group(1), needs_of(m.group(2))
     elif source == 'asmlib':
         m = re.match(r'^asm_A_(%s)$' % P, sym)
