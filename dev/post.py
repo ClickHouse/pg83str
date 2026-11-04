@@ -21,8 +21,7 @@ within its 64-byte line: measured per host class on the workload (the same
 code runs up to 20% faster or slower by that offset alone, differently per
 function and per host, and no model of 32-byte windows predicted it), so
 the numbers are the stand's, and a function whose code changed should be
-measured again. dev/profile.json, from dev/profile.py, feeds the order pass
-(off by default)."""
+measured again."""
 import argparse
 import json
 import os
@@ -40,13 +39,13 @@ from objfile import Object  # noqa: E402
 from units import UNITS, unit_of  # noqa: E402
 
 
-def optimize_all(path, obj, code, args, trampolines, profile):
+def optimize_all(path, obj, code, args, trampolines):
     unit = unit_of(path)
     march = UNITS[unit]
     report = []
     if not args.roundtrip:
         for name in code:
-            code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name, trampolines=trampolines, profile=profile)
+            code[name], lines = opt.optimize(obj, code[name], evex='-march=x86-64-v4' in march, section=name, trampolines=trampolines)
             report += lines
     return report
 
@@ -55,7 +54,7 @@ def write(path, out, args, obj, code, clones, overrides, maps):
     """Lay the object out again, with the configuration clones as new sections, and write it;
     for every unit but dispatch also the twin laid out with the JCC padding, its global functions
     renamed name_jcc (the implementations the Skylake-SP configuration names). Returns the paths.
-    maps collects {object: {section: {new offset: original offset}}} for the profile."""
+    maps collects {object: {section: {new offset: original offset}}} for --layout-map."""
     jcc = None if args.roundtrip else False
     phases = args.phase_map   # {configuration.function or function: the entry's offset in its 64-byte line}
     layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=jcc,
@@ -171,9 +170,8 @@ def main():
     p.add_argument('--roundtrip', action='store_true', help='no passes: decode, lay out, write')
     p.add_argument('--check', action='store_true', help='compare the result with the original')
     p.add_argument('--passes', help='comma-separated pass list (default: all), see opt.py')
-    p.add_argument('--layout-map', help='write {object: {section: {new offset: original offset}}} as JSON, for dev/profile.py')
+    p.add_argument('--layout-map', help='write {object: {section: {new offset: original offset}}} as JSON: where each instruction came from, for reading perf samples of the result against the sources')
     p.add_argument('--phases', default=str(HERE / 'phases.json'), help='{function or configuration.function: entry offset within its 64-byte line} (default dev/phases.json; absent: 0)')
-    p.add_argument('--profile', default=str(HERE / 'profile.json'), help='the sample profile dev/profile.py wrote (default dev/profile.json; absent: no profile)')
     p.add_argument('--func-align', default='6', help='align every function to 2^N bytes (default 6: entries on 64-byte lines, where a 16-byte entry at the end of a 32-byte window costs up to a third on Skylake)')
     p.add_argument('inputs', nargs='+')
     args = p.parse_args()
@@ -197,13 +195,9 @@ def main():
     if not args.roundtrip and args.phases and Path(args.phases).exists():
         args.phase_map = json.load(open(args.phases))
         lines.append('phases: %s, %d entries' % (args.phases, len(args.phase_map)))
-    profile = {}
-    if not args.roundtrip and args.profile and Path(args.profile).exists():
-        profile = json.load(open(args.profile))
-        lines.append('profile: %s, %d functions' % (args.profile, len(profile)))
     reports = {}
     for path, obj, code in decoded:
-        reports[path] = optimize_all(path, obj, code, args, trampolines, profile)
+        reports[path] = optimize_all(path, obj, code, args, trampolines)
     # the configurations: every function each one reaches, cloned into its unit, calling directly
     clones = [[] for _ in decoded]
     overrides = {}
