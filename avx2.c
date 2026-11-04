@@ -232,7 +232,19 @@ size_t strlen_avx2(const char *str) {
         return ctz(m);
     }
 
-    return str_strlen_tail(align_down(s + 32, 32), s);
+    /* three aligned blocks in line (strings of up to 128 bytes end here; the
+       tail's call and shift cost 1.1-1.6x on them), the tail beyond */
+    const u8 *a = align_down(s + 32, 32);
+
+    for (int k = 0; k < 3; k++, a += 32) {
+        m = mask256(eq_zero(load256a(a)));
+
+        if (m) {
+            return (size_t)(a - s) + ctz(m);
+        }
+    }
+
+    return str_strlen_tail(a, s);
 }
 
 /* ------------------------------------------------------------------ copy */
@@ -433,19 +445,10 @@ static inline void *fill_loop(u8 *d, __m256i v, size_t n) {
     RETURN_OPAQUE(d);
 }
 
-/* n > 64: four stores up to 128 bytes, the aligned loop from there (eight
-   unaligned stores for 129..256, overlapping and crossing lines, measured
-   slower than the loop). */
+/* n > 128: the aligned loop (eight unaligned stores for 129..256,
+   overlapping and crossing lines, measured slower than the loop). */
 void *fill_large_avx2(u8 *d, int c, size_t n) {
     __m256i v = _mm256_set1_epi8((char)c);
-
-    if (n <= 128) {
-        store256(d, v);
-        store256(d + 32, v);
-        store256(d + n - 64, v);
-        store256(d + n - 32, v);
-        RETURN_OPAQUE(d);
-    }
 
     if (n >= REP_THRESHOLD) {
         return str_fill_huge(d, c, n);
@@ -456,16 +459,22 @@ void *fill_large_avx2(u8 *d, int c, size_t n) {
 
 /* n <= 32 with 16-byte and smaller stores, no upper halves touched; 33..64
    two 32-byte stores (four 16-byte ones measured 1.1-1.2x slower on
-   Skylake-SP and Zen 5). */
+   Skylake-SP and Zen 5), 65..128 four, in line: through the kernel they
+   cost 1.1-1.3x. */
 void *memset_avx2(void *dst, int c, size_t n) {
     u8 *d = (u8 *)dst;
 
     if (n <= 32) {
         fill_small(d, splat16(c), n);
-    } else if (n <= 64) {
+    } else if (n <= 128) {
         __m256i v = _mm256_set1_epi8((char)c);
         store256(d, v);
         store256(d + n - 32, v);
+
+        if (n > 64) {
+            store256(d + 32, v);
+            store256(d + n - 64, v);
+        }
     } else {
         return str_fill_large(d, c, n);
     }
@@ -632,6 +641,7 @@ int strcmp_tail_avx2(const u8 *a, const u8 *b) {
             do {
                 __m256i s0 = same_nonzero_value(load256(a), load256(b)), s1 = same_nonzero_value(load256(a + 32), load256(b + 32));
                 __m256i s2 = same_nonzero_value(load256(a + 64), load256(b + 64)), s3 = same_nonzero_value(load256(a + 96), load256(b + 96));
+                __asm__("" : "+x"(s3)); /* opaque: else the compiler folds the last and + min into xor + or, 5% slower */
                 unsigned m = mask256(eq_zero(_mm256_min_epu8(_mm256_min_epu8(s0, s1), _mm256_min_epu8(s2, s3))));
 
                 if (m) {
@@ -714,8 +724,8 @@ int strcmp_avx2(const char *left, const char *right) {
 
 /* ---------------------------------------------------------- strcpy/strcat */
 
-/* One pass for a string with no NUL in [s, a), a 16-aligned (the caller
-   checked that much). The aligned 32-byte block after the known bytes
+/* One pass for a string with no NUL in [s, a), a 16-aligned and at most 128
+   past s (the caller checked that much). The aligned 32-byte block after the known bytes
    first, then single blocks to a 128-byte boundary, then four per step (a
    128-aligned group never crosses a page) joined by a min tree, each block
    tested before it is stored; the last 32 bytes of the string go out as one
@@ -735,34 +745,35 @@ void *strcpy_long_avx2(u8 *d, const u8 *s, const u8 *a) {
 
     __m256i x = load256a(a);
     unsigned m = mask256(eq_zero(x));
-    __m256i head = load256(s); /* [s, s+32) lies within the bytes checked so far and this block */
 
     if (m) {
-        size_t n = (size_t)(a - s) + ctz(m) + 1; /* at most 96 bytes: a is at most 64 past s */
+        size_t n = (size_t)(a - s) + ctz(m) + 1; /* at most 160 bytes: a is at most 128 past s */
 
         if (n <= 32) {
             copy_small(d, s, n);
         } else {
-            __m256i tail = load256(s + n - 32);
-            store256(d, head);
+            /* whole blocks while another fits before the end, then the last 32 bytes */
+            size_t off = 0;
 
-            if (n > 64) {
-                store256(d + 32, load256(s + 32)); /* within [s, a + 32) */
+            for (; off + 32 < n; off += 32) {
+                store256(d + off, load256(s + off));
             }
 
-            store256(d + n - 32, tail);
+            store256(d + n - 32, load256(s + n - 32));
         }
 
         RETURN_OPAQUE(d);
     }
 
-    store256(d, head);
+    /* the known bytes [s, a) in whole blocks; the last may reach into the
+       block at a, which has no NUL */
+    size_t off = 0;
 
-    if (a - s > 32) {
-        store256(d + 32, load256(s + 32)); /* the known bytes reach at most 64 past s */
+    for (; off < (size_t)(a - s); off += 32) {
+        store256(d + off, load256(s + off));
     }
 
-    size_t off = (size_t)(a - s);
+    off = (size_t)(a - s);
 
     for (;;) {
         /* x is the block at a and has no NUL: it goes out, the next is tested before */
@@ -887,7 +898,10 @@ char *strcpy_avx2(char *dst, const char *src) {
         return dst;
     }
 
-    /* no NUL up to the 32-byte boundary after s: the block there */
+    /* no NUL up to the 32-byte boundary after s: the block there, then two
+       more aligned blocks in line (strings of up to 128 bytes are copied
+       here as whole 32-byte blocks and the last 32 bytes; through the kernel
+       they cost 1.4-1.8x), the long copy beyond */
     const u8 *a = align_down(s, 32) + 32;
     m = mask256(eq_zero(load256a(a)));
 
@@ -903,6 +917,23 @@ char *strcpy_avx2(char *dst, const char *src) {
         }
 
         return dst;
+    }
+
+    for (int k = 0; k < 2; k++) {
+        a += 32;
+        m = mask256(eq_zero(load256a(a)));
+
+        if (m) {
+            size_t n = (size_t)(a - s) + ctz(m) + 1; /* 34..128 */
+            size_t off = 0;
+
+            for (; off + 32 < n; off += 32) {
+                store256(d + off, load256(s + off)); /* within [s, a + 32) */
+            }
+
+            store256(d + n - 32, load256(s + n - 32));
+            return dst;
+        }
     }
 
     return strcpy_long(d, s, a + 32); /* [s, a + 32) has no NUL */

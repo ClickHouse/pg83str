@@ -61,7 +61,7 @@ const struct str_config str_configs[] = {
         .strlen = strlen_evex_jcc, .strcpy = strcpy_evex_jcc, .strcat = strcat_evex_jcc, .strcmp = strcmp_evex_jcc,
         .strspn = strspn_avx2_jcc, .strcspn = strcspn_avx2_jcc,
         .copy_large = copy_large_avx2_jcc, .fill_large = fill_large_avx2_jcc, .memcmp_large = memcmp_large_avx2_jcc,
-        .strlen_tail = strlen_tail_avx2_jcc, .strcmp_tail = strcmp_tail_avx2_jcc, .strcpy_long = strcpy_long_avx2_jcc,
+        .strlen_tail = strlen_tail_avx2_jcc, .strcmp_tail = strcmp_tail_evex_jcc, .strcpy_long = strcpy_long_avx2_jcc,
         .copy_huge = copy_huge_rep_jcc, .fill_huge = fill_huge_rep_jcc,
     }},
     /* AVX-512 at 512 bits: Zen 4 and 5, Ice Lake and later. The memory functions

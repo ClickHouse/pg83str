@@ -31,6 +31,10 @@ static inline __m256i load256(const void *p) {
     return _mm256_loadu_si256((const __m256i *)p);
 }
 
+static inline __m256i load256a(const void *p) {
+    return _mm256_load_si256((const __m256i *)p);
+}
+
 static inline void store256(void *p, __m256i v) {
     _mm256_storeu_si256((__m256i *)p, v);
 }
@@ -59,7 +63,19 @@ size_t strlen_evex(const char *str) {
             return ctz(m);
         }
 
-        return str_strlen_tail(align_down(s + 32, 32), s); /* bytes before it were checked */
+        /* three aligned blocks in line (strings of up to 128 bytes end here; the
+           tail's call cost 1.3-1.6x on them), the tail beyond */
+        const u8 *a = align_down(s + 32, 32);
+
+        for (int k = 0; k < 3; k++, a += 32) {
+            m = _mm256_cmpeq_epi8_mask(load256a(a), _mm256_setzero_si256());
+
+            if (m) {
+                return (size_t)(a - s) + ctz(m);
+            }
+        }
+
+        return str_strlen_tail(a, s);
     }
 
     if (left >= 16) {
@@ -126,7 +142,8 @@ void *memmove_evex(void *dst, const void *src, size_t n) {
 
 /* n <= 32: one masked 32-byte store when it stays in its page (a masked
    store into the next page is assisted by microcode on Intel), 16 bytes
-   masked or the short path otherwise; 33..64: two 32-byte stores. */
+   masked or the short path otherwise; 33..64: two 32-byte stores, 65..128
+   four, in line. */
 void *memset_evex(void *dst, int c, size_t n) {
     u8 *d = (u8 *)dst;
 
@@ -138,10 +155,15 @@ void *memset_evex(void *dst, int c, size_t n) {
         } else {
             fill_small(d, splat16(c), n);
         }
-    } else if (n <= 64) {
+    } else if (n <= 128) {
         __m256i v = _mm256_set1_epi8((char)c);
         store256(d, v);
         store256(d + n - 32, v);
+
+        if (n > 64) {
+            store256(d + 32, v);
+            store256(d + n - 64, v);
+        }
     } else {
         return str_fill_large(d, c, n);
     }
@@ -254,6 +276,91 @@ int strcmp_evex(const char *left, const char *right) {
     }
 }
 
+/* Bit i set when x[i] != y[i] or x[i] == 0: where a comparison stops. */
+static inline unsigned stop_mask32(__m256i x, __m256i y) {
+    return ~_mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, y);
+}
+
+/* The strcmp tail with mask compares: a group of four blocks is four
+   compares to masks, a min tree and one test for a NUL, one kortest (the
+   AVX2 tail's and, min and movemask sequence measured 1.3x slower on
+   Skylake-SP). a 32-aligned and 128 bytes from each pointer inside its page
+
+   for a group, b unaligned; elsewhere one masked step up to the next 32-byte
+   boundary of a or the page end of b, whichever is nearer: the lanes beyond
+   it are zero, so the first stop is at most n, and a never-touched next
+   page cannot fault. No byte loop at a page end. */
+int strcmp_tail_evex(const u8 *a, const u8 *b) {
+    /* one unaligned block first (with the entry's two, strings of up to 96
+       bytes end here) */
+
+    if (page_left(a) >= 32 && page_left(b) >= 32) {
+        unsigned m = stop_mask32(load256(a), load256(b));
+
+        if (m) {
+            return byte_diff(a, b, ctz(m));
+        }
+
+        a += 32;
+        b += 32;
+    }
+
+    for (;;) {
+        if (((uintptr_t)a & 31) == 0 && page_left(a) >= 128 && page_left(b) >= 128) {
+            __m256i x0 = load256a(a), x1 = load256a(a + 32), x2 = load256a(a + 64), x3 = load256a(a + 96);
+            __m256i lo = _mm256_min_epu8(_mm256_min_epu8(x0, x1), _mm256_min_epu8(x2, x3));
+            unsigned k = _mm256_cmpneq_epi8_mask(x0, load256(b)) | _mm256_cmpneq_epi8_mask(x1, load256(b + 32)) |
+                         _mm256_cmpneq_epi8_mask(x2, load256(b + 64)) | _mm256_cmpneq_epi8_mask(x3, load256(b + 96)) | _mm256_testn_epi8_mask(lo, lo);
+
+            if (k) {
+                unsigned m = stop_mask32(x0, load256(b));
+
+                if (m) {
+                    return byte_diff(a, b, ctz(m));
+                }
+
+                m = stop_mask32(x1, load256(b + 32));
+
+                if (m) {
+                    return byte_diff(a, b, 32 + ctz(m));
+                }
+
+                m = stop_mask32(x2, load256(b + 64));
+
+                if (m) {
+                    return byte_diff(a, b, 64 + ctz(m));
+                }
+
+                return byte_diff(a, b, 96 + ctz(stop_mask32(x3, load256(b + 96))));
+            }
+
+            a += 128;
+            b += 128;
+            continue;
+        }
+
+        size_t n = 32 - ((uintptr_t)a & 31); /* within a's page too */
+
+        if (page_left(b) < n) {
+            n = page_left(b);
+        }
+
+        __mmask32 km = low_mask32(n);
+        unsigned m = stop_mask32(_mm256_maskz_loadu_epi8(km, a), _mm256_maskz_loadu_epi8(km, b));
+
+        if (m) {
+            size_t i = ctz(m);
+
+            if (i < n) {
+                return byte_diff(a, b, i);
+            }
+        }
+
+        a += n;
+        b += n;
+    }
+}
+
 /* ---------------------------------------------------------- strcpy/strcat */
 
 /* Strings longer than the first block: two passes, out of line so that the
@@ -286,6 +393,29 @@ char *strcpy_evex(char *dst, const char *src) {
             _mm256_mask_storeu_epi8(d, through_first(m), v);
             return dst;
         }
+
+        /* three aligned blocks in line: strings of up to 128 bytes are copied
+           here as whole 32-byte blocks and the last 32 bytes (through the
+           wrapper and the kernel they cost 1.4-1.8x), the long copy beyond */
+        const u8 *a = align_down(s, 32) + 32;
+
+        for (int k = 0; k < 3; k++, a += 32) {
+            m = _mm256_cmpeq_epi8_mask(load256a(a), _mm256_setzero_si256());
+
+            if (m) {
+                size_t n = (size_t)(a - s) + ctz(m) + 1; /* 33..128: the first block had no NUL */
+                size_t off = 0;
+
+                for (; off + 32 < n; off += 32) {
+                    store256(d + off, load256(s + off)); /* within [s, a + 32) */
+                }
+
+                store256(d + n - 32, load256(s + n - 32));
+                return dst;
+            }
+        }
+
+        return str_strcpy_long(d, s, a); /* [s, a) has no NUL */
     } else if (left >= 16) {
         __m128i v = load16(s);
         unsigned m = _mm_cmpeq_epi8_mask(v, _mm_setzero_si128());

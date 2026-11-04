@@ -56,7 +56,7 @@ struct str_table {
     size_t (*strcspn)(const char *, const char *);
     /* kernels; the contracts every implementation keeps: */
     void *(*copy_large)(u8 *d, const u8 *s, size_t n);         /* n > 64, any overlap */
-    void *(*fill_large)(u8 *d, int c, size_t n);               /* n > 64 */
+    void *(*fill_large)(u8 *d, int c, size_t n);               /* n > 128 */
     int (*memcmp_large)(const u8 *a, const u8 *b, size_t n);   /* n > 128, the first 64 bytes equal */
     size_t (*strlen_tail)(const u8 *a, const u8 *s);           /* a 16-aligned, s <= a, no NUL in [s, a) */
     int (*strcmp_tail)(const u8 *a, const u8 *b);              /* any pointers */
@@ -176,6 +176,7 @@ size_t strlen_evex(const char *);
 char *strcpy_evex(char *, const char *);
 char *strcat_evex(char *, const char *);
 int strcmp_evex(const char *, const char *);
+int strcmp_tail_evex(const u8 *a, const u8 *b);
 /* evex512.c: AVX-512 with 512-bit registers */
 void *memcpy_evex512(void *, const void *, size_t);
 void *memmove_evex512(void *, const void *, size_t);
@@ -197,6 +198,7 @@ size_t strlen_evex_jcc(const char *);
 char *strcpy_evex_jcc(char *, const char *);
 char *strcat_evex_jcc(char *, const char *);
 int strcmp_evex_jcc(const char *, const char *);
+int strcmp_tail_evex_jcc(const u8 *a, const u8 *b);
 size_t strspn_avx2_jcc(const char *, const char *);
 size_t strcspn_avx2_jcc(const char *, const char *);
 size_t strspn_sse42_jcc(const char *, const char *);

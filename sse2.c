@@ -235,18 +235,6 @@ static inline void *fill_loop(u8 *d, __m128i v, size_t n) {
 void *fill_large_sse2(u8 *d, int c, size_t n) {
     __m128i v = splat16(c);
 
-    if (n <= 128) {
-        store16(d, v);
-        store16(d + 16, v);
-        store16(d + 32, v);
-        store16(d + 48, v);
-        store16(d + n - 64, v);
-        store16(d + n - 48, v);
-        store16(d + n - 32, v);
-        store16(d + n - 16, v);
-        RETURN_OPAQUE(d);
-    }
-
     if (n >= REP_THRESHOLD) {
         return str_fill_huge(d, c, n);
     }
@@ -266,6 +254,15 @@ void *memset_sse2(void *dst, int c, size_t n) {
         fill_small(d, v, n);
     } else if (n <= 64) {
         fill_33_64(d, v, n);
+    } else if (n <= 128) {
+        store16(d, v);
+        store16(d + 16, v);
+        store16(d + 32, v);
+        store16(d + 48, v);
+        store16(d + n - 64, v);
+        store16(d + n - 48, v);
+        store16(d + n - 32, v);
+        store16(d + n - 16, v);
     } else {
         return str_fill_large(d, c, n);
     }
