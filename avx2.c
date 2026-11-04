@@ -809,9 +809,10 @@ int strcmp_tail_avx2(const u8 *a, const u8 *b) {
 
 /* One 32-byte block when both strings have the room in their pages: the
    lanes that are equal and not NUL, + 1, and the trailing zero count give
-   the first differing or terminating byte (all 32 wrap to 0). Three more
-   blocks in line from the 32-byte boundary after the first, for the strings
-   equal so far; the tail for the few longer still. */
+   the first differing or terminating byte (all 32 wrap to 0). A second block
+   in line from the 32-byte boundary after the first, for the strings equal
+   so far (three more measured better up to 128 bytes and worse beyond); the
+   tail for the few longer still. */
 int strcmp_avx2(const char *left, const char *right) {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
 
@@ -829,10 +830,7 @@ int strcmp_avx2(const char *left, const char *right) {
         b += next - a;
         a = next;
 
-        /* three more blocks in line: strings of up to 128 bytes never reach the
-           tail (its call cost 1.2x on them) */
-
-        for (int k = 0; k < 3 && both_in_page(a, b, 32); k++) {
+        if (both_in_page(a, b, 32)) {
             m = mask256(same_and_nonzero(load256(a), load256(b))) + 1;
 
             if (m) {
