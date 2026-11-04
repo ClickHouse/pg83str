@@ -249,16 +249,18 @@ size_t strlen_avx2(const char *str) {
 
 /* ---------------------------------------------------------------- memchr */
 
-/* n > 64: four 32-byte blocks per step, joined by or, then single blocks,
-   then the last 32 bytes as one block that may overlap what was scanned
-   (the bytes before the block's start are known not to match). */
+/* n > 64, the first 32 bytes without a match: aligned blocks from the
+   32-byte boundary after them (what the first of them scans again is known;
+   both sides unaligned would run 2x slower on Broadwell), four per step
+   joined by or, then single blocks, then the last 32 bytes as one block
+   that may overlap what was scanned. */
 void *memchr_large_avx2(const u8 *s, u8 c, size_t n) {
     __m256i v = _mm256_set1_epi8((char)c);
-    const u8 *end = s + n, *a = s;
+    const u8 *end = s + n, *a = align_down(s + 32, 32);
 
     while (end - a >= 128) {
-        __m256i e0 = _mm256_cmpeq_epi8(load256(a), v), e1 = _mm256_cmpeq_epi8(load256(a + 32), v);
-        __m256i e2 = _mm256_cmpeq_epi8(load256(a + 64), v), e3 = _mm256_cmpeq_epi8(load256(a + 96), v);
+        __m256i e0 = _mm256_cmpeq_epi8(load256a(a), v), e1 = _mm256_cmpeq_epi8(load256a(a + 32), v);
+        __m256i e2 = _mm256_cmpeq_epi8(load256a(a + 64), v), e3 = _mm256_cmpeq_epi8(load256a(a + 96), v);
 
         if (mask256(_mm256_or_si256(_mm256_or_si256(e0, e1), _mm256_or_si256(e2, e3)))) {
             unsigned m = mask256(e0);
@@ -286,7 +288,7 @@ void *memchr_large_avx2(const u8 *s, u8 c, size_t n) {
     }
 
     while (end - a >= 32) {
-        unsigned m = mask256(_mm256_cmpeq_epi8(load256(a), v));
+        unsigned m = mask256(_mm256_cmpeq_epi8(load256a(a), v));
 
         if (m) {
             return (void *)(a + ctz(m));
@@ -731,10 +733,11 @@ static inline __m256i same_nonzero_value(__m256i x, __m256i y) {
 /* One single block first (with the caller's two, strings of up to 96 bytes
    never touch a group). Then four blocks per step, as many steps as both
    pointers have room for in their pages, counted once per page; single
-   blocks near a page end, bytes at the very end. The tests are exact, not
-   both_in_page: on its false miss the byte walk would run to the nearer
-   page end. Unaligned loads on both sides: stepping a back to its boundary
-   was measured to cost what it saved on every host. */
+   blocks near a page end, words and bytes at the very end. The tests are
+   exact, not both_in_page: on its false miss the walk to the page end would
+   run to the nearer one, up to 2 KiB. The loads are written unaligned, but
+   the avx2 entry hands over a on a 32-byte boundary and the steps keep it
+   there: both sides unaligned run 2x slower on Broadwell, one side 1.2x. */
 int strcmp_tail_avx2(const u8 *a, const u8 *b) {
     int result;
 
@@ -758,7 +761,10 @@ int strcmp_tail_avx2(const u8 *a, const u8 *b) {
             do {
                 __m256i s0 = same_nonzero_value(load256(a), load256(b)), s1 = same_nonzero_value(load256(a + 32), load256(b + 32));
                 __m256i s2 = same_nonzero_value(load256(a + 64), load256(b + 64)), s3 = same_nonzero_value(load256(a + 96), load256(b + 96));
-                __asm__("" : "+x"(s3)); /* opaque: else the compiler folds the last and + min into xor + or, 5% slower */
+                /* opaque: else the compiler rewrites the four and + min into the or
+                   of four negated compares and a min of the raw blocks, 13 vector
+                   operations per group instead of 8 (1.15x on Broadwell) */
+                __asm__("" : "+x"(s0), "+x"(s1), "+x"(s2), "+x"(s3));
                 unsigned m = mask256(eq_zero(_mm256_min_epu8(_mm256_min_epu8(s0, s1), _mm256_min_epu8(s2, s3))));
 
                 if (m) {
@@ -803,8 +809,9 @@ int strcmp_tail_avx2(const u8 *a, const u8 *b) {
 
 /* One 32-byte block when both strings have the room in their pages: the
    lanes that are equal and not NUL, + 1, and the trailing zero count give
-   the first differing or terminating byte (all 32 wrap to 0). A second block
-   in line for the strings equal so far; the tail for the few longer still. */
+   the first differing or terminating byte (all 32 wrap to 0). Three more
+   blocks in line from the 32-byte boundary after the first, for the strings
+   equal so far; the tail for the few longer still. */
 int strcmp_avx2(const char *left, const char *right) {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
 
@@ -815,10 +822,17 @@ int strcmp_avx2(const char *left, const char *right) {
             return byte_diff(a, b, ctz(m));
         }
 
-        a += 32;
-        b += 32;
+        /* the second block from the 32-byte boundary after the first: up to 31
+           bytes compared again, and from here on a is aligned for the tail
+           (both sides unaligned run 2x slower on Broadwell, one side 1.2x) */
+        const u8 *next = align_down(a + 32, 32);
+        b += next - a;
+        a = next;
 
-        if (both_in_page(a, b, 32)) {
+        /* three more blocks in line: strings of up to 128 bytes never reach the
+           tail (its call cost 1.2x on them) */
+
+        for (int k = 0; k < 3 && both_in_page(a, b, 32); k++) {
             m = mask256(same_and_nonzero(load256(a), load256(b))) + 1;
 
             if (m) {

@@ -64,7 +64,7 @@ struct str_table {
     void *(*strcpy_long)(u8 *d, const u8 *s, const u8 *a);     /* no NUL in [s, a), a 16-aligned and past s */
     void *(*copy_huge)(u8 *d, const u8 *s, size_t n);          /* n >= REP_THRESHOLD, no backward overlap */
     void *(*fill_huge)(u8 *d, int c, size_t n);                /* n >= REP_THRESHOLD */
-    void *(*memchr_large)(const u8 *s, u8 c, size_t n);        /* n > 64 */
+    void *(*memchr_large)(const u8 *s, u8 c, size_t n);        /* n > 64, no match in the first 32 bytes */
 };
 
 extern struct str_table str_table;
@@ -485,8 +485,11 @@ static inline int strcmp_block16(const u8 **pa, const u8 **pb, int *result) {
     return 0;
 }
 
-/* Compare byte by byte up to the nearer page end. Returns 1 with the answer
-   in *result, or 0 with both pointers advanced to the page boundary. */
+/* Compare up to the nearer page end, eight bytes at a time (x ^ y marks the
+   differing bytes, (x - 1..) & ~x & 0x80.. the first NUL exactly, the
+   lowest set bit of either is the first stop), the rest byte by byte.
+   Returns 1 with the answer in *result, or 0 with both pointers advanced to
+   the page boundary. */
 static inline int strcmp_to_page_end(const u8 **pa, const u8 **pb, int *result) {
     const u8 *a = *pa, *b = *pb;
     size_t n = page_left(a), k = page_left(b);
@@ -495,7 +498,20 @@ static inline int strcmp_to_page_end(const u8 **pa, const u8 **pb, int *result) 
         n = k;
     }
 
-    for (size_t i = 0; i < n; i++) {
+    size_t i = 0;
+
+    for (; i + 8 <= n; i += 8) {
+        uint64_t x = load64(a + i), y = load64(b + i);
+        uint64_t stop = ((x - 0x0101010101010101ull) & ~x & 0x8080808080808080ull) | (x ^ y);
+
+        if (stop) {
+            size_t j = i + (size_t)__builtin_ctzll(stop) / 8; /* uncoverable: stop != 0, the zero branch is the compiler's */
+            *result = byte_diff(a, b, j); /* 0 when both are NUL */
+            return 1;
+        }
+    }
+
+    for (; i < n; i++) {
         if (a[i] != b[i]) {
             *result = byte_diff(a, b, i);
             return 1;

@@ -390,16 +390,17 @@ char *strcat_sse2(char *dst, const char *src) {
 
 /* ---------------------------------------------------------------- memchr */
 
-/* n > 64: four 16-byte blocks per step, joined by or, then single blocks,
-   then the last 16 bytes as one block that may overlap what was scanned
-   (the bytes before the block's start are known not to match). */
+/* n > 64, the first 32 bytes without a match: aligned blocks from the
+   16-byte boundary after them, four per step joined by or, then single
+   blocks, then the last 16 bytes as one block that may overlap what was
+   scanned. */
 void *memchr_large_sse2(const u8 *s, u8 c, size_t n) {
     __m128i v = splat16(c);
-    const u8 *end = s + n, *a = s;
+    const u8 *end = s + n, *a = align_down(s + 32, 16);
 
     while (end - a >= 64) {
-        __m128i e0 = _mm_cmpeq_epi8(load16(a), v), e1 = _mm_cmpeq_epi8(load16(a + 16), v);
-        __m128i e2 = _mm_cmpeq_epi8(load16(a + 32), v), e3 = _mm_cmpeq_epi8(load16(a + 48), v);
+        __m128i e0 = _mm_cmpeq_epi8(load16a(a), v), e1 = _mm_cmpeq_epi8(load16a(a + 16), v);
+        __m128i e2 = _mm_cmpeq_epi8(load16a(a + 32), v), e3 = _mm_cmpeq_epi8(load16a(a + 48), v);
 
         if (mask16(_mm_or_si128(_mm_or_si128(e0, e1), _mm_or_si128(e2, e3)))) {
             unsigned m = mask16(e0);
@@ -427,7 +428,7 @@ void *memchr_large_sse2(const u8 *s, u8 c, size_t n) {
     }
 
     while (end - a >= 16) {
-        unsigned m = eq_mask16(load16(a), v);
+        unsigned m = eq_mask16(load16a(a), v);
 
         if (m) {
             return (void *)(a + ctz(m));
@@ -516,6 +517,12 @@ void *memchr_sse2(const void *p, int c, size_t n) {
 
         m = eq_mask16(load16(s + n - 16), v);
         return m ? (void *)(s + n - 16 + ctz(m)) : 0;
+    }
+
+    m = eq_mask16(load16(s + 16), v); /* the kernel takes the first 32 bytes as scanned */
+
+    if (m) {
+        return (void *)(s + 16 + ctz(m));
     }
 
     return str_memchr_large(s, (u8)c, n);
