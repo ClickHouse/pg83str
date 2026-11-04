@@ -1145,28 +1145,36 @@ def reg_op(i, k):
 
 
 def drop_frame(fn):
-    """push %rbp; mov %rsp,%rbp first (after padding), pop %rbp / leave at the exits,
-    nothing else that reads or writes rbp or rsp and no call: all of it goes."""
+    """push %rbp; mov %rsp,%rbp, at the entry or shrink-wrapped around a loop
+    further in, pop %rbp / leave at the ends, nothing else that reads or writes
+    rbp or rsp and no call: all of it goes."""
     live = [i for i in fn.ins if i.gas and not i.mnemonic.startswith('nop')]
-    if len(live) < 2:
-        return []
-    push, mov = live[0], live[1]
-    if not (push.mnemonic == 'push' and reg_op(push, 0) == 'rbp' and mov.mnemonic == 'mov' and reg_op(mov, 0) == 'rbp' and reg_op(mov, 1) == 'rsp'):
-        return []
-    frame = [push, mov]
-    for i in live[2:]:
+    frame = []
+    k = 0
+    while k < len(live):
+        i = live[k]
         if i.flow in ('Call', 'IndirectCall'):
             return []
+        if i.mnemonic == 'push' and reg_op(i, 0) == 'rbp':
+            mov = live[k + 1] if k + 1 < len(live) else None
+            if not (mov and mov.mnemonic == 'mov' and reg_op(mov, 0) == 'rbp' and reg_op(mov, 1) == 'rsp'):
+                return []
+            frame += [i, mov]
+            k += 2
+            continue
         if (i.mnemonic == 'pop' and reg_op(i, 0) == 'rbp') or i.mnemonic == 'leave':
             frame.append(i)
-            continue
-        if i.flow in ('Return', 'UnconditionalBranch', 'ConditionalBranch', 'IndirectBranch') and not ({'rbp'} & (uses(i) | defs(i))):
-            continue  # ret reads rsp to pop the return address: unchanged once the frame is gone
-        if {'rbp', 'rsp'} & (uses(i) | defs(i)):
+        elif i.flow in ('Return', 'UnconditionalBranch', 'ConditionalBranch', 'IndirectBranch') and not ({'rbp'} & (uses(i) | defs(i))):
+            pass  # ret reads rsp to pop the return address: unchanged once the frame is gone
+        elif {'rbp', 'rsp'} & (uses(i) | defs(i)):
             return []
+        k += 1
+    if not any(i.mnemonic == 'push' for i in frame):
+        return []
     for i in frame:
         delete(i)
-    return ['%s: the frame (%d instructions) dropped' % (fn.name, len(frame))]
+    where = '' if frame[0] is live[0] else ' (around a loop)'
+    return ['%s: the frame (%d instructions)%s dropped' % (fn.name, len(frame), where)]
 
 
 # ---------------------------------------------------------------- vzu
@@ -1199,6 +1207,7 @@ def clean_vzeroupper(fn):
                     dirty_in[id(s)] = True
                     changed = True
     done = []
+    dirty_out = {}
     for b in fn.blocks:
         d = dirty_in[id(b)]
         for k in range(b.start, b.end):
@@ -1210,6 +1219,33 @@ def clean_vzeroupper(fn):
                 d = False
             elif i.gas and dirties(i):
                 d = True
+        dirty_out[id(b)] = d
+    # an exit shared by clean and dirty paths (the compiler merges the returns):
+    # the clean ones that fall into it or jump to it get a copy without vzeroupper
+    preds = predecessors(fn)
+    block_at = {b.start: b for b in fn.blocks}
+    new_ins = []
+    for x in fn.blocks:
+        if not dirty_in[id(x)] or x.start == 0:
+            continue
+        chain, tail = tail_chain(fn, x)
+        if not chain or not any(i.mnemonic == 'vzeroupper' for i in tail):
+            continue
+        for p in list(preds[id(x)]):
+            if dirty_out[id(p)] or p in chain:
+                continue
+            last = fn.ins[p.end - 1]
+            falls = last.flow in ('Next', 'ConditionalBranch') and block_at.get(p.end) is x and not (last.flow == 'ConditionalBranch' and fn.internal(last) and last.target == fn.ins[x.start].offset)
+            jumps = last.flow == 'UnconditionalBranch' and fn.internal(last)
+            if not (falls or jumps):
+                continue
+            if jumps:
+                delete(last)
+            new_ins.append((p.end, [clone(i) for i in tail if i.mnemonic != 'vzeroupper']))
+            preds[id(x)].remove(p)
+            done.append('%s: the exit at %s copied without vzeroupper for a clean way in' % (fn.name, label_of(tail[0])))
+    for k, clones in sorted(new_ins, key=lambda e: e[0], reverse=True):
+        fn.ins[k:k] = clones
     return done
 
 

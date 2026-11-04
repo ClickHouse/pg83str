@@ -407,24 +407,29 @@ static inline void copy_33_64(u8 *d, const u8 *s, size_t n) {
     store16(d + n - 16, x3);
 }
 
-/* n <= 32. */
-static inline void fill_small(u8 *d, __m128i v, size_t n) {
-    uint64_t q = (uint64_t)_mm_cvtsi128_si64(v);
-
+/* n <= 32. The 8- and 4-byte stores go straight from the vector, 2..3
+   bytes as three byte stores of c (glibc's): no move to a general register
+   first. Neither Broadwell's fixed-size matrix nor the traces told it from
+   the move (memset of 1..3 bytes 1.4-1.6x glibc either way in the matrix:
+   the size branches taken there, where glibc's fall through, cost that;
+   with them laid out as glibc's the matrix was even at 0..7 bytes and the
+   16..32-byte path 1.27x slower, the traces the same). */
+static inline void fill_small(u8 *d, __m128i v, int c, size_t n) {
     if (n >= 16) {
         store16(d, v);
         store16(d + n - 16, v);
     } else if (n >= 8) {
-        store64(d, q);
-        store64(d + n - 8, q);
+        _mm_storel_epi64((__m128i *)d, v);
+        _mm_storel_epi64((__m128i *)(d + n - 8), v);
     } else if (n >= 4) {
-        store32(d, (uint32_t)q);
-        store32(d + n - 4, (uint32_t)q);
+        _mm_storeu_si32(d, v);
+        _mm_storeu_si32(d + n - 4, v);
     } else if (n >= 2) {
-        store16b(d, (uint16_t)q);
-        d[n - 1] = (u8)q;
+        d[0] = (u8)c;
+        d[1] = (u8)c;
+        d[n - 1] = (u8)c;
     } else if (n) {
-        d[0] = (u8)q;
+        d[0] = (u8)c;
     }
 }
 

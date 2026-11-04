@@ -456,6 +456,12 @@ static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n) {
     u8 *dp = d + skew;
     const u8 *sp = s + skew;
     size_t left = n - skew; /* at least 225 */
+    /* the last 128 bytes loaded first (with a forward overlap the loop's
+       stores reach them) and stored after the loop from the end down: no
+       32-byte steps after it, whose count of 0..3 the sizes mispredict
+       (glibc's way; Broadwell, ours with glibc's memcpy ran the mixed trace
+       2.3% faster, 0.1 mispredictions a call of it fewer) */
+    __m256i t0 = load256(s + n - 128), t1 = load256(s + n - 96), t2 = load256(s + n - 64), t3 = load256(s + n - 32);
     /* the next group is loaded before this one is stored: a load right after
        a store to the same offset in another page waits for the store (4K
        aliasing), and source and destination at the same offset are common.
@@ -501,16 +507,49 @@ static inline void copy_forward_loop(u8 *d, const u8 *s, size_t n) {
     store256a(dp + 32, x1);
     store256a(dp + 64, x2);
     store256a(dp + 96, x3);
-    dp += 128;
-    sp += 128;
-    left -= 128;
+    store256(d + n - 32, t3); /* less than 128 bytes after dp: within these */
+    store256(d + n - 64, t2);
+    store256(d + n - 96, t1);
+    store256(d + n - 128, t0);
+}
 
-    while (left >= 32) {
-        store256a(dp, load256(sp));
-        dp += 32;
-        sp += 32;
-        left -= 32;
+/* n > 256: its own function. The loops want a register beyond the
+   caller-saved ones (rbx), and the push and pop it costs at the entry sat on
+   every copy of 65..256 bytes: on Broadwell 1.27x glibc on the trace's
+   129..256-byte calls, where the stores queue for lines in L3 and a store of
+   the prologue waits behind them. */
+static NOINLINE void *copy_loop_avx2(u8 *d, const u8 *s, size_t n) {
+    if (overlap_backward(d, s, n)) {
+        /* down from the aligned end; the first 128 bytes and the last 32
+           loaded first and stored after the loop, as the forward one */
+        __m256i h0 = load256(s), h1 = load256(s + 32), h2 = load256(s + 64), h3 = load256(s + 96), tail = load256(s + n - 32);
+        size_t off = n - ((uintptr_t)(d + n) & 31);
+
+        while (off > 128) {
+            off -= 128;
+            __m256i x0 = load256(s + off), x1 = load256(s + off + 32), x2 = load256(s + off + 64), x3 = load256(s + off + 96);
+            store256a(d + off, x0);
+            store256a(d + off + 32, x1);
+            store256a(d + off + 64, x2);
+            store256a(d + off + 96, x3);
+        }
+
+        store256(d + n - 32, tail);
+        store256(d + 96, h3);
+        store256(d + 64, h2);
+        store256(d + 32, h1);
+        store256(d, h0);
+        RETURN_OPAQUE(d);
     }
+
+    if (n >= REP_THRESHOLD) {
+        return str_copy_huge(d, s, n);
+    }
+
+    __m256i head = load256(s);
+    copy_forward_loop(d, s, n);
+    store256(d, head);
+    RETURN_OPAQUE(d);
 }
 
 void *copy_large_avx2(u8 *d, const u8 *s, size_t n) {
@@ -518,8 +557,8 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n) {
         __m256i x0 = load256(s), x1 = load256(s + 32), y0 = load256(s + n - 64), y1 = load256(s + n - 32);
         store256(d, x0);
         store256(d + 32, x1);
-        store256(d + n - 64, y0);
         store256(d + n - 32, y1);
+        store256(d + n - 64, y0);
         RETURN_OPAQUE(d);
     }
 
@@ -530,41 +569,14 @@ void *copy_large_avx2(u8 *d, const u8 *s, size_t n) {
         store256(d + 32, x1);
         store256(d + 64, x2);
         store256(d + 96, x3);
-        store256(d + n - 128, y0);
-        store256(d + n - 96, y1);
+        store256(d + n - 32, y3); /* the tail from the end down: up, 1.25x slower on Broadwell (lines in L3) */
         store256(d + n - 64, y2);
-        store256(d + n - 32, y3);
+        store256(d + n - 96, y1);
+        store256(d + n - 128, y0);
         RETURN_OPAQUE(d);
     }
 
-    __m256i head = load256(s), tail = load256(s + n - 32);
-
-    if (overlap_backward(d, s, n)) {
-        /* down from the aligned end */
-        size_t off = n - ((uintptr_t)(d + n) & 31);
-
-        while (off >= 128) {
-            off -= 128;
-            __m256i x0 = load256(s + off), x1 = load256(s + off + 32), x2 = load256(s + off + 64), x3 = load256(s + off + 96);
-            store256a(d + off, x0);
-            store256a(d + off + 32, x1);
-            store256a(d + off + 64, x2);
-            store256a(d + off + 96, x3);
-        }
-
-        while (off >= 32) {
-            off -= 32;
-            store256a(d + off, load256(s + off));
-        }
-    } else if (n >= REP_THRESHOLD) {
-        return str_copy_huge(d, s, n);
-    } else {
-        copy_forward_loop(d, s, n);
-    }
-
-    store256(d, head);
-    store256(d + n - 32, tail);
-    RETURN_OPAQUE(d);
+    return copy_loop_avx2(d, s, n);
 }
 
 static inline void *copy(void *dst, const void *src, size_t n) {
@@ -607,19 +619,27 @@ void *copy_huge_avx2(u8 *d, const u8 *s, size_t n) {
         RETURN_OPAQUE(d);
     }
 
-    __m256i head = load256(s), tail = load256(s + n - 32);
+    __m256i head = load256(s);
     copy_forward_loop(d, s, n);
     store256(d, head);
-    store256(d + n - 32, tail);
     RETURN_OPAQUE(d);
 }
 
 /* ------------------------------------------------------------------ fill */
 
 static inline void *fill_loop(u8 *d, __m256i v, size_t n) {
-    /* four unaligned stores at each end, aligned 128-byte steps between; the loop
-       is not unrolled (the compiler would, with a long prologue for a count that
-       is usually small) */
+    /* four unaligned stores at the start, aligned 128-byte steps, four
+       unaligned ending at n written from the end down. Broadwell (lines in
+       L3), memset trace at 129..256 / 257..512 bytes: the last four up (as
+       glibc) 33.8 / 36.8 ns, down 26.3 / 29.8; a frame's push and pop around
+       the loop had made it 55 at 257..512. One unaligned store at each end
+       and 0..3 aligned 32-byte ones after the loop (LLVM's, the fewest
+       stores) is a little faster still where the stores queue (the memset
+       trace, 18.85 ns a call against 19.08), and slower in the mix (12.72 ns
+       a call against 12.50), where the queue drains between calls and the
+       branches on the 0..3 mispredict. The loop is not unrolled (the
+       compiler would, with a long prologue for a count that is usually
+       small). */
     store256(d, v);
     store256(d + 32, v);
     store256(d + 64, v);
@@ -636,15 +656,15 @@ static inline void *fill_loop(u8 *d, __m256i v, size_t n) {
         dp += 128;
     }
 
-    store256(end, v);
-    store256(end + 32, v);
-    store256(end + 64, v);
     store256(end + 96, v);
+    store256(end + 64, v);
+    store256(end + 32, v);
+    store256(end, v);
     RETURN_OPAQUE(d);
 }
 
-/* n > 128: the aligned loop (eight unaligned stores for 129..256,
-   overlapping and crossing lines, measured slower than the loop). */
+/* n > 128: the aligned stores (eight unaligned ones for 129..256,
+   overlapping and crossing lines, measured slower). */
 void *fill_large_avx2(u8 *d, int c, size_t n) {
     __m256i v = _mm256_set1_epi8((char)c);
 
@@ -663,7 +683,7 @@ void *memset_avx2(void *dst, int c, size_t n) {
     u8 *d = (u8 *)dst;
 
     if (n <= 32) {
-        fill_small(d, splat16(c), n);
+        fill_small(d, splat16(c), c, n);
     } else if (n <= 128) {
         __m256i v = _mm256_set1_epi8((char)c);
         store256(d, v);
@@ -1155,22 +1175,49 @@ static NOINLINE char *strcat_long(char *dst, const char *src) {
     RETURN_OPAQUE(dst);
 }
 
+/* src from e on, src's NUL past its first 32 bytes; strcat's answer: dst */
+static NOINLINE char *strcat_copy(char *dst, u8 *e, const char *src) {
+    str_strcpy((char *)e, src);
+    RETURN_OPAQUE(dst);
+}
+
+/* dst's end by aligned blocks: the one holding dst with the bytes before it
+   shifted out (no page test), three more in line, the call to strlen only
+   beyond; src's first 32 bytes as strcpy's. Calls (and the registers they
+   save: three pushes, the stores queued behind the copy's) only for a dst
+   of 97 bytes or more or a src of 32: up to 1.12x glibc on Broadwell with
+   the old order, strlen and strcpy by calls for every dst past 31 bytes. */
 char *strcat_avx2(char *dst, const char *src) {
     const u8 *d = (const u8 *)dst, *s = (const u8 *)src;
+    const u8 *a = align_down(d, 32);
+    unsigned m = mask256(eq_zero(load256a(a))) >> ((uintptr_t)d & 31);
+    u8 *e;
 
-    if (both_in_page(d, s, 32)) {
-        /* both strings end within their first 32 bytes: one load each, one short copy */
-        unsigned md = mask256(eq_zero(load256(d)));
-
-        if (md) {
-            unsigned ms = mask256(eq_zero(load256(s)));
-
-            if (ms) {
-                copy_small((u8 *)dst + ctz(md), s, ctz(ms) + 1);
-                return dst;
-            }
+    if (m) {
+        e = (u8 *)dst + ctz(m);
+    } else {
+        for (int k = 0; k < 3 && !m; k++) {
+            a += 32;
+            m = mask256(eq_zero(load256a(a)));
         }
+
+        if (!m) {
+            return strcat_long(dst, src);
+        }
+
+        e = (u8 *)dst + (a - d) + ctz(m);
     }
 
-    return strcat_long(dst, src);
+    if (page_left(s) >= 32) {
+        m = mask256(eq_zero(load256(s)));
+    } else {
+        m = mask256(eq_zero(load256a(align_down(s, 32)))) >> ((uintptr_t)s & 31);
+    }
+
+    if (m) {
+        copy_small(e, s, ctz(m) + 1);
+        return dst;
+    }
+
+    return strcat_copy(dst, e, src);
 }

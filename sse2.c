@@ -259,7 +259,7 @@ void *memset_sse2(void *dst, int c, size_t n) {
     __m128i v = splat16(c);
 
     if (n <= 32) {
-        fill_small(d, v, n);
+        fill_small(d, v, c, n);
     } else if (n <= 64) {
         fill_33_64(d, v, n);
     } else if (n <= 128) {

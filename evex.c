@@ -225,7 +225,7 @@ void *memset_evex(void *dst, int c, size_t n) {
         } else if (n <= 16) {
             mstore16(d, low_mask(n), splat16(c));
         } else {
-            fill_small(d, splat16(c), n);
+            fill_small(d, splat16(c), c, n);
         }
     } else if (n <= 128) {
         __m256i v = _mm256_set1_epi8((char)c);
