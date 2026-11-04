@@ -65,13 +65,37 @@ static inline unsigned truffle_members(__m256i x, __m256i low, __m256i high, __m
 
 #define TRUFFLE_BITS _mm256_broadcastsi128_si256(_mm_setr_epi8(1, 2, 4, 8, 16, 32, 64, (char)128, 0, 0, 0, 0, 0, 0, 0, 0))
 
+/* The tables for a set of at most 32 bytes held in two registers, `count`
+   bytes long (the lanes beyond may hold anything). Built in vectors: the
+   position of each byte's bit, (b >> 7) * 16 + (b & 15), and the bit itself
+   are computed for all lanes at once, and each lane then contributes a
+   one-hot 32-byte word selected by its position. Some 40 cycles for 32
+   bytes against 200 for the scalar build (a store-forwarded read-modify-
+   write per byte); the two 32-byte stores forward to the byte broadcasts. */
+static inline void truffle_tables32(__m128i set1, __m128i set2, size_t count, int with_nul, __m128i *low, __m128i *high) {
+    __m256i s = _mm256_inserti128_si256(_mm256_castsi128_si256(set1), set2, 1);
+    __m256i pos = _mm256_or_si256(_mm256_and_si256(s, _mm256_set1_epi8(15)), _mm256_and_si256(_mm256_srli_epi16(s, 3), _mm256_set1_epi8(16)));
+    __m256i val = _mm256_shuffle_epi8(TRUFFLE_BITS, _mm256_and_si256(_mm256_srli_epi16(s, 4), _mm256_set1_epi8(7)));
+    __m256i iota = _mm256_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31);
+    __m256i t = _mm256_castsi128_si256(_mm_cvtsi32_si128(with_nul));
+    u8 p[32] __attribute__((aligned(32))), v[32] __attribute__((aligned(32)));
+
+    _mm256_store_si256((__m256i *)p, pos);
+    _mm256_store_si256((__m256i *)v, val);
+
+    for (size_t k = 0; k < count; k++) {
+        t = _mm256_or_si256(t, _mm256_and_si256(_mm256_cmpeq_epi8(iota, _mm256_set1_epi8((char)p[k])), _mm256_set1_epi8((char)v[k])));
+    }
+
+    *low = _mm256_castsi256_si128(t);
+    *high = _mm256_extracti128_si256(t, 1);
+}
+
 /* The scan from `from` on (the bytes of s before it are settled): aligned
    32-byte blocks, the first with the bytes before `from` shifted out. members:
    stop at the first byte in the set (strcspn, the NUL counts as one), else at
    the first byte not in it (strspn, the NUL is not). */
-static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, int members) {
-    __m128i low16, high16;
-    truffle_tables(set, members, &low16, &high16);
+static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, __m128i low16, __m128i high16, int members) {
     __m256i low = _mm256_broadcastsi128_si256(low16), high = _mm256_broadcastsi128_si256(high16), bits = TRUFFLE_BITS;
     unsigned flip = members ? 0 : 0xffffffffu;
     const u8 *a = align_down(from, 32); /* aligned blocks never cross a page */
@@ -91,22 +115,43 @@ static NOINLINE size_t truffle_scan(const u8 *from, const u8 *s, const u8 *set, 
     }
 }
 
+/* The scan with the tables of a set in two registers (count bytes) or, for
+   a longer set, built from the string. */
+static NOINLINE size_t truffle_scan32(const u8 *from, const u8 *s, __m128i set1, __m128i set2, size_t count, int members) {
+    __m128i low, high;
+    truffle_tables32(set1, set2, count, members, &low, &high);
+    return truffle_scan(from, s, low, high, members);
+}
+
+static NOINLINE size_t truffle_scan_long(const u8 *from, const u8 *s, const u8 *set, int members) {
+    __m128i low, high;
+    truffle_tables(set, members, &low, &high);
+    return truffle_scan(from, s, low, high, members);
+}
+
+#define PCMPISTRI_BLOCKS 128    /* Intel: 2 KiB */
+#define PCMPISTRI_BLOCKS_ZEN 64 /* Zen 5: 1 KiB */
+#define PCMPISTRM_PAIR_BLOCKS 4 /* 64 bytes */
+
 /* A set of up to 16 bytes: pcmpistri, one load of the set and no tables,
-   over `blocks` 16-byte blocks of text, the shuffle scan beyond; a longer
-   set goes to the shuffle scan from the start. pcmpistri runs a block per
-   cycle or so on Intel and the shuffle scan 32 bytes in 1.6 cycles, but its
-   tables cost some 85 cycles: they pay off from about 1.5 KiB on Intel,
-   where strings of a parser never reach, and from some 400 bytes on Zen 5,
-   where pcmpistri is slower. */
-static inline size_t set_scan(const char *str, const char *setstr, int members, int blocks) {
+   over `blocks` 16-byte blocks of text; a set of 17..32 bytes: two pcmpistrm
+   per block over the first PCMPISTRM_PAIR_BLOCKS (a parser's token); the
+   shuffle scan with the tables built from the registers beyond, and the
+   scalar table build for a longer set. pcmpistri runs a block per cycle or
+   so on Intel and the shuffle scan 32 bytes in 1.6 cycles, but the tables
+   cost some 40 cycles; a pcmpistrm pair costs some 13 cycles per block, so
+   the tables win from the fourth block on. Inlined into the four entries: `members` and `blocks`
+   are constants there, so the loops carry no branch on them. */
+ALWAYS_INLINE size_t set_scan(const char *str, const char *setstr, int members, int blocks) {
     const u8 *s = (const u8 *)str, *set = (const u8 *)setstr;
-    __m128i set1;
+    __m128i set1, set2;
     const u8 *from = s;
+    size_t valid;
 
     if (load_set16(set, &set1)) {
-        size_t valid;
         __m128i x = load_head16(s, &valid);
         unsigned i = members ? cspn_index(set1, x) : (unsigned)_mm_cmpistri(set1, x, SPN_MODE);
+        unsigned z = zero_mask16(set1);
 
         if (i < valid) {
             return i;
@@ -124,13 +169,36 @@ static inline size_t set_scan(const char *str, const char *setstr, int members, 
                 return (size_t)(from - s) + (members ? cspn_index(set1, x) : (unsigned)_mm_cmpistri(set1, x, SPN_MODE));
             }
         }
+
+        return truffle_scan32(from, s, set1, _mm_setzero_si128(), z ? ctz(z) : 16, members);
     }
 
-    return truffle_scan(from, s, set, members);
-}
+    if (load_set_second16(set, &set2)) {
+        set1 = load16(set); /* 16 non-NUL bytes: page-safe, see load_set16 */
+        __m128i x = load_head16(s, &valid);
+        unsigned i = members ? cspn2_index(set1, set2, x) : ctz(spn2_misses(set1, set2, x) | 1u << 16);
 
-#define PCMPISTRI_BLOCKS 96     /* Intel: 1.5 KiB */
-#define PCMPISTRI_BLOCKS_ZEN 24 /* Zen 5: 384 bytes */
+        if (i < valid) {
+            return i;
+        }
+
+        from = after_head(s, valid);
+
+        for (int k = 0; k < PCMPISTRM_PAIR_BLOCKS; k++, from += 16) {
+            x = load16a(from);
+            i = members ? cspn2_index(set1, set2, x) : ctz(spn2_misses(set1, set2, x) | 1u << 16);
+
+            if (i < 16) {
+                return (size_t)(from - s) + i;
+            }
+        }
+
+        unsigned z = zero_mask16(set2);
+        return truffle_scan32(from, s, set1, set2, 16 + (z ? ctz(z) : 16), members);
+    }
+
+    return truffle_scan_long(from, s, set, members);
+}
 
 size_t strcspn_avx2(const char *str, const char *reject) {
     if (!reject[0]) {

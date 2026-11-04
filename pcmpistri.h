@@ -86,4 +86,39 @@ static inline unsigned cspn_index(__m128i set, __m128i text) {
     return i;
 }
 
+/* ---- sets of 17..32 bytes: two pcmpistrm per text block, the bit masks combined */
+
+#define SPN_MASK_MODE (SPN_MODE | _SIDD_BIT_MASK)
+#define CSPN_MASK_MODE (CSPN_MODE | _SIDD_BIT_MASK)
+
+/* The second 16 bytes of a set longer than 16; 0 when the set is longer than
+   32. Page-safe like load_set16 (it is the same loader from set + 16). */
+static inline int load_set_second16(const u8 *set, __m128i *out) {
+    return load_set16(set + 16, out);
+}
+
+/* The bytes of a block in neither half of the set, one bit each; a NUL counts
+   (negative polarity, masked), so the scan stops there. */
+static inline unsigned spn2_misses(__m128i set1, __m128i set2, __m128i text) {
+    return (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set1, text, SPN_MASK_MODE))
+           & (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set2, text, SPN_MASK_MODE));
+}
+
+/* A byte is in the set when it is in either half; a NUL with no earlier match
+   stops the scan. */
+static inline unsigned cspn2_index(__m128i set1, __m128i set2, __m128i text) {
+    unsigned m = (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set1, text, CSPN_MASK_MODE))
+               | (unsigned)_mm_cvtsi128_si32(_mm_cmpistrm(set2, text, CSPN_MASK_MODE));
+
+    if (m) {
+        return ctz(m);
+    }
+
+    if (_mm_cmpistrz(set1, text, CSPN_MASK_MODE)) {
+        return ctz(zero_mask16(text));
+    }
+
+    return 16;
+}
+
 #endif

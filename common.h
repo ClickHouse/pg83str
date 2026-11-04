@@ -31,6 +31,7 @@
 typedef unsigned char u8;
 
 #define NOINLINE __attribute__((noinline))
+#define ALWAYS_INLINE static inline __attribute__((always_inline))
 #ifdef __clang__
     #define NO_UNROLL _Pragma("clang loop unroll(disable)")
 #else
