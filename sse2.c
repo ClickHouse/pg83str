@@ -447,33 +447,53 @@ void *memchr_large_sse2(const u8 *s, u8 c, size_t n) {
     return 0;
 }
 
-/* n <= 16 in one block: unaligned when the page allows, else the aligned
-   block around s shifted; the bits at n and beyond dropped. 17..64 in
+/* One 16-byte block first, whatever n: unaligned when the page allows, and
+   the index of the first match (16 for none) against n, which settles
+   everything up to 16 bytes. Near the page end the aligned block around s,
+   shifted, settles what the page holds; the rest, if n reaches into the
+   next page, is its first aligned block or the kernel. Then 17..64 in
    overlapping blocks, the kernel beyond. */
 void *memchr_sse2(const void *p, int c, size_t n) {
     const u8 *s = (const u8 *)p;
     __m128i v = splat16(c);
     unsigned m;
 
-    if (n <= 16) {
-        if (n == 0) {
-            return 0; /* the pointer may be unreadable */
-        }
-
-        if (page_left(s) >= 16) {
-            m = eq_mask16(load16(s), v);
-        } else {
-            m = eq_mask16(load16a(align_down(s, 16)), v) >> ((uintptr_t)s & 15);
-        }
-
-        m &= (1u << n) - 1;
-        return m ? (void *)(s + ctz(m)) : 0;
+    if (n == 0) {
+        return 0; /* the pointer may be unreadable */
     }
 
-    m = eq_mask16(load16(s), v);
+    size_t left = page_left(s);
 
-    if (m) {
-        return (void *)(s + ctz(m));
+    if (left >= 16) {
+        m = eq_mask16(load16(s), v);
+
+        if (m) {
+            size_t i = ctz(m); /* a match past n decides too: none before it */
+            return i < n ? (void *)(s + i) : 0;
+        }
+
+        if (n <= 16) {
+            return 0;
+        }
+    } else {
+        m = eq_mask16(load16a(align_down(s, 16)), v) >> ((uintptr_t)s & 15);
+
+        if (m) {
+            size_t i = ctz(m);
+            return i < n ? (void *)(s + i) : 0;
+        }
+
+        if (n <= left) {
+            return 0;
+        }
+
+        if (n <= 16) {
+            /* the rest lies in the next page: its first aligned block */
+            m = eq_mask16(load16a(s + left), v);
+            return m && ctz(m) < n - left ? (void *)(s + left + ctz(m)) : 0;
+        }
+
+        return str_memchr_large(s, (u8)c, n);
     }
 
     if (n <= 32) {

@@ -119,23 +119,55 @@ size_t strlen_evex512(const char *str) {
 
 /* ---------------------------------------------------------------- memchr */
 
-/* n <= 64 in one masked load and compare (n == 0 loads nothing), 65..128
-   as the first and the last 64 bytes, the kernel beyond. */
+/* One 64-byte block first, whatever n: unaligned when the page allows, and
+   the index of the first match (64 for none) against n, which settles
+   everything up to 64 bytes without a masked load (one costs 1.1x against
+   glibc on Zen 5). Near the page end the aligned block around s, shifted,
+   settles what the page holds; the rest, if n reaches into the next page,
+   is its first aligned block or the kernel. Then the last 64 bytes for
+   65..128, the kernel beyond. */
 void *memchr_evex512(const void *p, int c, size_t n) {
     const u8 *s = (const u8 *)p;
     __m512i v = _mm512_set1_epi8((char)c);
     unsigned long long m;
 
-    if (n <= 64) {
-        __mmask64 k = low_mask64(n);
-        m = _mm512_mask_cmpeq_epi8_mask(k, mload64(s, k), v);
-        return m ? (void *)(s + ctz64(m)) : 0;
+    if (n == 0) {
+        return 0; /* the pointer may be unreadable */
     }
 
-    m = _mm512_cmpeq_epi8_mask(load512(s), v);
+    size_t left = page_left(s);
 
-    if (m) {
-        return (void *)(s + ctz64(m));
+    if (left >= 64) {
+        m = _mm512_cmpeq_epi8_mask(load512(s), v);
+
+        size_t i = _tzcnt_u64(m); /* 64 for no match: no branch on it, half the calls of a mix have none and would mispredict */
+
+        if (n <= 64) {
+            return i < n ? (void *)(s + i) : 0;
+        }
+
+        if (i < 64) {
+            return (void *)(s + i);
+        }
+    } else {
+        m = _mm512_cmpeq_epi8_mask(load512a(align_down(s, 64)), v) >> ((uintptr_t)s & 63);
+
+        if (m) {
+            size_t i = ctz64(m);
+            return i < n ? (void *)(s + i) : 0;
+        }
+
+        if (n <= left) {
+            return 0;
+        }
+
+        if (n <= 64) {
+            /* the rest lies in the next page: its first aligned block */
+            m = _mm512_cmpeq_epi8_mask(load512a(s + left), v);
+            return m && ctz64(m) < n - left ? (void *)(s + left + ctz64(m)) : 0;
+        }
+
+        return str_memchr_large(s, (u8)c, n);
     }
 
     if (n <= 128) {

@@ -306,33 +306,54 @@ void *memchr_large_avx2(const u8 *s, u8 c, size_t n) {
     return 0;
 }
 
-/* n <= 32 in one block: unaligned when the page allows, else the aligned
-   block around s shifted; the bits at n and beyond dropped. 33..64 as the
-   first and the last 32 bytes, the kernel beyond. */
+/* One 32-byte block first, whatever n: unaligned when the page allows, and
+   the index of the first match (32 for none) against n, which settles
+   everything up to 32 bytes. Near the page end the aligned block around s,
+   shifted, settles what the page holds; the rest, if n reaches into the
+   next page, is its first aligned block or the kernel. Then the last 32
+   bytes for 33..64, the kernel beyond. */
 void *memchr_avx2(const void *p, int c, size_t n) {
     const u8 *s = (const u8 *)p;
     __m256i v = _mm256_set1_epi8((char)c);
     unsigned m;
 
-    if (n <= 32) {
-        if (n == 0) {
-            return 0; /* the pointer may be unreadable */
-        }
-
-        if (page_left(s) >= 32) {
-            m = mask256(_mm256_cmpeq_epi8(load256(s), v));
-        } else {
-            m = mask256(_mm256_cmpeq_epi8(load256a(align_down(s, 32)), v)) >> ((uintptr_t)s & 31);
-        }
-
-        m = _bzhi_u32(m, (unsigned)n);
-        return m ? (void *)(s + ctz(m)) : 0;
+    if (n == 0) {
+        return 0; /* the pointer may be unreadable */
     }
 
-    m = mask256(_mm256_cmpeq_epi8(load256(s), v));
+    size_t left = page_left(s);
 
-    if (m) {
-        return (void *)(s + ctz(m));
+    if (left >= 32) {
+        m = mask256(_mm256_cmpeq_epi8(load256(s), v));
+
+        size_t i = _tzcnt_u32(m); /* 32 for no match: no branch on it, half the calls of a mix have none and would mispredict */
+
+        if (n <= 32) {
+            return i < n ? (void *)(s + i) : 0;
+        }
+
+        if (i < 32) {
+            return (void *)(s + i);
+        }
+    } else {
+        m = mask256(_mm256_cmpeq_epi8(load256a(align_down(s, 32)), v)) >> ((uintptr_t)s & 31);
+
+        if (m) {
+            size_t i = ctz(m);
+            return i < n ? (void *)(s + i) : 0;
+        }
+
+        if (n <= left) {
+            return 0;
+        }
+
+        if (n <= 32) {
+            /* the rest lies in the next page: its first aligned block */
+            m = mask256(_mm256_cmpeq_epi8(load256a(s + left), v));
+            return m && ctz(m) < n - left ? (void *)(s + left + ctz(m)) : 0;
+        }
+
+        return str_memchr_large(s, (u8)c, n);
     }
 
     if (n <= 64) {
