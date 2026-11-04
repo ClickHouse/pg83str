@@ -798,8 +798,8 @@ static inline __m256i same_nonzero_value(__m256i x, __m256i y) {
     return _mm256_and_si256(x, _mm256_cmpeq_epi8(x, y));
 }
 
-/* One single block first (with the caller's two, strings of up to 96 bytes
-   never touch a group). Then four blocks per step, as many steps as both
+/* Four blocks per step (the entry has done 128 bytes, so a string here is
+   longer and a group is the first step), as many steps as both
    pointers have room for in their pages, counted once per page; single
    blocks near a page end, words and bytes at the very end. The tests are
    exact, not both_in_page: on its false miss the walk to the page end would
@@ -808,17 +808,6 @@ static inline __m256i same_nonzero_value(__m256i x, __m256i y) {
    there: both sides unaligned run 2x slower on Broadwell, one side 1.2x. */
 int strcmp_tail_avx2(const u8 *a, const u8 *b) {
     int result;
-
-    if (both_have(a, b, 32)) {
-        unsigned m = mask256(same_and_nonzero(load256(a), load256(b))) ^ 0xffffffffu;
-
-        if (m) {
-            return byte_diff(a, b, ctz(m));
-        }
-
-        a += 32;
-        b += 32;
-    }
 
     for (;;) {
         size_t left = page_left(a) < page_left(b) ? page_left(a) : page_left(b);
@@ -877,10 +866,8 @@ int strcmp_tail_avx2(const u8 *a, const u8 *b) {
 
 /* One 32-byte block when both strings have the room in their pages: the
    lanes that are equal and not NUL, + 1, and the trailing zero count give
-   the first differing or terminating byte (all 32 wrap to 0). A second block
-   in line from the 32-byte boundary after the first, for the strings equal
-   so far (three more measured better up to 128 bytes and worse beyond); the
-   tail for the few longer still. */
+   the first differing or terminating byte (all 32 wrap to 0). Three more
+   blocks for the strings equal so far; the tail for the few longer still. */
 int strcmp_avx2(const char *left, const char *right) {
     const u8 *a = (const u8 *)left, *b = (const u8 *)right;
 
@@ -891,20 +878,37 @@ int strcmp_avx2(const char *left, const char *right) {
             return byte_diff(a, b, ctz(m));
         }
 
-        /* the second block from the 32-byte boundary after the first: up to 31
-           bytes compared again, and from here on a is aligned for the tail
-           (both sides unaligned run 2x slower on Broadwell, one side 1.2x) */
-        const u8 *next = align_down(a + 32, 32);
-        b += next - a;
-        a = next;
-
-        if (both_in_page(a, b, 32)) {
-            m = mask256(same_and_nonzero(load256(a), load256(b))) + 1;
+        /* three more blocks at fixed offsets from the start, one page test for
+           all of them: strings of up to 128 bytes end here. Single blocks
+           overlap under speculation; a group joined by a tree costs its whole
+           latency on the hit (2x on 65..127 bytes), and blocks moved to the
+           32-byte boundary first wait for that arithmetic. */
+        if (both_in_page(a, b, 128)) {
+            m = mask256(same_and_nonzero(load256(a + 32), load256(b + 32))) + 1;
 
             if (m) {
-                return byte_diff(a, b, ctz(m));
+                return byte_diff(a, b, 32 + ctz(m));
             }
 
+            m = mask256(same_and_nonzero(load256(a + 64), load256(b + 64))) + 1;
+
+            if (m) {
+                return byte_diff(a, b, 64 + ctz(m));
+            }
+
+            m = mask256(same_and_nonzero(load256(a + 96), load256(b + 96))) + 1;
+
+            if (m) {
+                return byte_diff(a, b, 96 + ctz(m));
+            }
+
+            /* the tail from the 32-byte boundary before a + 128: up to 31 bytes
+               compared again, a aligned for its groups (both sides unaligned
+               run 2x slower on Broadwell, one side 1.2x) */
+            const u8 *next = align_down(a + 128, 32);
+            b += next - a;
+            a = next;
+        } else {
             a += 32;
             b += 32;
         }

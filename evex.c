@@ -294,20 +294,39 @@ int strcmp_evex(const char *left, const char *right) {
                 return byte_diff(a, b, ctz(k));
             }
 
-            a += 32;
-            b += 32;
-
-            /* a second block in line for the strings equal so far (33..64 bytes
-               through the tail measured 1.3x slower) */
-
-            if (both_in_page(a, b, 32)) {
-                x = load256(a);
-                k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b)) + 1;
+            /* three more blocks at fixed offsets from the start, one page test for
+               all of them: strings of up to 128 bytes end here. Single blocks
+               overlap under speculation; a group joined by a tree costs its
+               whole latency on the hit (2x on 65..127 bytes), and blocks moved
+               to the 32-byte boundary first wait for that arithmetic (1.4x). */
+            if (both_in_page(a, b, 128)) {
+                x = load256(a + 32);
+                k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b + 32)) + 1;
 
                 if (k != 0) {
-                    return byte_diff(a, b, ctz(k));
+                    return byte_diff(a, b, 32 + ctz(k));
                 }
 
+                x = load256(a + 64);
+                k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b + 64)) + 1;
+
+                if (k != 0) {
+                    return byte_diff(a, b, 64 + ctz(k));
+                }
+
+                x = load256(a + 96);
+                k = _mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, load256(b + 96)) + 1;
+
+                if (k != 0) {
+                    return byte_diff(a, b, 96 + ctz(k));
+                }
+
+                /* the tail from the 32-byte boundary before a + 128: up to 31
+                   bytes compared again, a aligned for its groups */
+                const u8 *next = align_down(a + 128, 32);
+                b += next - a;
+                a = next;
+            } else {
                 a += 32;
                 b += 32;
             }
@@ -342,65 +361,69 @@ static inline unsigned stop_mask32(__m256i x, __m256i y) {
     return ~_mm256_mask_cmpeq_epi8_mask(_mm256_test_epi8_mask(x, x), x, y);
 }
 
-/* The strcmp tail with mask compares: a group of four blocks is four
-   compares to masks, a min tree and one test for a NUL, one kortest (the
-   AVX2 tail's and, min and movemask sequence measured 1.3x slower on
-   Skylake-SP). a 32-aligned and 128 bytes from each pointer inside its page
-
-   for a group, b unaligned; elsewhere one masked step up to the next 32-byte
+/* The strcmp tail with mask compares: a group of four blocks is xors with
+   b, a min tree, and one masked test (the AVX2 tail's and, min and movemask
+   sequence measured 1.3x slower on Skylake-SP, four compares to masks and
+   a kortest 1.5x). a 32-aligned and 128 bytes from each pointer inside its
+   page for a group, b unaligned; elsewhere one masked step up to the next 32-byte
    boundary of a or the page end of b, whichever is nearer: the lanes beyond
    it are zero, so the first stop is at most n, and a never-touched next
    page cannot fault. No byte loop at a page end. */
 int strcmp_tail_evex(const u8 *a, const u8 *b) {
-    /* one unaligned block first (with the entry's two, strings of up to 96
-       bytes end here) */
-
-    if (page_left(a) >= 32 && page_left(b) >= 32) {
-        unsigned m = stop_mask32(load256(a), load256(b));
-
-        if (m) {
-            return byte_diff(a, b, ctz(m));
-        }
-
-        a += 32;
-        b += 32;
-    }
-
     for (;;) {
-        if (((uintptr_t)a & 31) == 0 && page_left(a) >= 128 && page_left(b) >= 128) {
-            __m256i x0 = load256a(a), x1 = load256a(a + 32), x2 = load256a(a + 64), x3 = load256a(a + 96);
-            __m256i lo = _mm256_min_epu8(_mm256_min_epu8(x0, x1), _mm256_min_epu8(x2, x3));
-            unsigned k = _mm256_cmpneq_epi8_mask(x0, load256(b)) | _mm256_cmpneq_epi8_mask(x1, load256(b + 32)) |
-                         _mm256_cmpneq_epi8_mask(x2, load256(b + 64)) | _mm256_cmpneq_epi8_mask(x3, load256(b + 96)) | _mm256_testn_epi8_mask(lo, lo);
+        if (((uintptr_t)a & 31) == 0) {
+            size_t left = page_left(a) < page_left(b) ? page_left(a) : page_left(b);
 
-            if (k) {
-                unsigned m = stop_mask32(x0, load256(b));
+            if (left >= 128) {
+                /* groups of four blocks while they fit in both pages (glibc's
+                   loop): the or of the four xors with b (loads folded, the
+                   last three joined by ternary logic) and the minimum of a's
+                   four blocks; one test of the minimum for a NUL masks the
+                   test of the or for a difference, so one mask and one
+                   increment per group decide. On a hit the xors are at hand:
+                   the first block with a lane that is NUL or differs. */
+                size_t groups = left / 128;
 
-                if (m) {
-                    return byte_diff(a, b, ctz(m));
-                }
+                do {
+                    __m256i x0 = load256a(a), x1 = load256a(a + 32), x2 = load256a(a + 64), x3 = load256a(a + 96);
+                    __m256i d0 = _mm256_xor_si256(x0, load256(b)), d1 = _mm256_xor_si256(x1, load256(b + 32));
+                    __m256i d2 = _mm256_xor_si256(x2, load256(b + 64)), d3 = _mm256_xor_si256(x3, load256(b + 96));
+                    __m256i lo = _mm256_min_epu8(_mm256_min_epu8(x0, x1), _mm256_min_epu8(x2, x3));
+                    __m256i d = _mm256_ternarylogic_epi32(d0, d1, _mm256_ternarylogic_epi32(d2, d3, d0, 0xfe), 0xfe);
+                    unsigned k = _mm256_mask_testn_epi8_mask(_mm256_test_epi8_mask(lo, lo), d, d) + 1;
 
-                m = stop_mask32(x1, load256(b + 32));
+                    if (k) {
+                        unsigned m = _mm256_mask_testn_epi8_mask(_mm256_test_epi8_mask(x0, x0), d0, d0) + 1;
 
-                if (m) {
-                    return byte_diff(a, b, 32 + ctz(m));
-                }
+                        if (m) {
+                            return byte_diff(a, b, ctz(m));
+                        }
 
-                m = stop_mask32(x2, load256(b + 64));
+                        m = _mm256_mask_testn_epi8_mask(_mm256_test_epi8_mask(x1, x1), d1, d1) + 1;
 
-                if (m) {
-                    return byte_diff(a, b, 64 + ctz(m));
-                }
+                        if (m) {
+                            return byte_diff(a, b, 32 + ctz(m));
+                        }
 
-                return byte_diff(a, b, 96 + ctz(stop_mask32(x3, load256(b + 96))));
+                        m = _mm256_mask_testn_epi8_mask(_mm256_test_epi8_mask(x2, x2), d2, d2) + 1;
+
+                        if (m) {
+                            return byte_diff(a, b, 64 + ctz(m));
+                        }
+
+                        return byte_diff(a, b, 96 + ctz(_mm256_mask_testn_epi8_mask(_mm256_test_epi8_mask(x3, x3), d3, d3) + 1));
+                    }
+
+                    a += 128;
+                    b += 128;
+                } while (--groups);
+
+                continue;
             }
-
-            a += 128;
-            b += 128;
-            continue;
         }
 
-        size_t n = 32 - ((uintptr_t)a & 31); /* within a's page too */
+        /* a masked step to a's next 32-byte boundary, within b's page too */
+        size_t n = 32 - ((uintptr_t)a & 31);
 
         if (page_left(b) < n) {
             n = page_left(b);
