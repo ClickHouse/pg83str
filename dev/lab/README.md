@@ -14,6 +14,8 @@ ix run lib/c bld/compiler -- ./build lab            # .build/lab/kbench, .build/
 dev/lab/run.py --tag r1 -- --regimes thr,lat        # local, lab2, lab3 in parallel: .lab/r1/<host>/, the clock held
 dev/lab/run.py --tag m1 --hosts lab2 --clock free -- --prims none --no-matrix --mixed --table 'old=evex:strlen=strlen_evex_jcc'
 dev/lab/report.py r1 --regime lat                   # winners per size bucket, where ours lose
+dev/lab/run.py --tag lib-1 -- --prims none --no-matrix --libs   # whole libraries on the workload (repeat: lib-2..5)
+dev/lab/libs.py 'lib-*'                             # the platform x library table, glibc = 1
 ix run lib/c bld/compiler -- ./build lab_canary     # kernels broken on purpose: every one must be rejected
 ```
 
@@ -82,6 +84,12 @@ caches all of it by content.
   whole tables: every configuration of ours, glibc as dispatched, and
   `--table NAME=CONFIG:SLOT=FN,...` (a configuration with slots replaced).
   A clock license one function takes slows the others, which only this shows.
+- **Whole libraries** (`--libs`, the workload stand of the old bench.c
+  `--workload`): ours as dispatched, glibc as dispatched, FreeBSD, LLVM libc
+  at the host's level, musl, asmlib, each with its own function for every
+  primitive, on the mixed trace and every function's trace; noop measures
+  the stand's own cost per call, which `libs.py` subtracts. A library runs a
+  trace only with a valid function for every primitive in it.
 - **The core's clock** of every trace pass from APERF/MPERF where
   `/dev/cpu/N/msr` can be read (root: the lab hosts; here run.py uses sudo):
   turbo and the AVX-512 licenses in numbers (the `ghz` column).

@@ -1361,7 +1361,7 @@ static void setup(Cell *c, const Align *al) {
 }
 
 static int want_prim[P_N];
-static int want_mixed;
+static int want_mixed, want_libs;
 static const char *kfilter, *kexclude;
 
 static int kernel_wanted(const Kernel *k) {
@@ -1501,8 +1501,9 @@ __attribute__((noinline)) static uint64_t trace_run(const Kernel *k, const Rec *
    glibc as its IFUNCs chose, and --table NAME=CONFIG:SLOT=FN,... */
 typedef struct {
     char name[64];
-    struct str_table t;
+    struct str_table t; /* public slots only for the other libraries; a null one: the library has no such function */
     int ours;
+    int on; /* runs the current trace: has every function it calls */
     double s[64], ghz[64];
     size_t iters;
     uint64_t sum;
@@ -1512,6 +1513,95 @@ static Table tables[32];
 static int ntables;
 static const char *table_specs[16];
 static int ntable_specs;
+
+/* --libs: whole libraries on the workload (the stand bench.c --workload had):
+   each library's own function for every primitive, as its dispatch or alias
+   resolves it here (FreeBSD's names are the variants its archlevel picks, LLVM
+   libc the build for the host's level, asmlib its dispatchers); a function it
+   lacks, or one validation rejected, leaves the traces calling it out. noop,
+   functions that return at once, measures the stand's own cost per call: the
+   summary subtracts it. */
+static void *noop_cpy(void *d, const void *s, size_t n) {
+    (void)s;
+    (void)n;
+    return d;
+}
+
+static void *noop_set(void *d, int c, size_t n) {
+    (void)c;
+    (void)n;
+    return d;
+}
+
+static int noop_cmp(const void *a, const void *b, size_t n) {
+    (void)a;
+    (void)b;
+    (void)n;
+    return 0;
+}
+
+static size_t noop_len(const char *s) {
+    (void)s;
+    return 0;
+}
+
+static char *noop_scpy(char *d, const char *s) {
+    (void)s;
+    return d;
+}
+
+static int noop_scmp(const char *a, const char *b) {
+    (void)a;
+    (void)b;
+    return 0;
+}
+
+static size_t noop_spn(const char *s, const char *set) {
+    (void)s;
+    (void)set;
+    return 0;
+}
+
+static void *noop_chr(const void *s, int c, size_t n) {
+    (void)s;
+    (void)c;
+    (void)n;
+    return 0;
+}
+
+static void *lib_fn(const char *prefix, int p) {
+    char want[2][96];
+    snprintf(want[0], sizeof want[0], "%s%s", prefix, PN[p]);
+    snprintf(want[1], sizeof want[1], "%s__%s", prefix, PN[p]); /* FreeBSD's __strcspn, __memchr */
+
+    for (unsigned i = 0; i < kl_ndefs; i++) {
+        if (kl_defs[i].prim == p && (!strcmp(kl_defs[i].name, want[0]) || !strcmp(kl_defs[i].name, want[1]))) {
+            for (int j = 0; j < NK; j++) {
+                if (K[j].prim == p && K[j].fn == kl_defs[i].fn) {
+                    return K[j].status == 1 ? kl_defs[i].fn : 0;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+static void library(const char *name, const char *prefix, int noop) {
+    Table *x = &tables[ntables++];
+    snprintf(x->name, sizeof x->name, "%s", name);
+
+    if (noop) {
+        void *const f[] = {(void *)noop_cpy, (void *)noop_cpy, (void *)noop_set, (void *)noop_cmp, (void *)noop_len, (void *)noop_scpy,
+                           (void *)noop_scpy, (void *)noop_scmp, (void *)noop_spn, (void *)noop_spn, (void *)noop_chr};
+        memcpy(&x->t, f, sizeof f);
+        return;
+    }
+
+    for (int p = 0; p < P_N; p++) {
+        ((void **)&x->t)[p] = lib_fn(prefix, p);
+    }
+}
 
 static void build_tables(void) {
     for (unsigned c = 0; c < str_nconfigs; c++) {
@@ -1534,6 +1624,14 @@ static void build_tables(void) {
                          resolved_glibc((void *)strlen), resolved_glibc((void *)strcpy), resolved_glibc((void *)strcat), resolved_glibc((void *)strcmp),
                          resolved_glibc((void *)strspn), resolved_glibc((void *)strcspn), resolved_glibc((void *)memchr)};
     memcpy(&g->t, pub, sizeof pub);
+
+    if (want_libs) {
+        library("freebsd", "fbsd_", 0);
+        library("musl", "musl_", 0);
+        library("llvm", host & F_AVX512 ? "llvm_v4_" : host & F_AVX2 ? "llvm_v3_" : "llvm_v2_", 0);
+        library("asmlib", "asm_A_", 0);
+        library("noop", 0, 1);
+    }
 
     for (int i = 0; i < ntable_specs; i++) {
         char buf[512], *sv;
@@ -1609,11 +1707,38 @@ __attribute__((noinline)) static uint64_t mixed_run(const struct str_table *t, c
     return sum;
 }
 
-static void mixed(const Rec *recs, uint64_t count, u8x *src, u8x *dst, const u8x *image, size_t dsz, int passes) {
+/* The functions a record calls, as public slots of a table. */
+static int rec_slot(int op) {
+    static const int slot[] = {[W_MEMCPY] = P_MEMCPY, [W_MEMMOVE] = P_MEMMOVE, [W_MEMMOVE_OVL] = P_MEMMOVE, [W_MEMSET] = P_MEMSET, [W_MEMCMP] = P_MEMCMP,
+                               [W_STRLEN] = P_STRLEN, [W_STRCPY] = P_STRCPY, [W_STRCAT] = P_STRCAT, [W_STRCMP] = P_STRCMP, [W_STRSPN] = P_STRSPN,
+                               [W_STRCSPN] = P_STRCSPN, [W_MEMCHR] = P_MEMCHR};
+    return slot[op];
+}
+
+static void tables_trace(const char *name, const Rec *recs, uint64_t count, u8x *src, u8x *dst, const u8x *image, size_t dsz, int passes) {
     time_t t0 = time(0);
+    unsigned used = 0;
+    int ref = -1, non = 0;
+
+    for (uint64_t i = 0; i < count; i++) {
+        used |= 1u << rec_slot(recs[i].op);
+    }
 
     for (int i = 0; i < ntables; i++) {
         Table *x = &tables[i];
+        x->on = 1;
+
+        for (int p = 0; p < P_N; p++) {
+            if ((used >> p & 1) && !((void **)&x->t)[p]) {
+                x->on = 0;
+            }
+        }
+
+        if (!x->on) {
+            continue;
+        }
+
+        non++;
 
         if (x->ours) {
             str_table = x->t;
@@ -1624,15 +1749,19 @@ static void mixed(const Rec *recs, uint64_t count, u8x *src, u8x *dst, const u8x
         x->sum = mixed_run(&x->t, recs, count, src, dst);
         double est = (double)(now() - a) / (double)count;
         x->iters = est * count > 1e7 ? 1 : (size_t)(1e7 / (est * count)) + 1;
-    }
 
-    for (int i = 1; i < ntables; i++) {
-        if (tables[i].sum != tables[0].sum) {
-            fprintf(stderr, "MIXED: %s checksum %" PRIu64 " != %s %" PRIu64 "\n", tables[i].name, tables[i].sum, tables[0].name, tables[0].sum);
+        if (!strcmp(x->name, "glibc/dispatch")) {
+            ref = i;
         }
     }
 
-    int order[32], np = passes < 63 ? passes : 63;
+    for (int i = 0; i < ntables; i++) {
+        if (tables[i].on && ref >= 0 && strcmp(tables[i].name, "noop") && tables[i].sum != tables[ref].sum) {
+            fprintf(stderr, "TABLES %s: %s checksum %" PRIu64 " != glibc %" PRIu64 "\n", name, tables[i].name, tables[i].sum, tables[ref].sum);
+        }
+    }
+
+    int order[64], np = passes < 63 ? passes : 63;
 
     for (int r = 0; r < np; r++) {
         for (int i = 0; i < ntables; i++) {
@@ -1647,6 +1776,10 @@ static void mixed(const Rec *recs, uint64_t count, u8x *src, u8x *dst, const u8x
 
         for (int i = 0; i < ntables; i++) {
             Table *x = &tables[order[i]];
+
+            if (!x->on) {
+                continue;
+            }
 
             if (x->ours) {
                 str_table = x->t;
@@ -1666,16 +1799,20 @@ static void mixed(const Rec *recs, uint64_t count, u8x *src, u8x *dst, const u8x
     }
 
     for (int i = 0; i < ntables; i++) {
+        if (!tables[i].on) {
+            continue;
+        }
+
         double v[64], g[64];
         memcpy(v, tables[i].s, np * sizeof *v);
         memcpy(g, tables[i].ghz, np * sizeof *g);
         qsort(v, np, sizeof *v, cmp_double);
         qsort(g, np, sizeof *g, cmp_double);
-        printf("mixed,trace:mixed,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f\n", count, tables[i].name, v[0], v[np / 2], tables[i].iters, g[np / 2]);
+        printf("lib,trace:%s,trace,%" PRIu64 ",-,%s,%.4f,%.4f,%zu,%.3f\n", name, count, tables[i].name, v[0], v[np / 2], tables[i].iters, g[np / 2]);
     }
 
     fflush(stdout);
-    fprintf(stderr, "trace mixed: %d tables, %ld s\n", ntables, (long)(time(0) - t0));
+    fprintf(stderr, "trace %s: %d tables, %ld s\n", name, non, (long)(time(0) - t0));
 }
 
 static int trace_prim(const char *name) {
@@ -1716,8 +1853,8 @@ static void traces(const char *path, int passes) {
         CHECK(recs && fread(recs, sizeof *recs, count, f) == count);
         int p = trace_prim(name);
 
-        if (!strcmp(name, "mixed") && want_mixed && count) {
-            mixed(recs, count, src, dst, image, dsz, passes);
+        if (count && (want_libs || (want_mixed && !strcmp(name, "mixed")))) {
+            tables_trace(name, recs, count, src, dst, image, dsz, passes);
         }
 
         if (p < 0 || !want_prim[p] || !count) {
@@ -1914,7 +2051,7 @@ static void meta(const char *path) {
 static void usage(void) {
     fprintf(stderr, "kbench [--cpu N] [--samples S] [--target-us T] [--prims list] [--kernels substrings] [--exclude substrings]\n"
                     "       [--sizes quick|full|list] [--aligns2 list] [--aligns1 list] [--regimes thr,lat] [--trace FILE] [--passes P]\n"
-                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--no-matrix] [--mixed [--table NAME=CONFIG:SLOT=FN,...]]\n");
+                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--no-matrix] [--mixed|--libs [--table NAME=CONFIG:SLOT=FN,...]]\n");
     exit(2);
 }
 
@@ -1954,6 +2091,8 @@ int main(int argc, char **argv) {
             table_specs[ntable_specs++] = v;
         } else if (!strcmp(a, "--mixed")) {
             want_mixed = 1;
+        } else if (!strcmp(a, "--libs")) {
+            want_libs = 1;
         } else if (OPT("--passes")) {
             passes = atoi(v);
         } else if (OPT("--jobs")) {
@@ -2070,7 +2209,7 @@ int main(int argc, char **argv) {
     }
 
     if (trace) {
-        if (want_mixed) {
+        if (want_mixed || want_libs) {
             build_tables();
         }
 
