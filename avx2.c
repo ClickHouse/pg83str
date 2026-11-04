@@ -756,39 +756,36 @@ int memcmp_large_avx2(const u8 *a, const u8 *b, size_t n) {
    block and the last 64 bytes for 65..128, the kernel beyond. */
 int memcmp_avx2(const void *pa, const void *pb, size_t n) {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
-    unsigned m;
 
     if (n - 1 < 32) { /* 1..32: with n == 0 the pointers may be unreadable (the end of a buffer) */
 
         if (__builtin_expect(both_in_page(a, b, 32), 1)) {
-            m = _bzhi_u32(mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1, (unsigned)n);
-            return m ? byte_diff(a, b, ctz(m)) : 0;
+            return memcmp_answer(a, b, ~mask256(_mm256_cmpeq_epi8(load256(a), load256(b))), n);
         }
 
         return n <= 16 ? memcmp_le16(a, b, n) : memcmp_17_32(a, b, n);
     }
 
     if (n > 32) {
-        m = mask256(_mm256_cmpeq_epi8(load256(a), load256(b))) + 1;
-
-        if (m) {
-            return byte_diff(a, b, ctz(m));
-        }
+        /* the answer from all the blocks' masks at once, no branch on the data
+           (memcmp_answer); a branch only for the kernel beyond 128 */
+        uint64_t lo = (uint32_t)~mask256(_mm256_cmpeq_epi8(load256(a), load256(b)));
 
         if (n <= 64) {
-            m = mask256(_mm256_cmpeq_epi8(load256(a + n - 32), load256(b + n - 32))) + 1;
-            return m ? byte_diff(a, b, n - 32 + ctz(m)) : 0;
+            lo |= (uint64_t)(uint32_t)~mask256(_mm256_cmpeq_epi8(load256(a + n - 32), load256(b + n - 32))) << (n - 32);
+            return memcmp_answer(a, b, lo, n);
         }
 
-        m = mask256(_mm256_cmpeq_epi8(load256(a + 32), load256(b + 32))) + 1;
-
-        if (m) {
-            return byte_diff(a, b, 32 + ctz(m));
-        }
+        lo |= (uint64_t)(uint32_t)~mask256(_mm256_cmpeq_epi8(load256(a + 32), load256(b + 32))) << 32;
 
         if (n <= 128) {
-            int result;
-            return pair_differs(a, b, n - 64, n - 32, &result) ? result : 0;
+            uint64_t hi = (uint32_t)~mask256(_mm256_cmpeq_epi8(load256(a + n - 64), load256(b + n - 64))) |
+                          (uint64_t)(uint32_t)~mask256(_mm256_cmpeq_epi8(load256(a + n - 32), load256(b + n - 32))) << 32;
+            return memcmp_answer2(a, b, lo, hi, n);
+        }
+
+        if (lo) {
+            return byte_diff(a, b, (size_t)__builtin_ctzll(lo));
         }
 
         return str_memcmp_large(a, b, n);

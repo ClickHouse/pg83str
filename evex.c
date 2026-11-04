@@ -249,40 +249,34 @@ int memcmp_evex(const void *pa, const void *pb, size_t n) {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
 
     if (n <= 32) {
-        /* one masked 256-bit compare for everything up to 32 bytes; n == 0 loads nothing */
-        __mmask32 k = low_mask32(n);
-        unsigned m = _mm256_mask_cmpneq_epu8_mask(k, _mm256_maskz_loadu_epi8(k, a), _mm256_maskz_loadu_epi8(k, b));
-        return m ? byte_diff(a, b, ctz(m)) : 0;
-    }
-
-    /* the first block, then the last 32 bytes for 33..64, the second block
-       and the last 64 bytes for 65..128, the kernel beyond */
-    unsigned m = _mm256_cmpneq_epu8_mask(load256(a), load256(b));
-
-    if (m) {
-        return byte_diff(a, b, ctz(m));
-    }
-
-    if (n <= 64) {
-        m = _mm256_cmpneq_epu8_mask(load256(a + n - 32), load256(b + n - 32));
-        return m ? byte_diff(a, b, n - 32 + ctz(m)) : 0;
-    }
-
-    m = _mm256_cmpneq_epu8_mask(load256(a + 32), load256(b + 32));
-
-    if (m) {
-        return byte_diff(a, b, 32 + ctz(m));
-    }
-
-    if (n <= 128) {
-        m = _mm256_cmpneq_epu8_mask(load256(a + n - 64), load256(b + n - 64));
-
-        if (m) {
-            return byte_diff(a, b, n - 64 + ctz(m));
+        if (n == 0) {
+            return 0;
         }
 
-        m = _mm256_cmpneq_epu8_mask(load256(a + n - 32), load256(b + n - 32));
-        return m ? byte_diff(a, b, n - 32 + ctz(m)) : 0;
+        /* one masked 256-bit compare for everything up to 32 bytes, the answer
+           without a branch on it (memcmp_answer) */
+        __mmask32 k = low_mask32(n);
+        return memcmp_answer(a, b, _mm256_mask_cmpneq_epu8_mask(k, _mm256_maskz_loadu_epi8(k, a), _mm256_maskz_loadu_epi8(k, b)), n);
+    }
+
+    /* 33..128: all the blocks' masks, then one answer; the kernel beyond */
+    uint64_t lo = _mm256_cmpneq_epu8_mask(load256(a), load256(b));
+
+    if (n <= 64) {
+        lo |= (uint64_t)_mm256_cmpneq_epu8_mask(load256(a + n - 32), load256(b + n - 32)) << (n - 32);
+        return memcmp_answer(a, b, lo, n);
+    }
+
+    lo |= (uint64_t)_mm256_cmpneq_epu8_mask(load256(a + 32), load256(b + 32)) << 32;
+
+    if (n <= 128) {
+        uint64_t hi = _mm256_cmpneq_epu8_mask(load256(a + n - 64), load256(b + n - 64)) |
+                      (uint64_t)_mm256_cmpneq_epu8_mask(load256(a + n - 32), load256(b + n - 32)) << 32;
+        return memcmp_answer2(a, b, lo, hi, n);
+    }
+
+    if (lo) {
+        return byte_diff(a, b, (size_t)__builtin_ctzll(lo));
     }
 
     return str_memcmp_large(a, b, n);

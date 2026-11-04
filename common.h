@@ -31,6 +31,12 @@
 typedef unsigned char u8;
 
 #define NOINLINE __attribute__((noinline))
+/* A condition the branch predictor cannot learn: a select (cmov), not a branch. */
+#if defined(__has_builtin) && __has_builtin(__builtin_unpredictable)
+#define UNPREDICTABLE(x) __builtin_unpredictable(x)
+#else
+#define UNPREDICTABLE(x) (x)
+#endif
 #define ALWAYS_INLINE static inline __attribute__((always_inline))
 #ifdef __clang__
     #define NO_UNROLL _Pragma("clang loop unroll(disable)")
@@ -325,6 +331,21 @@ static inline int byte_diff(const u8 *a, const u8 *b, size_t i) {
     return (int)a[i] - (int)b[i];
 }
 
+/* memcmp's answer from the mask of the differing bytes of [0, n), 1 <= n <=
+   64 (bit i: byte i differs; bits at n and beyond do not matter): the first
+   difference, or byte n - 1 when there is none, which is equal then. No
+   branch on the data: half the comparisons of a workload come out equal,
+   and a branch on that is a coin toss (FreeBSD's memcmp does the same). */
+static inline int memcmp_answer(const u8 *a, const u8 *b, uint64_t m, size_t n) {
+    return byte_diff(a, b, (size_t)__builtin_ctzll(m | 1ull << (n - 1)));
+}
+
+/* 65..128 bytes: lo for bytes 0..63, hi for bytes n - 64..n - 1. */
+static inline int memcmp_answer2(const u8 *a, const u8 *b, uint64_t lo, uint64_t hi, size_t n) {
+    size_t lo_i = (size_t)__builtin_ctzll(lo | 1ull << 63), hi_i = n - 64 + (size_t)__builtin_ctzll(hi | 1ull << 63);
+    return byte_diff(a, b, UNPREDICTABLE(lo != 0) ? lo_i : hi_i);
+}
+
 static inline void rep_movsb(u8 *d, const u8 *s, size_t n) {
     __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
 }
@@ -416,8 +437,7 @@ static inline int memcmp_le16(const u8 *a, const u8 *b, size_t n) {
     }
 
     if (both_in_page(a, b, 16)) {
-        unsigned i = ctz(ne_mask16(load16(a), load16(b)) | 0x10000u);
-        return i < n ? byte_diff(a, b, i) : 0;
+        return memcmp_answer(a, b, ne_mask16(load16(a), load16(b)), n);
     }
 
     for (size_t i = 0; i < n; i++) {
@@ -429,40 +449,18 @@ static inline int memcmp_le16(const u8 *a, const u8 *b, size_t n) {
     return 0;
 }
 
-/* 17..32: two overlapping blocks. */
+/* 17..32: two overlapping blocks, their masks in one at their positions. */
 static inline int memcmp_17_32(const u8 *a, const u8 *b, size_t n) {
-    unsigned m = ne_mask16(load16(a), load16(b));
-
-    if (m) {
-        return byte_diff(a, b, ctz(m));
-    }
-
-    m = ne_mask16(load16(a + n - 16), load16(b + n - 16));
-    return m ? byte_diff(a, b, n - 16 + ctz(m)) : 0;
+    uint64_t m = ne_mask16(load16(a), load16(b)) | (uint64_t)ne_mask16(load16(a + n - 16), load16(b + n - 16)) << (n - 16);
+    return memcmp_answer(a, b, m, n);
 }
 
 /* 33..64: four blocks, two from each end. */
 static inline int memcmp_33_64(const u8 *a, const u8 *b, size_t n) {
-    unsigned m = ne_mask16(load16(a), load16(b));
-
-    if (m) {
-        return byte_diff(a, b, ctz(m));
-    }
-
-    m = ne_mask16(load16(a + 16), load16(b + 16));
-
-    if (m) {
-        return byte_diff(a, b, 16 + ctz(m));
-    }
-
-    m = ne_mask16(load16(a + n - 32), load16(b + n - 32));
-
-    if (m) {
-        return byte_diff(a, b, n - 32 + ctz(m));
-    }
-
-    m = ne_mask16(load16(a + n - 16), load16(b + n - 16));
-    return m ? byte_diff(a, b, n - 16 + ctz(m)) : 0;
+    uint64_t m = ne_mask16(load16(a), load16(b)) | (uint64_t)ne_mask16(load16(a + 16), load16(b + 16)) << 16 |
+                 (uint64_t)ne_mask16(load16(a + n - 32), load16(b + n - 32)) << (n - 32) |
+                 (uint64_t)ne_mask16(load16(a + n - 16), load16(b + n - 16)) << (n - 16);
+    return memcmp_answer(a, b, m, n);
 }
 
 /* First 16 bytes of strcmp when both strings have room in their pages.

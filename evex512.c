@@ -309,21 +309,24 @@ int memcmp_evex512(const void *pa, const void *pb, size_t n) {
     unsigned long long m;
 
     if (n <= 64) {
-        __mmask64 k = low_mask64(n); /* n == 0 loads nothing */
-        m = _mm512_mask_cmpneq_epu8_mask(k, mload64(a, k), mload64(b, k));
-        return m ? byte_diff(a, b, ctz64(m)) : 0;
+        if (n == 0) {
+            return 0;
+        }
+
+        /* one masked compare, the answer without a branch on it (memcmp_answer) */
+        __mmask64 k = low_mask64(n);
+        return memcmp_answer(a, b, _mm512_mask_cmpneq_epu8_mask(k, mload64(a, k), mload64(b, k)), n);
     }
 
-    /* the first block, then the last 64 bytes for 65..128, the kernel beyond */
+    /* the first block and, for 65..128, the last 64 bytes: one answer; the kernel beyond */
     m = _mm512_cmpneq_epu8_mask(load512(a), load512(b));
+
+    if (n <= 128) {
+        return memcmp_answer2(a, b, m, _mm512_cmpneq_epu8_mask(load512(a + n - 64), load512(b + n - 64)), n);
+    }
 
     if (m) {
         return byte_diff(a, b, ctz64(m));
-    }
-
-    if (n <= 128) {
-        m = _mm512_cmpneq_epu8_mask(load512(a + n - 64), load512(b + n - 64));
-        return m ? byte_diff(a, b, n - 64 + ctz64(m)) : 0;
     }
 
     return str_memcmp_large(a, b, n);

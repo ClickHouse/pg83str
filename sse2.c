@@ -293,12 +293,21 @@ int memcmp_large_sse2(const u8 *a, const u8 *b, size_t n) {
 int memcmp_sse2(const void *pa, const void *pb, size_t n) {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
 
-    if (n <= 16) {
-        return memcmp_le16(a, b, n);
+    /* 1..32 in one path: two blocks from the start when both have the room in
+       their pages, the answer without a branch on it; a branch on the size
+       class is a branch the workload's sizes make unpredictable */
+
+    if (n - 1 < 32) {
+        if (__builtin_expect(both_in_page(a, b, 32), 1)) {
+            uint64_t m = ne_mask16(load16(a), load16(b)) | (uint64_t)ne_mask16(load16(a + 16), load16(b + 16)) << 16;
+            return memcmp_answer(a, b, m, n);
+        }
+
+        return n <= 16 ? memcmp_le16(a, b, n) : memcmp_17_32(a, b, n);
     }
 
-    if (n <= 32) {
-        return memcmp_17_32(a, b, n);
+    if (n == 0) {
+        return 0;
     }
 
     if (n <= 64) {
@@ -306,24 +315,22 @@ int memcmp_sse2(const void *pa, const void *pb, size_t n) {
     }
 
     /* the first 64 bytes; then the last 64 for 65..128, the kernel beyond */
-    for (size_t i = 0; i < 64; i += 16) {
-        unsigned m = ne_mask16(load16(a + i), load16(b + i));
+    uint64_t lo = 0, hi = 0;
 
-        if (m) {
-            return byte_diff(a, b, i + ctz(m));
-        }
+    for (size_t i = 0; i < 64; i += 16) {
+        lo |= (uint64_t)ne_mask16(load16(a + i), load16(b + i)) << i;
     }
 
     if (n <= 128) {
-        for (size_t i = n - 64; i < n; i += 16) {
-            unsigned m = ne_mask16(load16(a + i), load16(b + i));
-
-            if (m) {
-                return byte_diff(a, b, i + ctz(m));
-            }
+        for (size_t i = 0; i < 64; i += 16) {
+            hi |= (uint64_t)ne_mask16(load16(a + n - 64 + i), load16(b + n - 64 + i)) << i;
         }
 
-        return 0;
+        return memcmp_answer2(a, b, lo, hi, n);
+    }
+
+    if (lo) {
+        return byte_diff(a, b, (size_t)__builtin_ctzll(lo));
     }
 
     return str_memcmp_large(a, b, n);
