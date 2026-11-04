@@ -1106,15 +1106,16 @@ static NOINLINE void *strcpy_long(u8 *d, const u8 *s, const u8 *a) {
     return str_strcpy_long(d, s, a);
 }
 
-/* One 32-byte block first, as in strlen_avx2: unaligned when the page allows,
-   the aligned block around s shifted otherwise. A string ending in it is
-   copied in one pass. Then the aligned block after the known bytes, in line:
-   a string ending there is two 32-byte stores, the head and the last 32
-   bytes (strings of 33..64 bytes are four in five of the longer ones). The
-   rest go to the long copy. */
-char *strcpy_avx2(char *dst, const char *src) {
-    const u8 *s = (const u8 *)src;
-    u8 *d = (u8 *)dst;
+/* strcpy up to 128 bytes past the 32-byte boundary after s: 0 when done,
+   else the boundary a with no NUL in [s, a), for strcpy_long. The first 32
+   bytes as one block (copy_small when the NUL is in them); then aligned
+   blocks, each stored at its offset in d as soon as it is found free of the
+   NUL (whole, so the string's bytes only), and the block with the NUL by
+   the 32 bytes ending at it: no copy loop after the search, whose count of
+   blocks the lengths mispredict (glibc's way; Broadwell, the mix: ours
+   with glibc's strcpy 1.3 ns a call of it faster before). Strings of up to
+   128 bytes end here (through strcpy_long they cost 1.4-1.8x). */
+ALWAYS_INLINE const u8 *strcpy_short(u8 *d, const u8 *s) {
     unsigned m;
 
     if (page_left(s) >= 32) {
@@ -1125,15 +1126,12 @@ char *strcpy_avx2(char *dst, const char *src) {
 
     if (m) {
         copy_small(d, s, ctz(m) + 1);
-        return dst;
+        return 0;
     }
 
-    /* no NUL up to the 32-byte boundary after s: the block there, then two
-       more aligned blocks in line (strings of up to 128 bytes are copied
-       here as whole 32-byte blocks and the last 32 bytes; through the kernel
-       they cost 1.4-1.8x), the long copy beyond */
     const u8 *a = align_down(s, 32) + 32;
-    m = mask256(eq_zero(load256a(a)));
+    __m256i y = load256a(a);
+    m = mask256(eq_zero(y));
 
     if (m) {
         size_t n = (size_t)(a - s) + ctz(m) + 1; /* 2..64 */
@@ -1146,27 +1144,37 @@ char *strcpy_avx2(char *dst, const char *src) {
             store256(d + n - 32, tail);
         }
 
-        return dst;
+        return 0;
     }
+
+    store256(d, load256(s)); /* [s, a + 32) has no NUL */
+    store256(d + (a - s), y);
 
     for (int k = 0; k < 2; k++) {
         a += 32;
-        m = mask256(eq_zero(load256a(a)));
+        y = load256a(a);
+        m = mask256(eq_zero(y));
 
         if (m) {
-            size_t n = (size_t)(a - s) + ctz(m) + 1; /* 34..128 */
-            size_t off = 0;
-
-            for (; off + 32 < n; off += 32) {
-                store256(d + off, load256(s + off)); /* within [s, a + 32) */
-            }
-
+            size_t n = (size_t)(a - s) + ctz(m) + 1; /* 34..128: the blocks before are stored */
             store256(d + n - 32, load256(s + n - 32));
-            return dst;
+            return 0;
         }
+
+        store256(d + (a - s), y);
     }
 
-    return strcpy_long(d, s, a + 32); /* [s, a + 32) has no NUL */
+    return a + 32;
+}
+
+char *strcpy_avx2(char *dst, const char *src) {
+    const u8 *a = strcpy_short((u8 *)dst, (const u8 *)src);
+
+    if (a) {
+        return strcpy_long((u8 *)dst, (const u8 *)src, a);
+    }
+
+    return dst;
 }
 
 /* Out of line, so that the common case below keeps no frame and no call. */
@@ -1175,20 +1183,20 @@ static NOINLINE char *strcat_long(char *dst, const char *src) {
     RETURN_OPAQUE(dst);
 }
 
-/* src from e on, src's NUL past its first 32 bytes; strcat's answer: dst */
-static NOINLINE char *strcat_copy(char *dst, u8 *e, const char *src) {
-    str_strcpy((char *)e, src);
+/* src from e on past the 128 bytes strcpy_short copies; strcat's answer: dst */
+static NOINLINE char *strcat_copy(char *dst, u8 *e, const char *src, const u8 *a) {
+    str_strcpy_long(e, (const u8 *)src, a);
     RETURN_OPAQUE(dst);
 }
 
 /* dst's end by aligned blocks: the one holding dst with the bytes before it
    shifted out (no page test), three more in line, the call to strlen only
-   beyond; src's first 32 bytes as strcpy's. Calls (and the registers they
-   save: three pushes, the stores queued behind the copy's) only for a dst
-   of 97 bytes or more or a src of 32: up to 1.12x glibc on Broadwell with
-   the old order, strlen and strcpy by calls for every dst past 31 bytes. */
+   beyond; then strcpy's short path from there. Calls (and the registers
+   they save: three pushes, the stores queued behind the copy's) only for a
+   dst of 97 bytes or more or a src past strcpy_short: up to 1.12x glibc on
+   Broadwell with strlen and strcpy by calls for every dst past 31 bytes. */
 char *strcat_avx2(char *dst, const char *src) {
-    const u8 *d = (const u8 *)dst, *s = (const u8 *)src;
+    const u8 *d = (const u8 *)dst;
     const u8 *a = align_down(d, 32);
     unsigned m = mask256(eq_zero(load256a(a))) >> ((uintptr_t)d & 31);
     u8 *e;
@@ -1208,16 +1216,11 @@ char *strcat_avx2(char *dst, const char *src) {
         e = (u8 *)dst + (a - d) + ctz(m);
     }
 
-    if (page_left(s) >= 32) {
-        m = mask256(eq_zero(load256(s)));
-    } else {
-        m = mask256(eq_zero(load256a(align_down(s, 32)))) >> ((uintptr_t)s & 31);
+    const u8 *rest = strcpy_short(e, (const u8 *)src);
+
+    if (rest) {
+        return strcat_copy(dst, e, src, rest);
     }
 
-    if (m) {
-        copy_small(e, s, ctz(m) + 1);
-        return dst;
-    }
-
-    return strcat_copy(dst, e, src);
+    return dst;
 }
