@@ -488,10 +488,30 @@ void *memchr_sse2(const void *p, int c, size_t n) {
             return 0;
         }
 
-        if (n <= 16) {
-            /* the rest lies in the next page: its first aligned block */
-            m = eq_mask16(load16a(s + left), v);
-            return m && ctz(m) < n - left ? (void *)(s + left + ctz(m)) : 0;
+        /* the rest goes on in the next page: its first two aligned blocks, so
+           that the 32 bytes the kernel takes as done are */
+
+        for (size_t k = left; k < left + 32; k += 16) {
+            m = eq_mask16(load16a(s + k), v);
+
+            if (m) {
+                return k + ctz(m) < n ? (void *)(s + k + ctz(m)) : 0;
+            }
+        }
+
+        if (n <= left + 32) {
+            return 0;
+        }
+
+        if (n <= 64) { /* the last 32 bytes, all inside the object */
+            m = eq_mask16(load16(s + n - 32), v);
+
+            if (m) {
+                return (void *)(s + n - 32 + ctz(m));
+            }
+
+            m = eq_mask16(load16(s + n - 16), v);
+            return m ? (void *)(s + n - 16 + ctz(m)) : 0;
         }
 
         return str_memchr_large(s, (u8)c, n);

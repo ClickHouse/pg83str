@@ -275,6 +275,37 @@ guards:;
     phase = "guard pages";
     unsigned char *ga = guard_pages(3), *gb = guard_pages(3), *gs = guard_pages(1);
 
+    /* objects across a page boundary between two mapped pages: an entry's
+       page-end path checks the first page's part and hands over the rest
+       (memchr_sse2 once left 13..32 bytes of the second page unchecked) */
+
+    for (size_t k = 1; k <= 64; k++) {
+        unsigned char *s = ga + 4096 - k, *d = gb + 4096 - k;
+
+        for (size_t n = 1; n <= 200; n++) {
+            pattern(s, n + 1, (unsigned)(n + k));
+            memcpy(d, s, n + 1);
+            CHECK(T->memchr(s, 0x9a, n) == memchr(s, 0x9a, n));
+            CHECK(!T->memcmp(s, d, n));
+            const size_t at[] = {k - 1, k, k + 1, k + 15, k + 16, k + 31, k + 32, k + 63, n - 1};
+
+            for (size_t i = 0; i < sizeof at / sizeof *at; i++) {
+                if (at[i] >= n) {
+                    continue;
+                }
+
+                unsigned char keep = s[at[i]];
+                s[at[i]] = 0x9a;
+                CHECK(T->memchr(s, 0x9a, n) == memchr(s, 0x9a, n));
+                CHECK(sign(T->memcmp(s, d, n)) == sign(memcmp(s, d, n)));
+                s[at[i]] = 0; /* a string ending there */
+                CHECK(T->strlen((char *)s) == strlen((char *)s));
+                CHECK(sign(T->strcmp((char *)s, (char *)d)) == sign(strcmp((char *)s, (char *)d)));
+                s[at[i]] = keep;
+            }
+        }
+    }
+
     for (size_t n = 0; n <= 12288; n += (n < 8192 ? 1 : 97)) {
         unsigned char *s = ga + 12288 - n, *d = gb + 12288 - n; /* ranges end at the guard */
         pattern(s, n, (unsigned)n);

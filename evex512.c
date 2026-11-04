@@ -161,10 +161,21 @@ void *memchr_evex512(const void *p, int c, size_t n) {
             return 0;
         }
 
-        if (n <= 64) {
-            /* the rest lies in the next page: its first aligned block */
-            m = _mm512_cmpeq_epi8_mask(load512a(s + left), v);
-            return m && ctz64(m) < n - left ? (void *)(s + left + ctz64(m)) : 0;
+        /* the rest goes on in the next page: its first aligned block, so that
+           the first 64 bytes the kernel takes as done are */
+        m = _mm512_cmpeq_epi8_mask(load512a(s + left), v);
+
+        if (m) {
+            return left + ctz64(m) < n ? (void *)(s + left + ctz64(m)) : 0;
+        }
+
+        if (n <= left + 64) {
+            return 0;
+        }
+
+        if (n <= 128) { /* the last 64 bytes, all inside the object */
+            m = _mm512_cmpeq_epi8_mask(load512(s + n - 64), v);
+            return m ? (void *)(s + n - 64 + ctz64(m)) : 0;
         }
 
         return str_memchr_large(s, (u8)c, n);

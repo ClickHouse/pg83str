@@ -417,10 +417,21 @@ void *memchr_avx2(const void *p, int c, size_t n) {
             return 0;
         }
 
-        if (n <= 32) {
-            /* the rest lies in the next page: its first aligned block */
-            m = mask256(_mm256_cmpeq_epi8(load256a(s + left), v));
-            return m && ctz(m) < n - left ? (void *)(s + left + ctz(m)) : 0;
+        /* the rest goes on in the next page: its first aligned block, so that
+           the first 32 bytes the kernel takes as done are */
+        m = mask256(_mm256_cmpeq_epi8(load256a(s + left), v));
+
+        if (m) {
+            return left + ctz(m) < n ? (void *)(s + left + ctz(m)) : 0;
+        }
+
+        if (n <= left + 32) {
+            return 0;
+        }
+
+        if (n <= 64) { /* the last 32 bytes, all inside the object */
+            m = mask256(_mm256_cmpeq_epi8(load256(s + n - 32), v));
+            return m ? (void *)(s + n - 32 + ctz(m)) : 0;
         }
 
         return str_memchr_large(s, (u8)c, n);
