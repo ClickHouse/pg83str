@@ -139,6 +139,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--deps', required=True, type=Path)
     ap.add_argument('--libstr', required=True, type=Path)
+    ap.add_argument('--post-report', type=Path, help="the post pass's report: which configurations it lays out with the JCC padding")
     ap.add_argument('--work', required=True, type=Path)
     ap.add_argument('--binary', required=True, type=Path)
     ap.add_argument('--canary', action='store_true', help='add canary/*.c, kernels broken on purpose: validation must reject every one')
@@ -276,6 +277,10 @@ def main():
     gen += ['    {(int)(offsetof(struct str_table, %s) / sizeof(void *)), "%s", kl_s%d, %s, %d},' % (sl, s, i, '|'.join(n) or '0', spec)
             for i, (sl, s, n, spec) in enumerate(slots)]
     gen += ['};', 'const unsigned kl_nslots = %d;' % len(slots)]
+    # the configurations whose copies the post pass lays out with the JCC padding: their
+    # <config>.<name> copies are the code of <name>_jcc, not of <name>
+    jcc = re.findall(r'^(\w+): \d+ functions, the JCC padding$', args.post_report.read_text(), re.M) if args.post_report else []
+    gen += ['const char *const kl_jcc_configs[] = {%s};' % ', '.join(['"%s"' % c for c in jcc] + ['0'])]
     # glibc's choice on this host: the IPLT stub of each primitive jumps through the slot IFUNC filled
     gen.append('const char *glibc_variant(void *p) {')
     gen += ['    if (p == (void *)kl_d%d) return "%s";' % (i, d[1]) for i, d in enumerate(defs) if d[0] == 'glibc']

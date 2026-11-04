@@ -100,7 +100,8 @@ kbench = command(
             *build.glob("$(S)/dev/lab/freebsd/*.h"), *build.glob("$(S)/dev/lab/freebsd/machine/*.h")],
     outputs=["$(B)/lab/kbench"],
     deps=[libstr, lab_deps],
-    cmd=["python3", "$(S)/dev/lab/lab.py", "--deps", "$(B)/lab/deps", "--libstr", "$(B)/libstr.a", "--work", "$(B)/lab/work", "--binary", "$(B)/lab/kbench"],
+    cmd=["python3", "$(S)/dev/lab/lab.py", "--deps", "$(B)/lab/deps", "--libstr", "$(B)/libstr.a", "--post-report", "$(B)/post/report.txt", "--work",
+         "$(B)/lab/work", "--binary", "$(B)/lab/kbench"],
     descr="LB",
     color="cyan",
 )
@@ -118,8 +119,8 @@ kbench_canary = command(
     inputs=kbench.inputs,
     outputs=["$(B)/lab/kbench-canary"],
     deps=[libstr, lab_deps],
-    cmd=["python3", "$(S)/dev/lab/lab.py", "--deps", "$(B)/lab/deps", "--libstr", "$(B)/libstr.a", "--work", "$(B)/lab/work-canary", "--binary",
-         "$(B)/lab/kbench-canary", "--canary"],
+    cmd=["python3", "$(S)/dev/lab/lab.py", "--deps", "$(B)/lab/deps", "--libstr", "$(B)/libstr.a", "--post-report", "$(B)/post/report.txt", "--work",
+         "$(B)/lab/work-canary", "--binary", "$(B)/lab/kbench-canary", "--canary"],
     descr="LB",
     color="cyan",
 )

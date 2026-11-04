@@ -32,6 +32,7 @@ extern const KlDef kl_defs[];
 extern const unsigned kl_ndefs;
 extern const KlSlot kl_slots[];
 extern const unsigned kl_nslots;
+extern const char *const kl_jcc_configs[]; /* the configurations laid out with the JCC padding, 0-terminated */
 
 /* glibc's variant at an address, and the implementation its IFUNC chose for
    a primitive (the address of memcpy & co. in a static binary is an IPLT stub). */

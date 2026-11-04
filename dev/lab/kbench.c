@@ -280,12 +280,20 @@ static void build_kernels(void) {
     base_config = str_choose();
     struct str_table plain = base_config->table;
 
+    int jcc = 0; /* the post pass laid this configuration out with the JCC padding: its copies are the *_jcc code */
+
+    for (int i = 0; kl_jcc_configs[i]; i++) {
+        jcc |= !strcmp(kl_jcc_configs[i], base_config->name);
+    }
+
     for (int s = 0; s < NSLOTS; s++) {
         const char *nm = slot_fn_name(s, ((void **)&plain)[s]);
         const char *dot = strchr(nm, '.');
+        char want[160];
+        snprintf(want, sizeof want, "%s%s", dot ? dot + 1 : "", jcc ? "_jcc" : "");
 
         for (unsigned i = 0; dot && i < kl_nslots; i++) {
-            if (kl_slots[i].slot == s && !kl_slots[i].spec && !strcmp(kl_slots[i].name, dot + 1)) {
+            if (kl_slots[i].slot == s && !kl_slots[i].spec && !strcmp(kl_slots[i].name, want)) {
                 ((void **)&plain)[s] = kl_slots[i].fn;
             }
         }
