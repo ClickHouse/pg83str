@@ -416,6 +416,10 @@ int strcmp_tail_evex(const u8 *a, const u8 *b) {
 
                     a += 128;
                     b += 128;
+                    /* opaque: else the two pointers become one index, and the
+                       xors with an indexed memory operand split into two uops
+                       each on Skylake (1.3x on 4 KiB) */
+                    __asm__("" : "+r"(a), "+r"(b));
                 } while (--groups);
 
                 continue;

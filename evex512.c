@@ -324,8 +324,8 @@ static inline unsigned long long stop_mask64(__m512i x, __m512i y) {
 }
 
 /* a 64-aligned and 256 bytes from each pointer inside its page: four blocks
-   at a time, b unaligned. One compare per block for the differences and one
-   test of the bytewise minimum for a NUL; the exact block only on a hit.
+   at a time, b unaligned. The or of the xors for the differences and the
+   bytewise minimum for a NUL, one masked test; the exact block only on a hit.
    Elsewhere one masked step up to the next 64-byte boundary of a or the page
    end of b, whichever is nearer: the lanes beyond it are zero, so the first
    stop is at most n, and a never-touched next page cannot fault. The first
@@ -353,38 +353,53 @@ int strcmp_tail_evex512(const u8 *a, const u8 *b) {
     }
 
     for (;;) {
-        if (((uintptr_t)a & 63) == 0 && page_left(a) >= 256 && page_left(b) >= 256) {
-            __m512i x0 = load512a(a), x1 = load512a(a + 64), x2 = load512a(a + 128), x3 = load512a(a + 192);
-            __m512i lo = _mm512_min_epu8(_mm512_min_epu8(x0, x1), _mm512_min_epu8(x2, x3));
-            unsigned long long k = _mm512_cmpneq_epi8_mask(x0, load512(b)) | _mm512_cmpneq_epi8_mask(x1, load512(b + 64)) |
-                                   _mm512_cmpneq_epi8_mask(x2, load512(b + 128)) | _mm512_cmpneq_epi8_mask(x3, load512(b + 192)) |
-                                   _mm512_testn_epi8_mask(lo, lo);
+        if (((uintptr_t)a & 63) == 0) {
+            size_t left = page_left(a) < page_left(b) ? page_left(a) : page_left(b);
 
-            if (k) {
-                unsigned long long m = stop_mask64(x0, load512(b));
+            if (left >= 256) {
+                /* groups of four blocks while they fit in both pages: the or of
+                   the four xors with b and the minimum of a's four blocks, one
+                   masked test of each (glibc's form; four compares to masks
+                   and a kor chain ran 1.4x slower on Zen 5) */
+                size_t groups = left / 256;
 
-                if (m) {
-                    return byte_diff(a, b, ctz64(m));
-                }
+                do {
+                    __m512i x0 = load512a(a), x1 = load512a(a + 64), x2 = load512a(a + 128), x3 = load512a(a + 192);
+                    __m512i d0 = _mm512_xor_si512(x0, load512(b)), d1 = _mm512_xor_si512(x1, load512(b + 64));
+                    __m512i d2 = _mm512_xor_si512(x2, load512(b + 128)), d3 = _mm512_xor_si512(x3, load512(b + 192));
+                    __m512i lo = _mm512_min_epu8(_mm512_min_epu8(x0, x1), _mm512_min_epu8(x2, x3));
+                    __m512i d = _mm512_ternarylogic_epi32(d0, d1, _mm512_ternarylogic_epi32(d2, d3, d0, 0xfe), 0xfe);
+                    unsigned long long k = _mm512_mask_testn_epi8_mask(_mm512_test_epi8_mask(lo, lo), d, d) + 1;
 
-                m = stop_mask64(x1, load512(b + 64));
+                    if (k) {
+                        unsigned long long m = _mm512_mask_testn_epi8_mask(_mm512_test_epi8_mask(x0, x0), d0, d0) + 1;
 
-                if (m) {
-                    return byte_diff(a, b, 64 + ctz64(m));
-                }
+                        if (m) {
+                            return byte_diff(a, b, ctz64(m));
+                        }
 
-                m = stop_mask64(x2, load512(b + 128));
+                        m = _mm512_mask_testn_epi8_mask(_mm512_test_epi8_mask(x1, x1), d1, d1) + 1;
 
-                if (m) {
-                    return byte_diff(a, b, 128 + ctz64(m));
-                }
+                        if (m) {
+                            return byte_diff(a, b, 64 + ctz64(m));
+                        }
 
-                return byte_diff(a, b, 192 + ctz64(stop_mask64(x3, load512(b + 192))));
+                        m = _mm512_mask_testn_epi8_mask(_mm512_test_epi8_mask(x2, x2), d2, d2) + 1;
+
+                        if (m) {
+                            return byte_diff(a, b, 128 + ctz64(m));
+                        }
+
+                        return byte_diff(a, b, 192 + ctz64(_mm512_mask_testn_epi8_mask(_mm512_test_epi8_mask(x3, x3), d3, d3) + 1));
+                    }
+
+                    a += 256;
+                    b += 256;
+                    __asm__("" : "+r"(a), "+r"(b)); /* two pointers, not one index (see the evex tail) */
+                } while (--groups);
+
+                continue;
             }
-
-            a += 256;
-            b += 256;
-            continue;
         }
 
         size_t n = 64 - ((uintptr_t)a & 63); /* within a's page too */
