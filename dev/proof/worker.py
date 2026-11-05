@@ -2,14 +2,16 @@
 """dev/proof/run.py's worker on a host: a JSON list of jobs on stdin, each
 an argument list for prove.py; runs them --jobs at a time and prints their
 RESULT lines (and a FAIL's text) as they come. --stream: a slot that is
-free prints NEXT and reads its job, a JSON line (an empty one: no more),
-so that the runner hands out the jobs as the hosts' slots free up."""
+free prints NEXT and reads its job, a JSON line (WAIT: ask again soon; an
+empty one: no more), so that the runner hands out the jobs as the hosts'
+slots free up. A job may start with --job-timeout N: its own limit."""
 import argparse
 import json
 import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -32,19 +34,25 @@ def main():
                     line = sys.stdin.readline().strip()
                     if not line:
                         return
-                    job = json.loads(line)
+                    job = None if line == 'WAIT' else json.loads(line)
                 elif not todo:
                     return
                 else:
                     job = todo.pop(0)
+            if job is None:
+                time.sleep(20)
+                continue
+            limit = args.timeout
+            if job[0] == '--job-timeout':
+                limit, job = int(job[1]), job[2:]
             # paths in a job are relative to the bundle's root (ix's python on the hosts starts in $HOME)
             job = [str(HERE.parent.parent / x) if prev == '--elf' and not x.startswith('/') else x for prev, x in zip([''] + job, job)]
             p = subprocess.Popen([sys.executable, str(HERE / 'prove.py'), *job], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             try:
-                out = p.communicate(timeout=args.timeout)[0]
+                out = p.communicate(timeout=limit)[0]
             except subprocess.TimeoutExpired:
                 p.terminate()  # SIGTERM: prove.py takes its solvers down
-                out = p.communicate()[0] + '\nkilled after %d s' % args.timeout
+                out = p.communicate()[0] + '\nkilled after %d s' % limit
             lines = [x for x in out.splitlines() if x.startswith(('RESULT', 'FAIL'))]
             if not any(x.startswith('RESULT') for x in lines):
                 arg = dict(zip(job, job[1:]))
