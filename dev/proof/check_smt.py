@@ -6,6 +6,10 @@ as sound as these rewrites; any difference found is a bug in them.
 
     ix run bin/z3 -- python3 dev/proof/check_smt.py [--n 3000] [--seed 1]
 
+Each expression's interval (smt.interval: what select's peeling past
+stores and the loops' stack windows rest on) is checked the same way: z3
+asked for an input that puts the value outside it.
+
 A query z3 can not settle in 20 s (two 64-bit products told apart by bit
 blasting: distributivity is hard for it) counts as undecided, not as a
 difference.
@@ -89,10 +93,19 @@ def main():
     os.environ.setdefault('PROVE_TIMEOUT', '20')
     S.TIMEOUT = int(os.environ['PROVE_TIMEOUT'])
     solver = S.Solver()
-    bad = undecided = 0
+    bad = undecided = bounded = 0
     for k in range(args.n):
         w = rng.choice([64, 64, 32, 8])
         f, r = gen(rng, w, 4, leaves)
+        iv = S.interval(f)
+        if iv is not None and w > 1:
+            bounded += 1
+            res = solver.check(S.or_(S.slt(f, const(w, iv[0])), S.slt(const(w, iv[1]), f)), keep=True)
+            if res == 'sat':
+                bad += 1
+                print('OUTSIDE ITS INTERVAL [%d, %d] (case %d, %d bits): %s' % (iv[0], iv[1], k, w, ' '.join(solver.values([f]).split())))
+            elif res == 'unknown':
+                undecided += 1
         if f is r:
             continue
         res = solver.check(S.not_(S._mk('eq', S.BOOL, (f, r))), keep=True)
@@ -103,7 +116,8 @@ def main():
                 break
         elif res == 'unknown':
             undecided += 1
-    print('%d random expressions: %s, %d undecided' % (args.n, 'the folding agrees with z3' if not bad else '%d differ' % bad, undecided))
+    print('%d random expressions (%d with an interval): %s, %d undecided' % (
+        args.n, bounded, 'the folding and the intervals agree with z3' if not bad else '%d differ' % bad, undecided))
     sys.exit(1 if bad else 0)
 
 

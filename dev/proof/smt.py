@@ -584,8 +584,9 @@ _iv = {}
 
 def interval(t):
     """(lo, hi): t's value as a signed number lies there, or None. Constants,
-    zero extensions and masks bound their values; sums add the bounds (a
-    table's index c + a byte: [c, c + 255])."""
+    zero extensions, masks and shifts by constants bound their values; sums
+    add the bounds times the coefficients (a table's index c + a byte: [c,
+    c + 255]; a bit table's qword c + 8 (x >> 7 << 1 | x >> 3 & 1): [c, c + 24])."""
     r = _iv.get(t.id, 0)
     if r != 0:
         return r
@@ -598,15 +599,34 @@ def interval(t):
         r = ix if ix is not None and ix[0] >= 0 else (0, (1 << t.args[0].w) - 1)
     elif t.op == 'and' and is_const(t.args[1]) and t.args[1].val < lim:
         r = (0, t.args[1].val)
+    elif t.op == 'extract' and t.args[2] == 0:  # the low bits: the value when it fits them
+        ix = interval(t.args[0])
+        if ix is not None and 0 <= ix[0] and ix[1] < lim:
+            r = ix
+    elif t.op == 'mul' and is_const(t.args[1]):
+        ix, k = interval(t.args[0]), signed(t.args[1])
+        if ix is not None:
+            lo, hi = sorted((ix[0] * k, ix[1] * k))
+            r = (lo, hi) if -lim < lo <= hi < lim else None
+    elif t.op == 'lshr' and is_const(t.args[1]):
+        ix, s = interval(t.args[0]), t.args[1].val
+        if ix is not None and ix[0] >= 0:
+            r = (ix[0] >> s, ix[1] >> s)
+        elif s >= 2:
+            r = (0, ((1 << t.w) - 1) >> s)
+    elif t.op == 'shl' and is_const(t.args[1]):
+        ix, s = interval(t.args[0]), t.args[1].val
+        if ix is not None and -lim < ix[0] << s and ix[1] << s < lim:
+            r = (ix[0] << s, ix[1] << s)
     elif t.op in ('add', 'sub', 'neg'):
         f, c = linear(t)
         lo = hi = signed(const(t.w, c))
         for x, v in f.items():
             k = signed(const(t.w, v))
-            ix = interval(x) if abs(k) == 1 else None
+            ix = interval(x)
             if ix is None:
                 break
-            lo, hi = (lo + ix[0], hi + ix[1]) if k == 1 else (lo - ix[1], hi - ix[0])
+            lo, hi = (lo + k * ix[0], hi + k * ix[1]) if k > 0 else (lo + k * ix[1], hi + k * ix[0])
         else:
             r = (lo, hi) if -lim < lo <= hi < lim else None
     _iv[t.id] = r
