@@ -182,7 +182,11 @@ void *memchr_evex(const void *p, int c, size_t n) {
         }
     }
 
-    return str_memchr_large(s, (u8)c, n); /* the first 32 bytes scanned; the kernel's loads are aligned */
+    /* the kernel goes on where these stopped: from the last block checked
+       (its first 32 bytes, scanned), so it starts at a; the answers stay
+       pointers, n counts from there */
+    const u8 *from = a - 32;
+    return str_memchr_large(from, (u8)c, n - (size_t)(from - s));
 }
 
 /* ------------------------------------------------------------------ copy */
