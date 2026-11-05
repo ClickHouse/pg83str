@@ -1808,7 +1808,7 @@ class Prover:
             r = self.spec.table_holds(st, name, front)
             if r is not None:
                 return r
-        return self.solver.check(*st.pc, S.not_(f(st, front)), bare=table, timeout=6 * AUX if table else None) == 'unsat'
+        return self.solver.check(*st.pc, S.not_(f(st, front)), bare=table, timeout=6 * AUX if table else None, qtimeout=AUX) == 'unsat'
 
     def candidates(self, s1, moved, havoc, step, a1, side=False, s2=None):
         """Invariant candidates, as functions of a head state and its frontier:

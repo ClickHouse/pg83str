@@ -926,7 +926,7 @@ class Solver:
             return '(lambda ((x (_ BitVec 64))) (ite (and (bvule %s x) (bvult x %s)) (select %s x) (select %s x)))' % (n(a[1]), n(a[2]), n(a[3]), n(a[0]))
         raise ValueError(t.op)
 
-    def check(self, *conds, keep=False, timeout=None, bare=False, loose=False):
+    def check(self, *conds, keep=False, timeout=None, bare=False, loose=False, qtimeout=QTIMEOUT):
         """With quantifiers among the conditions (strspn's long sets): first
         without them (fewer hypotheses: unsat holds for the whole), the full
         query only when that is not unsat, for QTIMEOUT at most (z3 may never
@@ -940,7 +940,7 @@ class Solver:
                 r = self._check(*plain, keep=keep and loose, timeout=timeout, bare=True)
                 if r == 'unsat' or loose:
                     return r
-                return self._check(*conds, keep=keep, timeout=min(timeout or TIMEOUT, QTIMEOUT), bare=bare)
+                return self._check(*conds, keep=keep, timeout=min(timeout or TIMEOUT, qtimeout), bare=bare)
         return self._check(*conds, keep=keep, timeout=timeout, bare=bare)
 
     def _check(self, *conds, keep=False, timeout=None, bare=False):
