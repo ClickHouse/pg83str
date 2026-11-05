@@ -696,6 +696,9 @@ class Machine:
                     target = guess
             if not S.is_const(target):
                 raise Unsupported('ret to a computed address')
+            if target.val == RET_MARK:
+                st.done = True
+                return [(st, S.TRUE)]
             st.rip = target.val
             return [(st, S.TRUE)]
         if mn == 'jmp':

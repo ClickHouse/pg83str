@@ -1255,6 +1255,7 @@ class SpanLong(Span):
         assume = [c for c in assume if c is not S.ule(L, const(64, SETMAX))]  # the short form's bound (its first bytes' facts stay: instances)
         assume += [S.ult(const(64, SETMAX), L), S.ult(L, const(64, USER_HI - USER_LO)),
                    S.forall_(qk, S.or_(S.ule(L, qk), S.not_(S.is_zero(self.tbyte(qk))))),  # no NUL before L
+                   *[S.or_(S.ule(L, const(64, m)), S.not_(S.is_zero(self.tbyte(const(64, m))))) for m in range(SETMAX, 2 * SETMAX)],  # instances
                    S.forall_(qm, S.eq(self.member(qm), self.in_first(qm, L)))]  # M's definition
         self.side_base = self.tbase
         self.table_forms, self.table_v = {}, {}
@@ -1292,12 +1293,14 @@ class SpanLong(Span):
             else:
                 continue
             x, p = var('sx', 8), var('sp', S.BOOL)
-            nulx = S.and_(S.boolean(nul), S.is_zero(x))
             cur = st.regions[-1][1]
-            ih = self.table_is(gmem, kind, off, x, S.or_(p, nulx))
+            ih = self.table_is(gmem, kind, off, x, S.or_(p, S.and_(S.boolean(nul), S.is_zero(x))))
             mdef = S.eq(self.member(x), S.or_(p, *[S.eq(self.tbyte(S.add(n, const(64, e))), x) for e in range(j)]))
-            goal = self.table_is(cur, kind, off, x, S.or_(self.member(x), nulx))
-            if prover.solver._check(*plain, ih, mdef, S.not_(goal), bare=True, timeout=6 * AUX) != 'unsat':
+            for now in (nul, not nul):  # the NUL's entry as in the loop, or as a store since set it (strcspn's)
+                goal = self.table_is(cur, kind, off, x, S.or_(self.member(x), S.and_(S.boolean(now), S.is_zero(x))))
+                if prover.solver._check(*plain, ih, mdef, S.not_(goal), bare=True, timeout=6 * AUX) == 'unsat':
+                    break
+            else:
                 del st.pc[i]
                 name = next(nm for nm, form in self.table_forms.items() if form == (kind, off, d, nul))
                 g = st.gen
@@ -1308,10 +1311,11 @@ class SpanLong(Span):
                 if prover.args.verbose:
                     print('    past the set loop: not kept: %s' % name, flush=True)
                 return self.settle(prover, st, new)
-            st.pc[i:i + 1] = [self.table_is(cur, kind, off, const(8, y), S.or_(self.member(const(8, y)), S.boolean(nul and y == 0)))
+            st.pc[i:i + 1] = [self.table_is(cur, kind, off, const(8, y), S.or_(self.member(const(8, y)), S.boolean(now and y == 0)))
                               for y in range(256)]
             if prover.args.verbose:
-                print('    past the set loop: the %s table at rsp0%+d holds the set (L = n + %d; 256 facts)' % (kind, off, j), flush=True)
+                print('    past the set loop: the %s table at rsp0%+d holds the set%s (L = n + %d; 256 facts)' % (kind, off, ' and the NUL' if now else '', j),
+                      flush=True)
             return self.settle(prover, st, new)
 
     def keep_unrolling(self, prev, now):
@@ -2063,8 +2067,11 @@ class Prover:
                         s.pc.append(c)
                         s.trace.append(s.rip)
                         live.append(s)
-                if not live:
-                    raise Failure('no feasible way on at %#x' % st.rip)
+                if not live:  # the ways' conditions cover every case: the path's own facts contradict (a dead way kept)
+                    if self.solver.check(*st.pc) != 'unsat':
+                        raise Failure('no feasible way on at %#x' % st.rip)
+                    closed = True
+                    break
                 st = live[0]
                 work.extend(live[1:])
             self.paths += 1

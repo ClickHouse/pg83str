@@ -11,6 +11,7 @@ ix run bin/z3 bin/bitwuzla -- python3 dev/proof/prove.py --elf .build/proof/libs
     --func avx2.memchr_avx2 --spec memchr --induct --align 49 [--verbose]
 dev/proof/run.py --z3 .../bin/z3 --bitwuzla .../bin/bitwuzla --func avx2.memchr_avx2,evex.memchr_evex \
     --spec memchr --induct                                 # every alignment class, spread over the lab
+dev/proof/run.py ... --func memchr:sse2.memchr_sse2,strlen:sse42.strlen_sse2 --induct --hosts lab1,lab3
 python3 dev/proof/replay.py --func avx2.strspn_avx2 --spec strspn --n 2000
 ix run bin/z3 -- python3 dev/proof/check_smt.py
 ```
@@ -35,7 +36,25 @@ invariant kept. Invariant candidates (bounds on the frontier, the bytes
 checked ahead of it, relations of the registers the loop compares) are
 kept or dropped Houdini's way; what another way round changes is widened.
 Loops that run down (memmove backwards), loops in a row and nested loops
-are handled; a writer's coverage is tracked from its stores.
+are handled; a writer's coverage is tracked from its stores. A loop is
+generalized once per first arrival: another path that comes round to its
+head from the same arrival is in that general state, whose every way round
+and every way out are explored (strcmp sse2: 323 s to 24 s).
+
+A loop that builds a table on the stack from strspn's set (a side loop:
+its frontier in the set, not in s) has the table's invariant as a
+candidate read off its first iteration's stores: for every byte x, its
+entry (a byte table's v or 0, a bit table's bit) says whether x is one of
+the set's bytes before the frontier. That one has a quantifier; its step is
+proved without one (for any x and any truth p for "x one of the first n",
+the entry after the iteration says p or x the n-th byte). A byte of the set
+is a bit of M, 256 bits defined by one axiom; past the loop (the first load
+of s) the invariant, its count L, is the table holding M, written out as 256
+facts without a quantifier: the scan's queries go to bitwuzla.
+
+`run.py` proves a configuration's copy of a function once: the same
+instructions, branch targets, callees' names and constants read (and the
+same tzcnt) are the same machine to the prover.
 
 At a return the spec's obligations are proved for every input the path
 admits, quantifier-free: the stop of a scan is a free variable z ("any
@@ -56,6 +75,7 @@ stop"), so a property for all stops is one query.
 | `strcpy_long` | the kernel past strcpy's short path, under its precondition (the contract strcat relies on) |
 | `strcat` | `d`'s bytes before its NUL kept, `s` with its NUL copied from there; the callees by their contracts |
 | `strspn`, `strcspn` | the length of the prefix in (not in) the set; sets of up to 32 bytes |
+| `strspn_long`, `strcspn_long` | the same for sets of more than 32 bytes, any length |
 
 Every function and configuration is also checked for: aligned accesses
 (`movaps`, `movdqa`, legacy SSE memory operands) aligned; callee-saved
