@@ -110,6 +110,7 @@ def main():
     ap.add_argument('--induct', action='store_true', help='the loops by induction: every length')
     ap.add_argument('--one-timeout', type=int, default=3 * 3600, help='seconds the one-class try may take (memchr sse2: 3863 s)')
     ap.add_argument('--job-timeout', type=int, default=12 * 3600, help='seconds any other job may take')
+    ap.add_argument('--no-one', action='store_true', help='straight to the classes (a run whose one-class tries an earlier run made)')
     ap.add_argument('--job-memory', type=float, default=7, help='GB a job is given: the jobs a host runs at once (PROVE_MEMORY its solvers\' limit)')
     args = ap.parse_args()
     sys.path.insert(0, str(HERE))
@@ -134,9 +135,12 @@ def main():
         if args.align != 'all':
             jobs += [job(spec, f, a) for a in args.align.split(',')]
             continue
-        jobs.append(job(spec, f, 0, classes=1, timeout=None if n == 1 else args.one_timeout))
-        n = 64 if n == 1 else n
-        fallback[(f, spec)] = [job(spec, f, a, classes=n) for a in range(n)]
+        classes = [job(spec, f, a, classes=64 if n == 1 else n) for a in range(64 if n == 1 else n)]
+        if args.no_one:
+            jobs += classes
+        else:
+            jobs.append(job(spec, f, 0, classes=1, timeout=None if n == 1 else args.one_timeout))
+            fallback[(f, spec)] = classes
     for (spec, f), r in sorted(same.items()):
         print('%s %s: the code of %s, proved with it' % (spec, f, r), flush=True)
 
