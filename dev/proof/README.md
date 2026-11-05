@@ -23,10 +23,12 @@ registers and flags are terms (`smt.py`), memory is arrays of bytes, one per
 object (a region: the object's base and the memory around it), the stack one
 more. A pointer the spec classes is an unknown base aligned to 64 (or to
 what the code rounds to) plus its low bits, one alignment class per run:
-the page position is then symbolic, every place in a page at once. Code
-that rounds no pointer down (it reads its misalignment with an and with
-2^j - 1) takes every pointer in one run: memset sse2 in 284 s, where 64
-classes took a minute each. At each
+the page position is then symbolic, every place in a page at once. The
+classes are a case split, any number of them covers every pointer; one
+class, the low bits symbolic too, is every pointer in one proof: `run.py`
+tries that first (strlen sse2 in 8 s, strcmp avx2 in 2369 s where 64
+classes take 1041 s each, strspn avx2's long sets in 1079 s) and splits
+into the classes only when it does not prove in three hours. At each
 branch z3 decides which ways are feasible; every feasible path is followed.
 
 Loops (`--induct`): the second time a path reaches a loop's head, the
@@ -57,7 +59,8 @@ facts without a quantifier: the scan's queries go to bitwuzla.
 
 `run.py` proves a configuration's copy of a function once: the same
 instructions, branch targets, callees' names and constants read (and the
-same tzcnt) are the same machine to the prover.
+same tzcnt) are the same machine to the prover. It hands the jobs out as
+the hosts' slots free up, the longest specs first.
 
 At a return the spec's obligations are proved for every input the path
 admits, quantifier-free: the stop of a scan is a free variable z ("any
