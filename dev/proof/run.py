@@ -2,12 +2,16 @@
 """Proofs spread over the lab: one job per function and alignment class.
 
     dev/proof/run.py --z3 PATH --func evex512.strlen_evex512 --spec strlen (--max 1024 | --induct) [--hosts local,lab1,lab2,lab3]
+    dev/proof/run.py --z3 PATH --func strlen:sse2.strlen_sse2,memchr:avx2.memchr_avx2 --induct
 
 Ships the prover, the linked library (.build/proof/libstr.elf, ./build proof)
 and z3 (a static binary) to each lab host by ssh (no sftp there: a tar on
-stdin), splits the jobs by the hosts' threads, runs dev/proof/worker.py on
-each in the open ssh session (a detached process dies with it), and prints
-every class's result; the exit status is 1 when any failed.
+stdin), runs dev/proof/worker.py on each in the open ssh session (a
+detached process dies with it), hands each host's free slot the next job
+(the longest specs first), and prints every class's result; the exit
+status is 1 when any failed. A function whose code is another's (a
+configuration's copy: the same instructions, branch targets, callees'
+names and constants read, the same tzcnt) is proved once for both.
 """
 import argparse
 import hashlib
@@ -31,6 +35,47 @@ def ssh(host, cmd, **kw):
     return subprocess.run(['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % host, cmd], **kw)
 
 
+def fingerprint(img, entry):
+    """The code reachable from entry (jumps and calls followed) with its
+    branch targets as places in the walk (a call's with its callee's name
+    past the configuration, what the specs' contracts go by) and its
+    rip-relative operands as the bytes they read: two functions with the
+    same are the same machine to the prover, their addresses aside."""
+    names = {a: n for n, a in img.symbols.items()}
+    order, index, todo = [], {}, [entry]
+    while todo:
+        a = todo.pop(0)
+        while a not in index:
+            index[a] = len(order)
+            j = img.decode(a)
+            order.append(j)
+            if j['mnemonic'] == 'int3':
+                break
+            if j.get('branch_target') is not None:
+                todo.append(j['branch_target'])
+            if j['mnemonic'] in ('ret', 'jmp'):
+                break
+            a += j['len']
+    out = []
+    for j in order:
+        ops = []
+        for o in j['ops']:
+            if o['kind'] == 'NearBranch':
+                tgt = j['branch_target']
+                o = ['to', index[tgt], names.get(tgt, '').split('.', 1)[-1]]
+            elif o['kind'] == 'Memory' and o['mem'].get('rip_rel'):
+                at = j['offset'] + j['len'] + o['mem']['disp']
+                o = ['data', o['mem']['size'], [img.byte(at + i) for i in range(o['mem']['size'])]]
+            ops.append(o)
+        out.append([j['mnemonic'], j['cc'], j['encoding'], j['op_mask'], j['zeroing'], j['bcast'], j['rep'], j['lock'], j['form'], ops])
+    return hashlib.sha256(json.dumps(out, sort_keys=True, default=str).encode()).hexdigest()
+
+
+# the specs by their longest classes' time: the longest first, the hosts' last slots on short ones
+WEIGHT = ['strcmp', 'strcpy', 'strcat', 'memchr', 'memcmp', 'strspn_long', 'strcspn_long', 'strspn', 'strcspn', 'memmove', 'strcpy_long',
+          'memcpy', 'memset', 'strlen']
+
+
 def bundle(elf, z3, bitwuzla=None):
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode='w:gz', compresslevel=1, dereference=True) as tar:  # .build's outputs are links into its store
@@ -51,8 +96,8 @@ def main():
     ap.add_argument('--z3', required=True, help='the z3 binary (static)')
     ap.add_argument('--bitwuzla', default=os.environ.get('PROVE_BITWUZLA') or shutil.which('bitwuzla'),
                     help='the bitwuzla binary (static; ix build bin/bitwuzla): the queries without lambdas')
-    ap.add_argument('--func', required=True, help='comma list')
-    ap.add_argument('--spec', required=True)
+    ap.add_argument('--func', required=True, help='comma list, each a function or spec:function')
+    ap.add_argument('--spec', help='the spec of the functions given without one')
     ap.add_argument('--max', type=int, default=1024)
     ap.add_argument('--align', default='all')
     ap.add_argument('--induct', action='store_true', help='the loops by induction: every length')
@@ -63,10 +108,19 @@ def main():
     import prove
     img = machine.Image(args.elf)
     mode = ['--induct'] if args.induct else ['--max', str(args.max)]
-    jobs = []
-    for f in args.func.split(','):
+    jobs, same, rep = [], {}, {}
+    for item in args.func.split(','):
+        spec, f = item.split(':') if ':' in item else (args.spec, item)
+        key = (spec, not f.startswith(('sse2.', 'sse42.')), fingerprint(img, img.symbols[f]))  # the prover's tzcnt is bsf for those
+        if key in rep:
+            same[(spec, f)] = rep[key]
+            continue
+        rep[key] = f
         classes = range(prove.align_of(img, img.symbols[f])) if args.align == 'all' else [int(x) for x in args.align.split(',')]
-        jobs += [['--elf', 'libstr.elf', '--func', f, '--spec', args.spec, *mode, '--align', str(a)] for a in classes]
+        jobs += [['--elf', 'libstr.elf', '--func', f, '--spec', spec, *mode, '--align', str(a)] for a in classes]
+    for (spec, f), r in sorted(same.items()):
+        print('%s %s: the code of %s, proved with it' % (spec, f, r), flush=True)
+    jobs.sort(key=lambda j: WEIGHT.index(j[5]) if j[5] in WEIGHT else len(WEIGHT))
     hosts = args.hosts.split(',')
     data, digest = bundle(args.elf, args.z3, args.bitwuzla)
     threads = {}
@@ -79,36 +133,33 @@ def main():
             input=data, check=True)
         cpus, mem = ssh(h, 'nproc; awk \'/MemTotal/ {print $2}\' /proc/meminfo', capture_output=True, text=True, check=True).stdout.split()
         threads[h] = min(int(cpus), int(mem) // (1 << 20) // 7)  # a job's z3 may take up to 6 GB (smt.MEMORY)
-    total = sum(threads.values())
-    share, start = {}, 0
-    for i, h in enumerate(hosts):
-        n = len(jobs) - start if i == len(hosts) - 1 else round(len(jobs) * threads[h] / total)
-        share[h] = jobs[start:start + n]
-        start += n
     results, lock, t0 = [], threading.Lock(), time.time()
+    todo = list(jobs)
 
     def run(h):
-        if not share[h]:
+        if not threads[h]:
             return
         if h == 'local':
             env = dict(os.environ, PATH=str(Path(args.z3).parent) + ':' + os.environ['PATH'])
             if args.bitwuzla:
                 env['PROVE_BITWUZLA'] = args.bitwuzla
-            cmd = [sys.executable, str(HERE / 'worker.py'), '--jobs', str(threads[h])]
+            cmd = [sys.executable, str(HERE / 'worker.py'), '--jobs', str(threads[h]), '--stream']
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env,
                                  cwd=str(Path(args.elf).parent))
         else:
             d = '$HOME/proof/%s' % digest[:16]
-            cmd = ['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % h, 'cd %s && PATH=%s/bin:$PATH python3 dev/proof/worker.py --jobs %d' % (d, d, threads[h])]
+            cmd = ['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % h, 'cd %s && PATH=%s/bin:$PATH python3 dev/proof/worker.py --jobs %d --stream' % (d, d, threads[h])]
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        mine = share[h]
-        if h == 'local':
-            mine = [[str(Path(args.elf).resolve()) if x == 'libstr.elf' else x for x in job] for job in mine]
-        p.stdin.write(json.dumps(mine))
-        p.stdin.close()
         for line in p.stdout:
             line = line.rstrip()
-            if line.startswith('RESULT '):
+            if line == 'NEXT':  # a slot free: the next job, or none (an empty line)
+                with lock:
+                    job = todo.pop(0) if todo else None
+                if job is not None and h == 'local':
+                    job = [str(Path(args.elf).resolve()) if x == 'libstr.elf' else x for x in job]
+                p.stdin.write((json.dumps(job) if job else '') + '\n')
+                p.stdin.flush()
+            elif line.startswith('RESULT '):
                 r = json.loads(line[7:])
                 r['host'] = h
                 with lock:
