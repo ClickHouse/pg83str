@@ -25,6 +25,7 @@ Two modes for the loops:
 """
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -37,7 +38,7 @@ from smt import const, var  # noqa: E402
 import machine as X  # noqa: E402
 
 USER_LO, USER_HI = 0x10000, (1 << 47) - (1 << 32)  # canonical user addresses, with room for any object
-ALIGN = 64  # the proof splits on a pointer's low bits: at least the widest vector's alignment, more when the code aligns further (align_of)
+ALIGN = int(os.environ.get('PROVE_ALIGN', '64'))  # the proof splits on a pointer's low bits: at least this when the code aligns at all (align_of)
 K_LIMIT = 1 << 47  # a loop's distance from its first iteration: below this no address wraps, and the next one's below it is proved
 
 
@@ -69,8 +70,14 @@ class Restart(Exception):
 def align_of(img, entry):
     """The classes a function's proof splits a pointer into: 64, or the
     largest alignment its code rounds an address down to (an and with -2^j),
-    so that every such address stays the base plus a known offset."""
-    best, seen, todo = ALIGN, set(), [entry]
+    so that every such address stays the base plus a known offset; 1, every
+    pointer in one proof, for code that rounds none (it reads its
+    misalignment with an and with 2^j - 1: a term like any other). The
+    split is a case split: any number of classes covers every pointer; the
+    fewest that keep the proofs fast (memset sse2: one class in 284 s, 64
+    of a minute each; memchr sse2, which rounds to 16: 16 classes of 525 s,
+    64 of 111)."""
+    best, seen, todo = 1, set(), [entry]
     while todo:
         a = todo.pop()
         while a not in seen:
@@ -87,10 +94,13 @@ def align_of(img, entry):
                             best = max(best, -v)
             if j.get('branch_target') is not None:
                 todo.append(j['branch_target'])
+            elif mn in ('call', 'jmp') and j['ops'][0]['kind'] == 'Memory' and j['ops'][0]['mem'].get('rip_rel'):  # through the table
+                at = j['offset'] + j['len'] + j['ops'][0]['mem']['disp']
+                todo.append(sum(img.byte(at + i) << 8 * i for i in range(8)))
             if mn in ('ret', 'jmp'):
                 break
             a += j['len']
-    return best
+    return max(best, ALIGN) if best > 1 else 1
 
 
 def aligned_pointer(name, a, align):

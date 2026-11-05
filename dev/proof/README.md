@@ -23,7 +23,10 @@ registers and flags are terms (`smt.py`), memory is arrays of bytes, one per
 object (a region: the object's base and the memory around it), the stack one
 more. A pointer the spec classes is an unknown base aligned to 64 (or to
 what the code rounds to) plus its low bits, one alignment class per run:
-the page position is then symbolic, every place in a page at once. At each
+the page position is then symbolic, every place in a page at once. Code
+that rounds no pointer down (it reads its misalignment with an and with
+2^j - 1) takes every pointer in one run: memset sse2 in 284 s, where 64
+classes took a minute each. At each
 branch z3 decides which ways are feasible; every feasible path is followed.
 
 Loops (`--induct`): the second time a path reaches a loop's head, the
@@ -96,6 +99,6 @@ registers and `rsp` restored; rep movs with no backward overlap.
 - mutants of the code (patched instructions) are refuted with
   counterexamples: a proof that cannot fail proves nothing.
 
-Limits: lengths are unbounded up to the 2^47 bytes of user space; strspn and
-strcspn sets of up to 32 bytes (longer sets take the table-building loop,
-not proved yet).
+Limits: lengths are unbounded up to the 2^47 bytes of user space; strspn's
+and strcspn's sets any length (up to 32 bytes written out byte by byte,
+longer through the mask M and its axiom).
