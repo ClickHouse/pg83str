@@ -11,7 +11,9 @@ detached process dies with it), hands each host's free slot the next job
 (the longest specs first), and prints every class's result; the exit
 status is 1 when any failed. A function whose code is another's (a
 configuration's copy: the same instructions, branch targets, callees'
-names and constants read, the same tzcnt) is proved once for both.
+names and constants read, the same tzcnt) is proved once for both. A
+function proved in one class (its code rounds no pointer) that fails
+there is proved again in 64.
 """
 import argparse
 import hashlib
@@ -108,7 +110,7 @@ def main():
     import prove
     img = machine.Image(args.elf)
     mode = ['--induct'] if args.induct else ['--max', str(args.max)]
-    jobs, same, rep = [], {}, {}
+    jobs, same, rep, ones = [], {}, {}, set()
     for item in args.func.split(','):
         spec, f = item.split(':') if ':' in item else (args.spec, item)
         key = (spec, not f.startswith(('sse2.', 'sse42.')), fingerprint(img, img.symbols[f]))  # the prover's tzcnt is bsf for those
@@ -116,7 +118,10 @@ def main():
             same[(spec, f)] = rep[key]
             continue
         rep[key] = f
-        classes = range(prove.align_of(img, img.symbols[f])) if args.align == 'all' else [int(x) for x in args.align.split(',')]
+        n = prove.align_of(img, img.symbols[f])
+        if n == 1:
+            ones.add(f)
+        classes = range(n) if args.align == 'all' else [int(x) for x in args.align.split(',')]
         jobs += [['--elf', 'libstr.elf', '--func', f, '--spec', spec, *mode, '--align', str(a)] for a in classes]
     for (spec, f), r in sorted(same.items()):
         print('%s %s: the code of %s, proved with it' % (spec, f, r), flush=True)
@@ -135,6 +140,7 @@ def main():
         threads[h] = min(int(cpus), int(mem) // (1 << 20) // 7)  # a job's z3 may take up to 6 GB (smt.MEMORY)
     results, lock, t0 = [], threading.Lock(), time.time()
     todo = list(jobs)
+    one = {(j[3], j[5]): j for j in jobs if j[-1] == '0' and j[3] in ones}  # (func, spec) -> its one-class job
 
     def run(h):
         if not threads[h]:
@@ -162,6 +168,14 @@ def main():
             elif line.startswith('RESULT '):
                 r = json.loads(line[7:])
                 r['host'] = h
+                job = one.pop((r.get('func'), r.get('spec')), None) if r['result'] != 'proved' else None
+                if job is not None:  # one class did not do: 64 (the proof's case split, any one covers every pointer)
+                    with lock:
+                        more = [job[:-2] + ['--classes', '64', '--align', str(a)] for a in range(64)]
+                        todo[:0] = more
+                        jobs.extend(more)
+                    print('%-5s %s %s: one class failed (%s), 64 classes queued' % (h, r['func'], r['spec'], r.get('detail', '')[:120]), flush=True)
+                    continue
                 with lock:
                     results.append(r)
                     print('%-5s %4d/%d %-28s class %-3s %-6s %5s paths %6.1f s  %s' % (

@@ -2108,12 +2108,13 @@ def main():
     ap.add_argument('--log', help='the SMT-LIB sent to z3')
     ap.add_argument('--verbose', action='store_true', help='each obligation and its time')
     ap.add_argument('--align', default='all', help="the pointer's low bits to prove for: all, or a list")
+    ap.add_argument('--classes', type=int, help='the number of alignment classes (a power of two), not align_of\'s')
     args = ap.parse_args()
     img = X.Image(args.elf)
     mach = X.Machine(img, bmi=not args.func.startswith(('sse2.', 'sse42.')))
     mach.targets = X.branch_targets(img) if args.induct else set()
     entry = img.symbols[args.func]
-    align = align_of(img, entry)
+    align = args.classes or align_of(img, entry)
     classes = range(align) if args.align == 'all' else [int(x) for x in args.align.split(',')]
     log = open(args.log, 'w') if args.log else None
     t0 = time.time()

@@ -19,6 +19,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--jobs', type=int, default=os.cpu_count())
     ap.add_argument('--stream', action='store_true')
+    ap.add_argument('--timeout', type=int, default=6 * 3600, help='seconds a job may take (then killed: an error)')
     args = ap.parse_args()
     todo = None if args.stream else json.load(sys.stdin)
     lock = threading.Lock()
@@ -38,10 +39,17 @@ def main():
                     job = todo.pop(0)
             # paths in a job are relative to the bundle's root (ix's python on the hosts starts in $HOME)
             job = [str(HERE.parent.parent / x) if prev == '--elf' and not x.startswith('/') else x for prev, x in zip([''] + job, job)]
-            p = subprocess.run([sys.executable, str(HERE / 'prove.py'), *job], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            lines = [x for x in p.stdout.splitlines() if x.startswith(('RESULT', 'FAIL'))]
+            p = subprocess.Popen([sys.executable, str(HERE / 'prove.py'), *job], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            try:
+                out = p.communicate(timeout=args.timeout)[0]
+            except subprocess.TimeoutExpired:
+                p.terminate()  # SIGTERM: prove.py takes its solvers down
+                out = p.communicate()[0] + '\nkilled after %d s' % args.timeout
+            lines = [x for x in out.splitlines() if x.startswith(('RESULT', 'FAIL'))]
             if not any(x.startswith('RESULT') for x in lines):
-                lines.append('RESULT ' + json.dumps({'job': job, 'result': 'error', 'detail': p.stdout[-2000:]}))
+                arg = dict(zip(job, job[1:]))
+                lines.append('RESULT ' + json.dumps({'job': job, 'func': arg.get('--func'), 'spec': arg.get('--spec'), 'align': arg.get('--align'),
+                                                     'result': 'error', 'detail': out[-2000:]}))
             with lock:
                 print('\n'.join(lines), flush=True)
 
