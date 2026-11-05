@@ -5,8 +5,10 @@ arguments are constants, and sent to z3 once, each as a define-fun, the
 first time an assertion needs them. Widths: n > 0 a bit-vector of n bits,
 0 a Bool, -1 memory (an array from 64-bit addresses to bytes).
 """
+import atexit
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -625,6 +627,11 @@ def select(m, addr):
         if ia is not None and ib is not None and (ia[1] < ib[0] or ib[1] < ia[0]):
             m = base
             continue
+        under = base
+        while under.op == 'store':
+            under = under.args[0]
+        if under.op in ('win', 'fill'):  # over a window: the stores as ites, so no lambda reaches the solver
+            return ite(eq(a, addr), v, select(base, addr))
         break
     if m.op in ('win', 'fill'):  # read through: no lambda reaches the solver for it
         inside = and_(ule(m.args[1], addr), ult(addr, m.args[2]))
@@ -718,6 +725,24 @@ def _die_with_parent():
         pass
 
 
+_children = []
+
+
+def _reap(*_):
+    for p in _children:
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+
+def _on_term(sig, frame):
+    """A static python has no prctl: the solvers killed on SIGTERM (kill,
+    timeout) and at exit."""
+    _reap()
+    os._exit(128 + sig)
+
+
 _lam = {}
 
 
@@ -759,6 +784,10 @@ class Solver:
             self.bp = subprocess.Popen([bw, '-M', str(MEMORY)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
                                        preexec_fn=_die_with_parent)
         self.p = self.zp
+        if not _children:
+            signal.signal(signal.SIGTERM, _on_term)
+            atexit.register(_reap)
+        _children.extend(p for p in (self.zp, self.bp) if p is not None)
         self.done = set()
         self.log = log
         self.queries = 0

@@ -344,6 +344,26 @@ def call_return(st, rax, prefix):
     st.rip = target.val
 
 
+def slot_guess(st, addr):
+    """The 8 bytes at addr read past every store at another or a computed
+    place and every window: a constant to check, or None."""
+    out = []
+    for i in range(8):
+        r = region_of(st, S.add(addr, const(64, i)))
+        if r is None:
+            return None
+        arr, off, v = st.regions[r[0]][1], r[1], None
+        while arr.op in ('store', 'win', 'fill'):
+            if arr.op == 'store' and arr.args[1] is off:
+                v = arr.args[2]
+                break
+            arr = arr.args[0]
+        if v is None or not S.is_const(v):
+            return None
+        out.append(v)
+    return to_bv(out)
+
+
 def stack_offset(st, addr):
     """addr as rsp0 + offset, or None (the replay's stack)."""
     off = offset_from(addr, RSP0)
@@ -390,14 +410,18 @@ def window_load(m, st, addr, n):
     the entry, or at a loop's general state; and clear of that state's
     window): the bytes of the memory under them, one query instead of a
     case split in every lane (memmove's source read after stores that may
-    overlap it). j: any byte of the load."""
+    overlap it). Deeper first: clear of the stores and windows under that
+    too (an earlier loop's, the memory at the entry under them all), then
+    the memory under this state's own. j: any byte of the load."""
     r = region_of(st, addr)
     if r is None or m.decide is None:
         return None
     k, off = r
+    j = var('jw', 64)
+    x = S.add(off, j)
     if k in st.win:
         lo, hi, arr = st.win[k]
-        hit = [S.and_(S.ule(lo, S.add(off, var('jw', 64))), S.ult(S.add(off, var('jw', 64)), hi))]
+        hit = [S.and_(S.ule(lo, x), S.ult(x, hi))]
     else:
         arr = st.regions[k][1]
         while arr.op == 'store':  # the memory before the stores since
@@ -405,15 +429,23 @@ def window_load(m, st, addr, n):
         if arr is st.regions[k][1]:
             return None
         hit = []
-    j = var('jw', 64)
-    x = S.add(off, j)
     for a, nb, _, c, _ in st.stores:
         rs = region_of(st, a)
         if rs is not None and rs[0] == k:
             hit.append(S.and_(c, within(x, rs[1], nb)))
-    if not m.decide(st, S.and_(S.ult(j, const(64, n)), S.or_(*hit))):
-        return None
-    return [S.select(arr, S.add(off, const(64, i))) for i in range(n)]
+    ways, deep, more = [(arr, hit)], arr, list(hit)
+    while deep.op in ('store', 'win', 'fill'):
+        if deep.op == 'store':
+            more.append(S.eq(deep.args[1], x))
+        else:
+            more.append(S.and_(S.ule(deep.args[1], x), S.ult(x, deep.args[2])))
+        deep = deep.args[0]
+    if deep is not arr:
+        ways.insert(0, (deep, more))
+    for arr, hit in ways:
+        if m.decide(st, S.and_(S.ult(j, const(64, n)), S.or_(*hit))):
+            return [S.select(arr, S.add(off, const(64, i))) for i in range(n)]
+    return None
 
 
 def store_bytes(m, st, addr, lanes, rip, conds=None):
@@ -658,6 +690,10 @@ class Machine:
             if S.is_const(target) and target.val == RET_MARK:
                 st.done = True
                 return [(st, S.TRUE)]
+            if not S.is_const(target) and self.decide is not None:  # stores at computed places since (a frame aligned down): the slot's bytes past them, if they are all
+                guess = slot_guess(st, S.sub(st.gpr['rsp'], const(64, 8)))
+                if guess is not None and self.decide(st, S.not_(S.eq(target, guess))):
+                    target = guess
             if not S.is_const(target):
                 raise Unsupported('ret to a computed address')
             st.rip = target.val

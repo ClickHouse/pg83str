@@ -1240,31 +1240,105 @@ class SpanLong(Span):
     table has it), is one of the candidates read off the first iteration's
     stores to the stack (a byte table, sse2's; a bit table at
     16 (x >> 7) + (x & 15), bit (x >> 4) & 7, the avx2 units' truffle), kept
-    Houdini's way like the others; after the loop the scan's queries have it
-    for the bytes they look up."""
+    Houdini's way like the others. A byte in the set is a bit of M, 256 bits
+    defined by one axiom (bit x set exactly when x is one of the set's L
+    bytes): the spec's terms have no quantifier. Past the loop (the first
+    load of s) the table's invariant, its frontier at L, is the table
+    holding M: 256 facts without a quantifier, what the scan's lookups
+    read."""
 
     def setup(self, a, align):
+        self.M = var('inset', 256)
         params, assume = Span.setup(self, a, align)
         L, t, top = self.L, self.t, const(64, USER_HI)
-        qk = var('qk0', 64)
+        qk, qm = var('qk0', 64), var('qm', 8)
         assume = [c for c in assume if c is not S.ule(L, const(64, SETMAX))]  # the short form's bound (its first bytes' facts stay: instances)
         assume += [S.ult(const(64, SETMAX), L), S.ult(L, const(64, USER_HI - USER_LO)),
-                   S.forall_(qk, S.or_(S.ule(L, qk), S.not_(S.is_zero(self.tbyte(qk)))))]  # no NUL before L
+                   S.forall_(qk, S.or_(S.ule(L, qk), S.not_(S.is_zero(self.tbyte(qk))))),  # no NUL before L
+                   S.forall_(qm, S.eq(self.member(qm), self.in_first(qm, L)))]  # M's definition
         self.side_base = self.tbase
+        self.table_forms, self.table_v = {}, {}
+        self.tables = {}  # a table's invariant (a term) -> its memory, kind, offset, NUL, count
         return params, assume
 
     def member(self, b):
-        k = var('qk', 64)
-        return S.exists_(k, S.and_(S.ult(k, self.L), S.eq(self.tbyte(k), b)))
+        if S.is_const(b):
+            return S.eq(S.extract(self.M, b.val, b.val), const(1, 1))
+        return S.eq(S.extract(S.lshr(self.M, S.zext(b, 256)), 0, 0), const(1, 1))
+
+    def settle(self, prover, st, new):
+        """At the first load of s past the set loop, a table's invariant among
+        the path's facts (about the general state's memory, its count n):
+        L is n + j for a small j (one instance of no NUL before L says it),
+        and then the table now (the last bytes stored since) holds M, for
+        any byte x and any truth p for "x one of the first n" (the
+        invariant's instance and M's definition with p): written out for
+        the 256 bytes in the invariant's place, no quantifier left. One
+        that does not hold so is dropped (fewer facts: sound), and its loop
+        explored again without it (a candidate the first arrival kept that
+        a step would drop: the empty table is every table)."""
+        if not any(self.owner(a) is self.s for a, _, _, _ in new):
+            return
+        for i, c in enumerate(st.pc):
+            if c not in self.tables:
+                continue
+            gmem, kind, off, d, nul, n = self.tables[c]
+            plain = [y for y in prover.solver.assumed + st.pc if not S.has_quantifier(y)]
+            for j in range(3):
+                m = S.add(n, const(64, j))
+                inst = S.or_(S.ule(self.L, m), S.not_(S.is_zero(self.tbyte(m))))
+                if prover.solver._check(*plain, inst, S.not_(S.eq(m, self.L)), bare=True, timeout=AUX) == 'unsat':
+                    break
+            else:
+                continue
+            x, p = var('sx', 8), var('sp', S.BOOL)
+            nulx = S.and_(S.boolean(nul), S.is_zero(x))
+            cur = st.regions[-1][1]
+            ih = self.table_is(gmem, kind, off, x, S.or_(p, nulx))
+            mdef = S.eq(self.member(x), S.or_(p, *[S.eq(self.tbyte(S.add(n, const(64, e))), x) for e in range(j)]))
+            goal = self.table_is(cur, kind, off, x, S.or_(self.member(x), nulx))
+            if prover.solver._check(*plain, ih, mdef, S.not_(goal), bare=True, timeout=6 * AUX) != 'unsat':
+                del st.pc[i]
+                name = next(nm for nm, form in self.table_forms.items() if form == (kind, off, d, nul))
+                g = st.gen
+                while g is not None and name not in [nm for nm, _ in g['kept']]:
+                    g = g['parent']
+                if g is not None:
+                    prover.lost.setdefault(g['head'], set()).add(name)
+                if prover.args.verbose:
+                    print('    past the set loop: not kept: %s' % name, flush=True)
+                return self.settle(prover, st, new)
+            st.pc[i:i + 1] = [self.table_is(cur, kind, off, const(8, y), S.or_(self.member(const(8, y)), S.boolean(nul and y == 0)))
+                              for y in range(256)]
+            if prover.args.verbose:
+                print('    past the set loop: the %s table at rsp0%+d holds the set (L = n + %d; 256 facts)' % (kind, off, j), flush=True)
+            return self.settle(prover, st, new)
 
     def keep_unrolling(self, prev, now):
         """Only a loop that reads neither string (the table's zeroing)."""
         return not now.loads[len(prev.loads):]
 
     def in_first(self, x, n):
-        """x one of the set's first n bytes."""
+        """x one of the set's first n bytes (written out for a known small n)."""
+        if S.is_const(n) and n.val <= 64:
+            return S.or_(*[S.eq(self.tbyte(const(64, j)), x) for j in range(n.val)])
         k = var('qk', 64)
         return S.exists_(k, S.and_(S.ult(k, n), S.eq(self.tbyte(k), x)))
+
+    def table_holds(self, st, name, f):
+        """A table's invariant where the frontier's count is known (the first
+        arrival): for any byte x, no quantifier. None otherwise."""
+        kind, c, d, nul = self.table_forms[name]
+        n = S.add(S.sub(f, self.t), const(64, d & S.mask(64)))
+        if not S.is_const(n):
+            return None
+        x = var('bx', 8)
+        want = self.in_first(x, n)
+        if nul:
+            want = S.or_(want, S.is_zero(x))
+        plain = [c for c in st.pc if not S.has_quantifier(c)]
+        return self.solver._check(*plain, S.not_(self.table_is(st.regions[-1][1], kind, c, x, want)), bare=True,
+                                  timeout=6 * AUX) == 'unsat'
 
     def side_base_case(self, st, f, step):
         return [('the set loop\'s frontier in the set', [S.ult(f, self.t)])]
@@ -1280,6 +1354,13 @@ class SpanLong(Span):
         that stores the byte it loaded the time before), and the NUL or not."""
         t, L = self.t, self.L
         out = [('the set frontier at most its length', lambda st, f: S.ule(S.sub(f, t), L))]
+        tb = S.sub(t, self.tbase)
+        for r, v in s1.gpr.items():  # a register holding a set byte near the frontier (loaded the time before, stored this time)
+            if v.op == 'zext' and v.args[0].op == 'select' and v.args[0].args[0] is self.T:
+                d = S.sub(v.args[0].args[1], S.add(tb, S.sub(a1, t)))
+                if S.is_const(d):
+                    out.append(('%s the set byte at F%+d' % (r, S.signed(d)),
+                                (lambda r, d, w: lambda st, f: S.eq(st.gpr[r], S.zext(self.tbyte(S.add(S.sub(f, t), d)), w)))(r, d, v.w)))
         offs, m = set(), s1.regions[-1][1]
         while m.op == 'store':
             if S.is_const(m.args[1]):
@@ -1299,12 +1380,49 @@ class SpanLong(Span):
             for kind, size in (('byte', 256), ('bit', 32)):
                 if hi - lo >= size:
                     forms += [(kind, lo), (kind, hi - size)]
+        vals, m2 = set(), s2.regions[-1][1]  # the values the iteration stores at computed places: one constant, a byte table's v
+        while m2.op == 'store' and m2 is not s1.regions[-1][1]:
+            if not S.is_const(m2.args[1]):
+                vals.add(m2.args[2])
+            m2 = m2.args[0]
+        v = next(iter(vals)) if len(vals) == 1 and S.is_const(next(iter(vals))) and next(iter(vals)).val else None
         for kind, c in sorted(set(forms)):
+            if kind == 'byte' and v is not None:
+                self.table_v[(kind, c)] = v
             for d in (-1, 0):
                 for nul in (False, True):
                     name = 'the %s table at rsp0%+d, the set before F%+d%s' % (kind, c, d, ', the NUL' if nul else '')
+                    self.table_forms[name] = (kind, c, d, nul)
                     out.append((name, (lambda kind, c, d, nul: lambda st, f: self.table_inv(st, kind, c, d, nul, f))(kind, c, d, nul)))
         return out
+
+    def table_step(self, st, gen, name, f, f2):
+        """The step of a table's invariant without a quantifier: for any byte
+        x and any truth p for "x one of the set's first n bytes", the
+        general state's table having x exactly when p (or the NUL) gives the
+        table after the iteration having x exactly when p or x is the n-th
+        byte (or the NUL): that is the invariant one byte on, p being what
+        it stands for. None: not of that form (the frontier moved by other
+        than 1)."""
+        if S.sub(f2, f) is not const(64, 1):
+            return None
+        kind, c, d, nul = self.table_forms[name]
+        x, p = var('sx', 8), var('sp', S.BOOL)
+        n = S.add(S.sub(f, self.t), const(64, d & S.mask(64)))
+        nulx = S.and_(S.boolean(nul), S.is_zero(x))
+        ih = self.table_is(gen['mem'][-1], kind, c, x, S.or_(p, nulx))
+        goal = self.table_is(st.regions[-1][1], kind, c, x, S.or_(p, S.eq(self.tbyte(n), x), nulx))
+        plain = [c for c in st.pc if not S.has_quantifier(c)]  # the step needs no quantified fact (fewer hypotheses: sound)
+        return self.solver._check(*plain, ih, S.not_(goal), bare=True, timeout=6 * AUX) == 'unsat'
+
+    def table_is(self, mem, kind, c, x, want):
+        """The table's entry for x says want: a byte table whose loop stores
+        one value v, the byte v or 0 (a scan may and the entries); else
+        the entry nonzero, the bit set."""
+        v = self.table_v.get((kind, c))
+        if v is not None:
+            return S.eq(S.select(mem, S.add(const(64, c), S.zext(x, 64))), S.ite(want, v, const(8, 0)))
+        return S.eq(self.table_bit(mem, kind, c, x), want)
 
     def table_bit(self, mem, kind, c, x):
         if kind == 'byte':
@@ -1320,7 +1438,10 @@ class SpanLong(Span):
         want = self.in_first(x, n)
         if nul:
             want = S.or_(want, S.is_zero(x))
-        return S.forall_(x, S.eq(self.table_bit(st.regions[-1][1], kind, c, x), want))
+        mem = st.regions[-1][1]
+        inv = S.forall_(x, self.table_is(mem, kind, c, x, want))
+        self.tables[inv] = (mem, kind, c, d, nul, n)
+        return inv
 
 
 class CspanLong(SpanLong):
@@ -1365,6 +1486,7 @@ class Prover:
         self.lost = {}     # this run's: dropped at its end
         self.widen = {}    # loop head -> registers, vectors and masks some way round changed that the general state kept
         self.best_way = {}  # an obligation written several ways -> the one that proved it last
+        self.covered = {}  # id -> a first arrival at a loop's head whose general state's subtree is explored
         self.t0 = time.time()
 
     def fail(self, what, st, show):
@@ -1673,7 +1795,12 @@ class Prover:
             if r is not None:
                 return r
         # a table's invariant needs no assumption (they have quantifiers: z3 slows down on them)
-        return self.solver.check(*st.pc, S.not_(f(st, front)), bare=' table ' in name) == 'unsat'
+        table = ' table ' in name  # quantified: a false one may take z3 long to refute; unknown drops it (sound)
+        if table and hasattr(self.spec, 'table_holds'):
+            r = self.spec.table_holds(st, name, front)
+            if r is not None:
+                return r
+        return self.solver.check(*st.pc, S.not_(f(st, front)), bare=table, timeout=6 * AUX if table else None) == 'unsat'
 
     def candidates(self, s1, moved, havoc, step, a1, side=False, s2=None):
         """Invariant candidates, as functions of a head state and its frontier:
@@ -1796,7 +1923,14 @@ class Prover:
             lost = []  # all kept, one query
         else:
             lost = [n for n, f in plain if not self.holds(st, n, f, a2)]
-        lost += [n for n, f in gen['kept'] if ' table ' in n and not self.holds(st, n, f, a2)]
+        for n, f in gen['kept']:  # a table's invariant: its step without quantifiers when the spec has one
+            if ' table ' in n:
+                way = getattr(self.spec, 'table_step', None)
+                r = way(st, gen, n, a, a2) if way is not None else None
+                if r is None:
+                    r = self.holds(st, n, f, a2)
+                if not r:
+                    lost.append(n)
         if lost:  # gathered over the loop's subtree, then the loop again without them
             self.lost.setdefault(gen['head'], set()).update(lost)
             return
@@ -1886,7 +2020,11 @@ class Prover:
                                                 and self.spec.keep_unrolling(snap, st)):  # the first arrivals run on (a short loop runs out in them)
                         st.snaps[st.rip] = (seen_n + 1, st.copy())
                     else:
-                        self.explore_loop(snap, st)  # a loop; after another one on this path, the next in a row
+                        if id(snap) not in self.covered:  # a loop; after another one on this path, the next in a row
+                            self.explore_loop(snap, st)
+                            self.covered[id(snap)] = snap
+                        # else another way round from the same first arrival: in the general state, whose
+                        # subtree (every way round, every way out) is explored, from that arrival (the base case)
                         closed = True
                         break
                 contract = self.contracts.get(st.rip)
@@ -1900,6 +2038,8 @@ class Prover:
                 for aa, an, arip in st.aligned[seen_al:]:  # a misaligned movaps, movdqa or legacy SSE operand faults, its mask whatever
                     self.never(st, [S.not_(S.is_zero(S.band(aa, const(64, an - 1))))], 'the access at %#x needs %d-byte alignment and may not have it' % (arip, an))
                 new = st.loads[seen:]
+                if new and hasattr(self.spec, 'settle'):
+                    self.spec.settle(self, st, new)
                 if len(new) == 1:
                     la, ln, lrip, lc = new[0]
                     self.never(st, [lc, self.spec.early(la, ln)], 'the load at %#x reaches past what the object allows' % lrip)
