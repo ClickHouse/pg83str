@@ -32,6 +32,10 @@ class Unsupported(Exception):
     pass
 
 
+class Fault(Exception):
+    """Replay: an access outside the mapped pages (a guard page natively)."""
+
+
 class State:
     def __init__(self):
         self.rip = 0
@@ -46,6 +50,7 @@ class State:
         self.stores = []   # (addr, bytes, rip)
         self.stack = {}    # offset from rsp0 -> 64-bit term
         self.regions = []  # (base, array): memory at base + offset as array[offset]
+        self.cmem = None   # replay: (address, bytearray), the only memory there is
         self.steps = 0
         self.done = False
         self.trace = []
@@ -58,6 +63,7 @@ class State:
         s.rip, s.mem, s.steps, s.done = self.rip, self.mem, self.steps, self.done
         s.gpr, s.vec, s.k, s.flags, s.stack = dict(self.gpr), dict(self.vec), dict(self.k), dict(self.flags), dict(self.stack)
         s.regions = self.regions
+        s.cmem = None if self.cmem is None else (self.cmem[0], bytearray(self.cmem[1]))
         s.fresh, s.snaps, s.gen = self.fresh, dict(self.snaps), self.gen
         s.pc, s.loads, s.aligned, s.stores, s.trace = list(self.pc), list(self.loads), list(self.aligned), list(self.stores), list(self.trace)
         return s
@@ -242,6 +248,12 @@ def load(m, st, addr, n, rip):
         return [S.extract(v, 8 * i + 7, 8 * i) for i in range(8)]
     if S.is_const(addr) and m.image.section_at(addr.val) is not None:
         return [const(8, m.image.byte(addr.val + i)) for i in range(n)]
+    if st.cmem is not None:
+        base, buf = st.cmem
+        if not S.is_const(addr) or not base <= addr.val <= addr.val + n <= base + len(buf):
+            raise Fault('load of %d bytes at %r from %#x' % (n, addr, rip))
+        o = addr.val - base
+        return [const(8, b) for b in buf[o:o + n]]
     st.loads.append((addr, n, rip))
     return [byte(st, S.add(addr, const(64, i))) for i in range(n)]
 
@@ -252,6 +264,15 @@ def store_bytes(m, st, addr, lanes, rip):
         if len(lanes) != 8:
             raise Unsupported('stack store of %d bytes' % len(lanes))
         st.stack[off] = to_bv(lanes)
+        return
+    if st.cmem is not None:
+        base, buf = st.cmem
+        if not S.is_const(addr) or not base <= addr.val <= addr.val + len(lanes) <= base + len(buf):
+            raise Fault('store of %d bytes at %r from %#x' % (len(lanes), addr, rip))
+        for i, b in enumerate(lanes):
+            if not S.is_const(b):
+                raise Fault('store of an unknown byte at %#x' % rip)
+            buf[addr.val - base + i] = b.val
         return
     st.stores.append((addr, len(lanes), rip))
     for i, b in enumerate(lanes):

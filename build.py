@@ -151,4 +151,14 @@ proof_elf = command(
     descr="LD",
     color="cyan",
 )
-group("proof", proof_elf)
+# The oracle: the same functions run natively, for dev/proof/replay.py.
+proof_oracle = command(
+    name="proof_oracle",
+    inputs=["$(S)/dev/proof/oracle.c", "$(S)/dev/proof/oracle.py"],
+    outputs=["$(B)/proof/oracle"],
+    deps=[libstr],
+    cmd=["python3", "$(S)/dev/proof/oracle.py", "--libstr", "$(B)/libstr.a", "--out", "$(B)/proof/oracle"],
+    descr="LD",
+    color="cyan",
+)
+group("proof", proof_elf, proof_oracle)
