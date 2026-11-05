@@ -1631,10 +1631,12 @@ class Prover:
             if len(front) == 1:
                 step = moved[front[0]]  # the frontier's step; the other registers move by multiples of it (a count down, say)
                 a1 = s1.gpr[front[0]]
-                # a register past the bytes it reads (loads at rcx - 3 .. rcx): the frontier is the lowest of them
+                # a register past the bytes it reads (loads at rcx - 3 .. rcx), or
+                # behind them (truffle's rax rounded down, its loads at rax + 32
+                # .. rax + 63 through rcx): the frontier is the lowest of them
                 acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
                 below = [S.signed(S.sub(x, a1)) for x in acc if S.is_const(S.sub(x, a1))]
-                if below and min(below) < 0:
+                if below and (min(below) < 0 or len(below) == len(acc) and min(below) > 0):
                     a1 = S.add(a1, const(64, min(below)))
             elif not front and not [d for d in moved.values() if d > 0] and [r for r in deltas if into(r)]:
                 # moved by what an inner loop did: the pointers into the object
