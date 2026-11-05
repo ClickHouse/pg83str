@@ -45,9 +45,10 @@ class State:
         self.flags = {}
         self.mem = None
         self.pc = []
-        self.loads = []    # (addr, bytes, rip)
+        self.loads = []    # (addr, bytes, rip, cond): cond the lane's mask bit for a masked access, else TRUE
         self.aligned = []  # (addr, alignment, rip)
-        self.stores = []   # (addr, bytes, rip)
+        self.requires = []  # (bad, what, rip): conditions an instruction's semantics here needs false (rep movs: no backward overlap)
+        self.stores = []   # (addr, bytes, rip, cond, lanes): lanes the values; rep stos: bytes a term, lanes [the byte]
         self.stack = {}    # offset from rsp0 -> 64-bit term
         self.regions = []  # (base, array): memory at base + offset as array[offset]
         self.cmem = None   # replay: (address, bytearray), the only memory there is
@@ -59,17 +60,21 @@ class State:
         self.gen = None       # the loop this state stands for every iteration of
         self.front_lo = None  # the latest loop frontier: the bytes before it are its invariant's
         self.front_bytes = []  # frontiers whose byte must be in the object (loads invariant A)
-        self.gen_heads = []   # the heads of the loops generalized on this path
+        self.cover = []       # writers: (lo, hi, cond) index ranges of the object written right before the stores since
+        self.win = {}         # region -> (lo, hi, array): a loop's general memory, the array but in [lo, hi) (offsets)
 
     def copy(self):
         s = State.__new__(State)
         s.rip, s.mem, s.steps, s.done = self.rip, self.mem, self.steps, self.done
         s.gpr, s.vec, s.k, s.flags, s.stack = dict(self.gpr), dict(self.vec), dict(self.k), dict(self.flags), dict(self.stack)
-        s.regions = self.regions
+        s.regions = list(self.regions)
         s.cmem = None if self.cmem is None else (self.cmem[0], bytearray(self.cmem[1]))
         s.fresh, s.snaps, s.gen = self.fresh, dict(self.snaps), self.gen
-        s.front_lo, s.front_bytes, s.gen_heads = self.front_lo, list(self.front_bytes), list(self.gen_heads)
+        s.front_lo, s.front_bytes = self.front_lo, list(self.front_bytes)
+        s.cover = list(self.cover)
+        s.win = self.win
         s.pc, s.loads, s.aligned, s.stores, s.trace = list(self.pc), list(self.loads), list(self.aligned), list(self.stores), list(self.trace)
+        s.requires = list(self.requires)
         return s
 
 
@@ -222,14 +227,57 @@ def offset_from(addr, base):
     return off
 
 
+def region_of(st, addr):
+    """(index, offset) of addr's region, or None. An address that is no sum
+    with a base in it (rounded down, say) belongs to the one region whose
+    base it depends on, at addr - base."""
+    for k, (base, arr) in enumerate(st.regions):
+        off = offset_from(addr, base)
+        if off is not None:
+            return k, off
+    vs = S.variables(addr)
+    hits = [k for k, (base, arr) in enumerate(st.regions) if S.variables(base) & vs]
+    if len(hits) == 1:
+        k = hits[0]
+        return k, S.sub(addr, st.regions[k][0])
+    if hits or (st.regions and not S.is_const(addr) and st.cmem is None):
+        raise Unsupported('an address of no single region: %r' % addr)
+    return None
+
+
 def byte(st, addr):
     """The byte at addr: in a region, an element of the region's array at the
     offset from its base (the solver then compares offsets, not addresses)."""
-    for base, arr in st.regions:
-        off = offset_from(addr, base)
-        if off is not None:
-            return S.select(arr, off)
+    r = region_of(st, addr)
+    if r is not None:
+        return S.select(st.regions[r[0]][1], r[1])
     return S.select(st.mem, addr)
+
+
+def write_byte(st, addr, v):
+    r = region_of(st, addr)
+    if r is not None:
+        k, off = r
+        st.regions[k] = (st.regions[k][0], S.store(st.regions[k][1], off, v))
+    else:
+        st.mem = S.store(st.mem, addr, v)
+
+
+def call_return(st, rax, prefix):
+    """The state after a call whose effect the caller's proof takes from
+    the callee's contract: the caller-saved registers, vectors, masks and
+    flags unknown (a new prefix for their variables), rax the answer, the
+    return address popped."""
+    st.fresh = prefix
+    for r in ('rcx', 'rdx', 'rsi', 'rdi', 'r8', 'r9', 'r10', 'r11'):
+        st.gpr[r] = var(prefix + r, 64)
+    st.gpr['rax'] = rax
+    st.vec, st.k, st.flags = {}, {}, {}
+    off = stack_offset(st, st.gpr['rsp'])
+    if off is None or off not in st.stack or not S.is_const(st.stack[off]):
+        raise Unsupported('a contract\'s return with an unknown stack')
+    st.rip = st.stack[off].val
+    st.gpr['rsp'] = S.add(st.gpr['rsp'], const(64, 8))
 
 
 def stack_offset(st, addr):
@@ -242,8 +290,9 @@ def stack_offset(st, addr):
     return None
 
 
-def load(m, st, addr, n, rip):
-    """n bytes at addr as lanes."""
+def load(m, st, addr, n, rip, conds=None):
+    """n bytes at addr as lanes; conds: a masked load's lane conditions (a
+    lane masked off is not read: no fault, no obligation)."""
     off = stack_offset(st, addr)
     if off is not None:
         if n != 8 or off not in st.stack:
@@ -258,11 +307,45 @@ def load(m, st, addr, n, rip):
             raise Fault('load of %d bytes at %r from %#x' % (n, addr, rip))
         o = addr.val - base
         return [const(8, b) for b in buf[o:o + n]]
-    st.loads.append((addr, n, rip))
+    if conds is None:
+        st.loads.append((addr, n, rip, S.TRUE))
+    else:
+        st.loads.extend((S.add(addr, const(64, i)), 1, rip, c) for i, c in enumerate(conds) if c is not S.FALSE)
+    if st.win:
+        lanes = window_load(m, st, addr, n)
+        if lanes is not None:
+            return lanes
     return [byte(st, S.add(addr, const(64, i))) for i in range(n)]
 
 
-def store_bytes(m, st, addr, lanes, rip):
+def within(x, o, n):
+    """x one of the n offsets from o (modulo 2^64, as the memory has them; n a
+    number or a term)."""
+    return S.ult(S.sub(x, o), n if isinstance(n, S.T) else const(64, n))
+
+
+def window_load(m, st, addr, n):
+    """A load from a loop's general memory clear of the window and of the
+    stores since: the bytes of the memory under the window (one query
+    instead of a case split in every lane). j: any byte of the load."""
+    r = region_of(st, addr)
+    if r is None or r[0] not in st.win or m.decide is None:
+        return None
+    k, off = r
+    lo, hi, arr = st.win[k]
+    j = var('jw', 64)
+    x = S.add(off, j)
+    hit = [S.and_(S.ule(lo, x), S.ult(x, hi))]
+    for a, nb, _, c, _ in st.stores:
+        rs = region_of(st, a)
+        if rs is not None and rs[0] == k:
+            hit.append(S.and_(c, within(x, rs[1], nb)))
+    if not m.decide(st, S.and_(S.ult(j, const(64, n)), S.or_(*hit))):
+        return None
+    return [S.select(arr, S.add(off, const(64, i))) for i in range(n)]
+
+
+def store_bytes(m, st, addr, lanes, rip, conds=None):
     off = stack_offset(st, addr)
     if off is not None:
         if len(lanes) != 8:
@@ -271,16 +354,73 @@ def store_bytes(m, st, addr, lanes, rip):
         return
     if st.cmem is not None:
         base, buf = st.cmem
-        if not S.is_const(addr) or not base <= addr.val <= addr.val + len(lanes) <= base + len(buf):
-            raise Fault('store of %d bytes at %r from %#x' % (len(lanes), addr, rip))
         for i, b in enumerate(lanes):
-            if not S.is_const(b):
-                raise Fault('store of an unknown byte at %#x' % rip)
-            buf[addr.val - base + i] = b.val
+            c = S.TRUE if conds is None else conds[i]
+            if c is S.FALSE:
+                continue
+            a = S.add(addr, const(64, i))
+            if c is not S.TRUE or not S.is_const(b) or not S.is_const(a):
+                raise Fault('a store of an unknown byte or mask or address at %#x' % rip)
+            if not base <= a.val < base + len(buf):
+                raise Fault('store at %#x from %#x' % (a.val, rip))
+            buf[a.val - base] = b.val
         return
-    st.stores.append((addr, len(lanes), rip))
-    for i, b in enumerate(lanes):
-        st.mem = S.store(st.mem, S.add(addr, const(64, i)), b)
+    if conds is None:
+        st.stores.append((addr, len(lanes), rip, S.TRUE, list(lanes)))
+        for i, b in enumerate(lanes):
+            write_byte(st, S.add(addr, const(64, i)), b)
+        return
+    for i, (b, c) in enumerate(zip(lanes, conds)):
+        if c is S.FALSE:
+            continue
+        a = S.add(addr, const(64, i))
+        st.stores.append((a, 1, rip, c, [b]))
+        write_byte(st, a, S.ite(c, b, byte(st, a)))
+
+
+def copy_bytes(m, st, dst, src, count, rip):
+    """rep movsb forward: count (a term) bytes from src to dst. Within one
+    region too, where the destination must not start inside the source
+    (byte by byte forward, it would read bytes it wrote): then every byte
+    written is the source's as it was."""
+    if st.cmem is not None:
+        base, buf = st.cmem
+        if not all(S.is_const(x) for x in (dst, src, count)):
+            raise Fault('rep movs with unknown operands at %#x' % rip)
+        for i in range(count.val):  # byte by byte, forward, as the instruction does
+            s, d = src.val + i, dst.val + i
+            if not (base <= s < base + len(buf) and base <= d < base + len(buf)):
+                raise Fault('rep movs out of the pages at %#x' % rip)
+            buf[d - base] = buf[s - base]
+        return
+    rd, rs = region_of(st, dst), region_of(st, src)
+    if rd is None or rs is None:
+        raise Unsupported('rep movs outside the regions at %#x' % rip)
+    if rd[0] == rs[0]:
+        st.requires.append((S.and_(S.not_(S.is_zero(count)), S.ult(src, dst), S.ult(dst, S.add(src, count))), 'rep movs with its destination inside its source', rip))
+    (kd, dlo), (ks, slo) = rd, rs
+    old, srcarr = st.regions[kd][1], st.regions[ks][1]
+    st.loads.append((src, count, rip, S.TRUE))
+    st.stores.append((dst, count, rip, S.TRUE, ('movs', src, srcarr, slo)))  # the source's memory as the copy found it
+    x = var('xm%d' % len(st.stores), 64)
+    body = S.ite(S.and_(S.ule(dlo, x), S.ult(x, S.add(dlo, count))), S.select(srcarr, S.add(S.sub(x, dlo), slo)), S.select(old, x))
+    st.regions[kd] = (st.regions[kd][0], S.lam(x, body))
+
+
+def fill_bytes(m, st, addr, count, v, rip):
+    """rep stosb: count (a term) bytes v from addr."""
+    if st.cmem is not None:
+        base, buf = st.cmem
+        if not (S.is_const(addr) and S.is_const(count) and S.is_const(v)) or not base <= addr.val <= addr.val + count.val <= base + len(buf):
+            raise Fault('rep stos out of the pages or unknown at %#x' % rip)
+        buf[addr.val - base:addr.val - base + count.val] = bytes([v.val]) * count.val
+        return
+    st.stores.append((addr, count, rip, S.TRUE, [v]))
+    r = region_of(st, addr)
+    if r is None:
+        raise Unsupported('rep stos outside a region at %#x' % rip)
+    k, off = r
+    st.regions[k] = (st.regions[k][0], S.fill(st.regions[k][1], off, S.add(off, count), v))
 
 
 def mem_addr(st, j, mem):
@@ -295,6 +435,13 @@ def mem_addr(st, j, mem):
 
 
 # ------------------------------------------------------------- operands
+
+def opw(o):
+    """An operand's width in bits."""
+    if o['kind'] == 'Memory':
+        return o['mem']['size'] * 8
+    return o['size']
+
 
 def op_value(m, st, j, o, w):
     """A general-purpose operand as a w-bit term."""
@@ -373,6 +520,16 @@ def tzcnt(x):
 # ------------------------------------------------------------- execution
 
 CC = set(x86.CC)
+MASKED = {'vmovdqu8', 'vmovdqu64', 'vmovdqu32', 'vmovdqa64', 'vmovdqa32', 'vpcmpb', 'vpcmpub', 'vpcmpeqb', 'vptestnmb', 'vptestmb'}
+
+
+def lane_conds(st, j, n):
+    """A masked instruction's lane conditions, or None unmasked."""
+    k = j.get('op_mask')
+    if k in (None, 'none'):
+        return None
+    km = read_reg(st, k)
+    return [S.eq(S.extract(km, i, i), const(1, 1)) for i in range(n)]
 
 
 def branch_targets(image):
@@ -401,6 +558,7 @@ class Machine:
         self.image = image
         self.bmi = bmi  # False: tzcnt runs as bsf (a CPU without BMI1, the sse2 and sse42 configurations' targets)
         self.fresh_n = 0
+        self.decide = None  # (state, bad) -> whether the path's conditions rule bad out: the prover's solver
 
     def step(self, st):
         """Execute one instruction: [(state, condition)] successors, where a
@@ -410,7 +568,7 @@ class Machine:
         mn = j['mnemonic']
         ops = j['ops']
         nxt = j['offset'] + j['len']
-        if j.get('op_mask') not in (None, 'none'):
+        if j.get('op_mask') not in (None, 'none') and mn not in MASKED:
             raise Unsupported('%s with a mask at %#x' % (mn, st.rip))
         if mn.startswith('nop') or mn in ('endbr64',):
             st.rip = nxt
@@ -471,39 +629,151 @@ class Machine:
         w = ops[0]['size'] if ops[0]['kind'] == 'Register' else ops[0]['mem']['size'] * 8
         op_store(self, st, j, ops[0], op_value(self, st, j, ops[1], w))
 
+    def i_inc(self, st, j, ops):
+        w = opw(ops[0])
+        a = op_value(self, st, j, ops[0], w)
+        r = S.add(a, const(w, 1))
+        cf = st.flags.get('CF')
+        flags_add(st, a, const(w, 1), r)
+        st.flags['CF'] = cf
+        op_store(self, st, j, ops[0], r)
+
+    def i_dec(self, st, j, ops):
+        w = opw(ops[0])
+        a = op_value(self, st, j, ops[0], w)
+        r = S.sub(a, const(w, 1))
+        cf = st.flags.get('CF')
+        flags_sub(st, a, const(w, 1), r)
+        st.flags['CF'] = cf
+        op_store(self, st, j, ops[0], r)
+
+    def i_bzhi(self, st, j, ops):
+        w = opw(ops[0])
+        x = op_value(self, st, j, ops[1], w)
+        idx = S.zext(S.extract(op_value(self, st, j, ops[2], w), 7, 0), w)
+        big = S.ule(const(w, w), idx)
+        r = S.ite(big, x, S.band(x, S.sub(S.shl(const(w, 1), idx), const(w, 1))))
+        st.flags = {'ZF': S.is_zero(r), 'SF': S.msb(r), 'CF': S.ult(const(w, w - 1), idx), 'OF': S.FALSE, 'PF': None}
+        write_reg(st, ops[0]['reg'], r)
+
+    def _bt(self, st, j, ops, fn):
+        """bt/bts/btr/btc on a register: the bit (offset mod the width) into
+        CF, then the bit set, cleared or flipped."""
+        if ops[0]['kind'] != 'Register':
+            raise Unsupported('%s on memory at %#x' % (j['mnemonic'], st.rip))
+        w = opw(ops[0])
+        x = op_value(self, st, j, ops[0], w)
+        idx = S.band(op_value(self, st, j, ops[1], w) if ops[1]['kind'] != 'Immediate' else const(w, ops[1]['imm']), const(w, w - 1))
+        bit = S.shl(const(w, 1), idx)
+        st.flags = dict(st.flags, CF=S.not_(S.is_zero(S.band(x, bit))))
+        if fn is not None:
+            write_reg(st, ops[0]['reg'], fn(x, bit))
+
+    def i_bt(self, st, j, ops):
+        self._bt(st, j, ops, None)
+
+    def i_bts(self, st, j, ops):
+        self._bt(st, j, ops, S.bor)
+
+    def i_btr(self, st, j, ops):
+        self._bt(st, j, ops, lambda x, b: S.band(x, S.bnot(b)))
+
+    def i_btc(self, st, j, ops):
+        self._bt(st, j, ops, S.bxor)
+
+    def i_push(self, st, j, ops):
+        v = op_value(self, st, j, ops[0], 64)
+        rsp = S.sub(st.gpr['rsp'], const(64, 8))
+        off = stack_offset(st, rsp)
+        if off is None:
+            raise Unsupported('push with an unknown stack')
+        st.gpr['rsp'] = rsp
+        st.stack[off] = v
+
+    def i_pop(self, st, j, ops):
+        off = stack_offset(st, st.gpr['rsp'])
+        if off is None or off not in st.stack:
+            raise Unsupported('pop of an unknown stack slot')
+        v = st.stack[off]
+        st.gpr['rsp'] = S.add(st.gpr['rsp'], const(64, 8))
+        write_reg(st, ops[0]['reg'], v)
+
+    def i_andn(self, st, j, ops):
+        """andn r1, r2, r3: r1 = ~r2 & r3."""
+        w = opw(ops[0])
+        r = S.band(S.bnot(op_value(self, st, j, ops[1], w)), op_value(self, st, j, ops[2], w))
+        st.flags = {'ZF': S.is_zero(r), 'SF': S.msb(r), 'CF': S.FALSE, 'OF': S.FALSE, 'PF': None}
+        write_reg(st, ops[0]['reg'], r)
+
+    def _bls(self, st, j, ops, fn, cf):
+        w = opw(ops[0])
+        x = op_value(self, st, j, ops[1], w)
+        r = fn(x, S.sub(x, const(w, 1)))
+        st.flags = {'ZF': S.is_zero(r), 'SF': S.msb(r), 'CF': cf(x), 'OF': S.FALSE, 'PF': None}
+        write_reg(st, ops[0]['reg'], r)
+
+    def i_blsr(self, st, j, ops):  # x & (x - 1): the lowest set bit cleared
+        self._bls(st, j, ops, S.band, S.is_zero)
+
+    def i_blsmsk(self, st, j, ops):  # x ^ (x - 1): up to the lowest set bit
+        self._bls(st, j, ops, S.bxor, S.is_zero)
+
+    def i_blsi(self, st, j, ops):  # x & -x: the lowest set bit
+        self._bls(st, j, ops, lambda x, xm1: S.band(x, S.neg(x)), lambda x: S.not_(S.is_zero(x)))
+
+    def _movs(self, st, j, ops):
+        if j.get('rep') != 'rep':
+            raise Unsupported('movsb without rep at %#x' % st.rip)
+        rdi, rsi, rcx = st.gpr['rdi'], st.gpr['rsi'], st.gpr['rcx']
+        copy_bytes(self, st, rdi, rsi, rcx, st.rip)
+        st.gpr['rdi'] = S.add(rdi, rcx)
+        st.gpr['rsi'] = S.add(rsi, rcx)
+        st.gpr['rcx'] = const(64, 0)
+
+    def i_stosb(self, st, j, ops):
+        if j.get('rep') != 'rep':
+            raise Unsupported('stosb without rep at %#x' % st.rip)
+        rdi, rcx = st.gpr['rdi'], st.gpr['rcx']
+        fill_bytes(self, st, rdi, rcx, S.extract(st.gpr['rax'], 7, 0), st.rip)
+        st.gpr['rdi'] = S.add(rdi, rcx)
+        st.gpr['rcx'] = const(64, 0)
+
     def i_neg(self, st, j, ops):
-        w = ops[0]['size']
+        w = opw(ops[0])
         a = op_value(self, st, j, ops[0], w)
         r = S.neg(a)
         st.flags = {'CF': S.not_(S.is_zero(a)), 'ZF': S.is_zero(r), 'SF': S.msb(r), 'OF': S.eq(a, const(w, 1 << (w - 1))), 'PF': None}
         op_store(self, st, j, ops[0], r)
 
     def i_not(self, st, j, ops):
-        w = ops[0]['size']
+        w = opw(ops[0])
         op_store(self, st, j, ops[0], S.bnot(op_value(self, st, j, ops[0], w)))
 
     def _cmov(self, st, j, ops, cc):
-        w = ops[0]['size']
+        w = opw(ops[0])
         src = op_value(self, st, j, ops[1], w)  # read (and loaded from memory) whatever the condition
         old = read_reg(st, ops[0]['reg'])
         write_reg(st, ops[0]['reg'], S.ite(condition(st, cc), src, old))  # a 32-bit cmov zero-extends either way: write_reg does
 
     def i_movzx(self, st, j, ops):
-        w = ops[0]['size']
-        src = op_value(self, st, j, ops[1], ops[1]['size'])
+        w = opw(ops[0])
+        src = op_value(self, st, j, ops[1], opw(ops[1]))
         write_reg(st, ops[0]['reg'], S.zext(src, w))
 
     def i_movsx(self, st, j, ops):
-        w = ops[0]['size']
-        write_reg(st, ops[0]['reg'], S.sext(op_value(self, st, j, ops[1], ops[1]['size']), w))
+        w = opw(ops[0])
+        write_reg(st, ops[0]['reg'], S.sext(op_value(self, st, j, ops[1], opw(ops[1])), w))
 
     i_movabs = i_mov
     i_movsxd = i_movsx
     i_movzb = i_movzw = i_movzbl = i_movzwl = i_movzx
-    i_movsb = i_movsw = i_movsx
+    i_movsw = i_movsx
+
+    def i_movsb(self, st, j, ops):  # the AT&T name of both movsx from a byte and the string move
+        (self.i_movsx if ops else self._movs)(st, j, ops)
 
     def _alu(self, st, j, ops, fn, flags, store=True):
-        w = ops[0]['size']
+        w = opw(ops[0])
         a = op_value(self, st, j, ops[0], w)
         b = op_value(self, st, j, ops[1], w)
         r = fn(a, b)
@@ -534,13 +804,13 @@ class Machine:
 
     def i_lea(self, st, j, ops):
         a = mem_addr(st, j, ops[1]['mem'])
-        w = ops[0]['size']
+        w = opw(ops[0])
         write_reg(st, ops[0]['reg'], S.extract(a, w - 1, 0))
 
     def i_tzcnt(self, st, j, ops):
         if not self.bmi:
             return self.i_bsf(st, j, ops)
-        w = ops[0]['size']
+        w = opw(ops[0])
         x = op_value(self, st, j, ops[1], w)
         r = tzcnt(x)
         st.flags = {'CF': S.is_zero(x), 'ZF': S.is_zero(r), 'SF': None, 'OF': None, 'PF': None}
@@ -549,7 +819,7 @@ class Machine:
     def i_bsf(self, st, j, ops):
         """The lowest set bit; with a zero source the destination is left
         undefined (an unknown value here) and ZF set."""
-        w = ops[0]['size']
+        w = opw(ops[0])
         x = op_value(self, st, j, ops[1], w)
         self.fresh_n += 1
         r = S.ite(S.is_zero(x), var('%sbsf%d' % (st.fresh, self.fresh_n), w), tzcnt(x))
@@ -557,7 +827,7 @@ class Machine:
         write_reg(st, ops[0]['reg'], r)
 
     def _shift(self, st, j, ops, fn, out_bit):
-        w = ops[0]['size']
+        w = opw(ops[0])
         a = op_value(self, st, j, ops[0], w)
         cnt = ops[1] if len(ops) > 1 else {'kind': 'Immediate', 'imm': 1, 'size': 8}
         if cnt['kind'] == 'Immediate':
@@ -583,7 +853,7 @@ class Machine:
         self._shift(st, j, ops, S.ashr, lambda w, n: n - 1)
 
     def _shiftx(self, st, j, ops, fn):
-        w = ops[0]['size']
+        w = opw(ops[0])
         x = op_value(self, st, j, ops[1], w)
         n = S.band(op_value(self, st, j, ops[2], w), const(w, w - 1))
         write_reg(st, ops[0]['reg'], fn(x, n))
@@ -603,7 +873,7 @@ class Machine:
         if s['kind'] == 'Register' and s['reg'].startswith('k') and s['reg'][1:].isdigit():
             v = S.extract(read_reg(st, s['reg']), width - 1, 0)
         else:
-            v = S.extract(op_value(self, st, j, s, s['size']), width - 1, 0)
+            v = S.extract(op_value(self, st, j, s, opw(s)), width - 1, 0)
         if d['kind'] == 'Register' and d['reg'] in GPR:
             write_reg(st, d['reg'], S.zext(v, d['size']))
         elif d['kind'] == 'Register':
@@ -647,14 +917,25 @@ class Machine:
         d, s = ops
         n = self._width(ops)
         legacy = j.get('encoding') == 'Legacy'
+        conds = lane_conds(st, j, n)
         if d['kind'] == 'Register':
-            write_vec(st, d['reg'], vec_operand(self, st, j, s, n, aligned), legacy)
+            if conds is None:
+                write_vec(st, d['reg'], vec_operand(self, st, j, s, n, aligned), legacy)
+                return
+            if s['kind'] == 'Memory':
+                addr = mem_addr(st, j, s['mem'])
+                src = load(self, st, addr, n, j['offset'], conds)
+            else:
+                src = read_vec(st, s['reg'])[:n]
+            old = read_vec(st, d['reg'])[:n]
+            zero = const(8, 0)
+            write_vec(st, d['reg'], [S.ite(c, x, zero if j.get('zeroing') else o) for c, x, o in zip(conds, src, old)])
         else:
             lanes = read_vec(st, s['reg'])[:n]
             addr = mem_addr(st, j, d['mem'])
             if aligned:
                 st.aligned.append((addr, n, j['offset']))
-            store_bytes(self, st, addr, lanes, j['offset'])
+            store_bytes(self, st, addr, lanes, j['offset'], conds)
 
     def i_vmovdqu64(self, st, j, ops):
         self._vmov(st, j, ops, False)
@@ -673,7 +954,36 @@ class Machine:
         bs = [S.is_zero(S.band(x, y)) for x, y in zip(a, b)]
         if not want_zero:
             bs = [S.not_(x) for x in bs]
+        conds = lane_conds(st, j, n)
+        if conds is not None:
+            bs = [S.and_(c, x) for c, x in zip(conds, bs)]
         write_k(st, ops[0]['reg'], bits(bs), n)
+
+    def _vpcmp_k(self, st, j, ops, pred):
+        n = self._width(ops)
+        conds = lane_conds(st, j, n)
+        a = vec_operand(self, st, j, ops[1], n)
+        if ops[2]['kind'] == 'Memory' and conds is not None:
+            b = load(self, st, mem_addr(st, j, ops[2]['mem']), n, j['offset'], conds)  # EVEX: no fault for a lane masked off
+        else:
+            b = vec_operand(self, st, j, ops[2], n)
+        bs = [pred(x, y) for x, y in zip(a, b)]
+        if conds is not None:
+            bs = [S.and_(c, x) for c, x in zip(conds, bs)]
+        write_k(st, ops[0]['reg'], bits(bs), n)
+
+    def _vpcmp_pred(self, st, j, ops, signed):
+        lt, le = (S.slt, S.sle) if signed else (S.ult, S.ule)
+        p = ops[3]['imm'] & 7
+        f = {0: S.eq, 1: lt, 2: le, 3: lambda x, y: S.FALSE, 4: lambda x, y: S.not_(S.eq(x, y)), 5: lambda x, y: S.not_(lt(x, y)),
+             6: lambda x, y: S.not_(le(x, y)), 7: lambda x, y: S.TRUE}[p]
+        self._vpcmp_k(st, j, ops[:3], f)
+
+    def i_vpcmpb(self, st, j, ops):
+        self._vpcmp_pred(st, j, ops, True)
+
+    def i_vpcmpub(self, st, j, ops):
+        self._vpcmp_pred(st, j, ops, False)
 
     def i_vptestnmb(self, st, j, ops):
         self._vtestnm(st, j, ops, True)
@@ -770,12 +1080,35 @@ class Machine:
 
     def i_vpcmpeqb(self, st, j, ops):
         if ops[0]['kind'] == 'Register' and ops[0]['reg'].startswith('k'):
-            n = self._width(ops)
-            a = vec_operand(self, st, j, ops[1], n)
-            b = vec_operand(self, st, j, ops[2], n)
-            write_k(st, ops[0]['reg'], bits([S.eq(x, y) for x, y in zip(a, b)]), n)
+            self._vpcmp_k(st, j, ops, S.eq)
         else:
             self.i_pcmpeqb(st, j, ops)
+
+    def _pcmpeq_wide(self, st, j, ops, e):
+        """pcmpeq of e-byte elements: an element's lanes all ones where the
+        elements are equal (vpcmpeqd x, x, x: all ones)."""
+        if ops[0]['kind'] == 'Register' and ops[0]['reg'].startswith('k'):
+            raise Unsupported('%s into a mask register' % j['mnemonic'])
+        n = self._width(ops)
+        legacy = len(ops) == 2
+        a = vec_operand(self, st, j, ops[0] if legacy else ops[1], n)
+        b = vec_operand(self, st, j, ops[1] if legacy else ops[2], n, aligned=legacy and j.get('encoding') == 'Legacy')
+        out = []
+        for g in range(0, n, e):
+            c = S.and_(*[S.eq(x, y) for x, y in zip(a[g:g + e], b[g:g + e])])
+            out += [S.ite(c, const(8, 0xff), const(8, 0))] * e
+        write_vec(st, ops[0]['reg'], out, legacy)
+
+    def i_pcmpeqw(self, st, j, ops):
+        self._pcmpeq_wide(st, j, ops, 2)
+
+    def i_pcmpeqd(self, st, j, ops):
+        self._pcmpeq_wide(st, j, ops, 4)
+
+    def i_pcmpeqq(self, st, j, ops):
+        self._pcmpeq_wide(st, j, ops, 8)
+
+    i_vpcmpeqw, i_vpcmpeqd, i_vpcmpeqq = i_pcmpeqw, i_pcmpeqd, i_pcmpeqq
 
     def i_pxor(self, st, j, ops):
         self._lanewise(st, j, ops, S.bxor)
@@ -791,6 +1124,23 @@ class Machine:
         self._lanewise(st, j, ops, S.band)
 
     i_vpand = i_vpandd = i_vpandq = i_pand
+
+    def i_pandn(self, st, j, ops):
+        self._lanewise(st, j, ops, lambda x, y: S.band(S.bnot(x), y))
+
+    i_vpandn = i_vpandnd = i_vpandnq = i_pandn
+
+    def i_ptest(self, st, j, ops):
+        """ZF: no bit set in both; CF: none in the source alone."""
+        n = self._width(ops)
+        legacy = j.get('encoding') == 'Legacy'
+        a = vec_operand(self, st, j, ops[0], n)
+        b = vec_operand(self, st, j, ops[1], n, aligned=legacy)
+        st.flags = {'ZF': S.and_(*[S.is_zero(S.band(x, y)) for x, y in zip(a, b)]),
+                    'CF': S.and_(*[S.is_zero(S.band(S.bnot(x), y)) for x, y in zip(a, b)]),
+                    'OF': S.FALSE, 'SF': S.FALSE, 'PF': S.FALSE}
+
+    i_vptest = i_ptest
 
     def i_pmovmskb(self, st, j, ops):
         n = self._width(ops)

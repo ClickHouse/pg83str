@@ -5,9 +5,17 @@ arguments are constants, and sent to z3 once, each as a define-fun, the
 first time an assertion needs them. Widths: n > 0 a bit-vector of n bits,
 0 a Bool, -1 memory (an array from 64-bit addresses to bytes).
 """
+import os
 import subprocess
+import sys
+import threading
+import time
+import traceback
 
 BOOL, MEM = 0, -1
+SLOW = float(os.environ['PROVE_SLOW']) if os.environ.get('PROVE_SLOW') else None
+INCREMENTAL = os.environ.get('PROVE_INCREMENTAL') == '1'
+TIMEOUT = int(os.environ.get('PROVE_TIMEOUT', '900'))  # seconds a query may take: then unknown, which no proof accepts
 
 
 class T:
@@ -83,9 +91,59 @@ def low_zeros(t):
         return max(low_zeros(t.args[0]), low_zeros(t.args[1]))
     if t.op == 'mul':
         return min(t.w, low_zeros(t.args[0]) + low_zeros(t.args[1]))
+    if t.op == 'neg':
+        return low_zeros(t.args[0])
     if t.op == 'shl' and t.args[1].op == 'const':
         return min(t.w, low_zeros(t.args[0]) + t.args[1].val)
+    if t.op == 'extract':
+        return max(0, min(t.w, low_zeros(t.args[0]) - t.args[2]))
+    if t.op in ('zext', 'sext'):
+        return low_zeros(t.args[0])
     return 0
+
+
+def low_bits(t, j):
+    """t's low j bits as a number when they are known, else None."""
+    if j == 0:
+        return 0
+    if t.op == 'const':
+        return t.val & mask(j)
+    if t.op == 'add':
+        a, b = t.args
+        la, lb = low_bits(a, j), low_bits(b, j)
+        return None if la is None or lb is None else (la + lb) & mask(j)
+    if t.op == 'concat':
+        last = t.args[-1]
+        if j <= last.w:
+            return low_bits(last, j)
+        lo = low_bits(last, last.w)
+        hi = low_bits(_mk('concat', t.w - last.w, t.args[:-1]) if len(t.args) > 2 else t.args[0], j - last.w)
+        return None if lo is None or hi is None else hi << last.w | lo
+    if t.op in ('extract',) and t.args[2] == 0 and j <= t.w:
+        return low_bits(t.args[0], j)
+    if t.op in ('zext', 'sext') and j <= t.args[0].w:
+        return low_bits(t.args[0], j)
+    if t.op == 'and':
+        la, lb = low_bits(t.args[0], j), low_bits(t.args[1], j)
+        if la is not None and lb is not None:
+            return la & lb
+        if la == 0 or lb == 0:
+            return 0
+        return None
+    if t.op == 'neg':
+        la = low_bits(t.args[0], j)
+        return None if la is None else -la & mask(j)
+    if t.op == 'sub':
+        la, lb = low_bits(t.args[0], j), low_bits(t.args[1], j)
+        return None if la is None or lb is None else (la - lb) & mask(j)
+    z = low_zeros(t)
+    return 0 if z >= j else None
+
+
+def addends_of(t):
+    if t.op == 'add':
+        return addends_of(t.args[0]) + addends_of(t.args[1])
+    return [t]
 
 
 def split(t):
@@ -99,45 +157,130 @@ def split(t):
 
 # ------------------------------------------------------------- bit-vectors
 
+_lin = {}
+
+
+def linear(t):
+    """t as a linear form: ({atom: coefficient}, constant), modulo 2^w;
+    sums, differences, negations and products with constants unfolded."""
+    r = _lin.get(t.id)
+    if r is not None:
+        return r
+    m = mask(t.w)
+    if t.op == 'const':
+        r = ({}, t.val)
+    elif t.op in ('add', 'sub'):
+        (fa, ca), (fb, cb) = linear(t.args[0]), linear(t.args[1])
+        k = 1 if t.op == 'add' else m
+        f = dict(fa)
+        for x, v in fb.items():
+            f[x] = (f.get(x, 0) + k * v) & m
+        r = ({x: v for x, v in f.items() if v}, (ca + k * cb) & m)
+    elif t.op == 'neg':
+        fa, ca = linear(t.args[0])
+        r = ({x: (-v) & m for x, v in fa.items()}, (-ca) & m)
+    elif t.op == 'mul' and is_const(t.args[1]):
+        fa, ca = linear(t.args[0])
+        k = t.args[1].val
+        f = {x: (v * k) & m for x, v in fa.items()}
+        r = ({x: v for x, v in f.items() if v}, (ca * k) & m)
+    else:
+        r = ({t: 1}, 0)
+    _lin[t.id] = r
+    return r
+
+
+def from_linear(w, f, c):
+    """The canonical term of a linear form: its atoms by id, each times its
+    coefficient (a negation for -1), the constant last."""
+    m = mask(w)
+    terms = []
+    for x in sorted(f, key=lambda x: x.id):
+        v = f[x] & m
+        if v == 1:
+            terms.append(x)
+        elif v == m:
+            terms.append(_mk('neg', w, (x,)))
+        else:
+            terms.append(_mk('mul', w, (x, const(w, v))))
+    if not terms:
+        return const(w, c)
+    r = terms[0]
+    for x in terms[1:]:
+        r = _mk('add', w, (r, x))
+    return _mk('add', w, (r, const(w, c))) if c & m else r
+
+
+def _combine(a, b, k):
+    (fa, ca), (fb, cb) = linear(a), linear(b)
+    m = mask(a.w)
+    f = dict(fa)
+    for x, v in fb.items():
+        f[x] = (f.get(x, 0) + k * v) & m
+    return from_linear(a.w, {x: v for x, v in f.items() if v}, (ca + k * cb) & m)
+
+
 def add(a, b):
     assert a.w == b.w > 0
     if is_const(a) and is_const(b):
         return const(a.w, a.val + b.val)
-    if is_const(a):
-        a, b = b, a
-    if is_const(b) and b.val == 0:
-        return a
-    if is_const(b) and a.op == 'add' and is_const(a.args[1]):
-        return add(a.args[0], const(a.w, a.args[1].val + b.val))
-    return _mk('add', a.w, (a, b))
+    return _combine(a, b, 1)
 
 
 def neg(a):
     if is_const(a):
         return const(a.w, -a.val)
-    return _mk('neg', a.w, (a,))
+    f, c = linear(a)
+    m = mask(a.w)
+    return from_linear(a.w, {x: (-v) & m for x, v in f.items()}, (-c) & m)
 
 
 def sub(a, b):
     assert a.w == b.w > 0
-    ba, ca = split(a)
-    bb, cb = split(b)
-    if ba is bb:
-        return const(a.w, ca - cb)
-    if is_const(b):
-        return add(a, const(a.w, -b.val))
     if a is b:
         return const(a.w, 0)
     if is_const(a) and is_const(b):
         return const(a.w, a.val - b.val)
-    return _mk('sub', a.w, (a, b))
+    return _combine(a, b, mask(a.w))
 
 
 def mul(a, b):
     assert a.w == b.w > 0
     if is_const(a) and is_const(b):
         return const(a.w, a.val * b.val)
+    if is_const(a):
+        a, b = b, a
+    if is_const(b) and b.val == 1:
+        return a
+    if is_const(b) and b.val == 0:
+        return b
+    if is_const(b):  # a linear form scaled
+        f, c = linear(a)
+        m = mask(a.w)
+        f = {x: (v * b.val) & m for x, v in f.items()}
+        return from_linear(a.w, {x: v for x, v in f.items() if v}, (c * b.val) & m)
     return _mk('mul', a.w, (a, b))
+
+
+def low_part(t, j):
+    """A term with t's low j bits, without the parts that can not touch
+    them: the addends with j low zeros (an aligned base: (B + n) & 15 is
+    n & 15), through extracts and zero extensions of the low end."""
+    if j <= 0:
+        return const(t.w, 0)
+    if t.op in ('add', 'sub', 'neg') or t.op == 'mul' and is_const(t.args[1]):
+        f, c = linear(t)
+        keep = {x: v for x, v in f.items() if (v & -v).bit_length() - 1 + low_zeros(x) < j}
+        if len(keep) < len(f):
+            return from_linear(t.w, keep, c)
+        return t
+    if t.op == 'extract' and t.args[2] == 0 and j <= t.w:
+        x = low_part(t.args[0], j)
+        return t if x is t.args[0] else extract(x, t.args[1], 0)
+    if t.op == 'zext' and j <= t.args[0].w:
+        x = low_part(t.args[0], j)
+        return t if x is t.args[0] else zext(x, t.w)
+    return t
 
 
 def band(a, b):
@@ -160,6 +303,14 @@ def band(a, b):
             j = b.val.bit_length()
             if b.val == mask(j) and j <= k:
                 return const(a.w, c & b.val)  # (B + c) & (2^j - 1): c's low bits
+        j = b.val.bit_length()
+        if b.val == mask(j):
+            lb = low_bits(a, j)
+            if lb is not None:
+                return const(a.w, lb)  # the low bits known
+            lp = low_part(a, j)
+            if lp is not a:
+                return band(lp, b)
     if a is b:
         return a
     return _mk('and', a.w, (a, b))
@@ -249,6 +400,9 @@ def extract(a, hi, lo):
     base, c = split(a)
     if base is not None and hi < low_zeros(base):
         return const(hi - lo + 1, c >> lo)  # the bits of B + c below B's known zeros are c's
+    lb = low_bits(a, hi + 1)
+    if lb is not None:
+        return const(hi - lo + 1, lb >> lo)
     return _mk('extract', hi - lo + 1, (a, hi, lo))
 
 
@@ -421,13 +575,14 @@ def or_(*xs):
 
 def select(m, addr):
     assert m.w == MEM and addr.w == 64
-    if m.op == 'store':
+    while m.op == 'store':  # past the stores at a known distance from addr
         base, a, v = m.args
         if a is addr:
             return v
-        if is_const(a) and is_const(addr):
-            return select(base, addr)
-        return _mk('select', 8, (m, addr))
+        d = sub(a, addr)
+        if not is_const(d):
+            break
+        m = base
     return _mk('select', 8, (m, addr))
 
 
@@ -438,6 +593,36 @@ def store(m, addr, v):
 
 def mem_var(name):
     return _mk('var', MEM, (name,))
+
+
+def lam(x, body):
+    """The array whose element at index x (a 64-bit var) is body."""
+    assert x.op == 'var' and x.w == 64 and body.w == 8
+    return _mk('lam', MEM, (x, body))
+
+
+def fill(m, lo, hi, v):
+    """m with every index in [lo, hi) holding v (rep stosb)."""
+    assert m.w == MEM and lo.w == hi.w == 64 and v.w == 8
+    return _mk('fill', MEM, (m, lo, hi, v))
+
+
+_vars = {}
+
+
+def variables(t):
+    """The names of the variables a term depends on."""
+    r = _vars.get(t.id)
+    if r is None:
+        if t.op == 'var':
+            r = frozenset(t.args[:1])
+        else:
+            r = frozenset()
+            for x in t.args:
+                if isinstance(x, T):
+                    r = r | variables(x)
+        _vars[t.id] = r
+    return r
 
 
 # ------------------------------------------------------------- SMT-LIB
@@ -462,7 +647,9 @@ class Solver:
         self.done = set()
         self.log = log
         self.queries = 0
+        self.assumed, self.slow = [], 0
         self.send('(set-option :print-success false)')
+        self.send('(set-option :timeout %d)' % (TIMEOUT * 1000))
 
     def send(self, s):
         if self.log:
@@ -478,12 +665,43 @@ class Solver:
             return t.args[0]
         return 't%d' % t.id
 
+    def free_parts(self, t, x, out, seen):
+        """The largest subterms of t that do not depend on the variable x."""
+        if t.id in seen:
+            return
+        seen.add(t.id)
+        if x not in variables(t):
+            out.append(t)
+            return
+        for a in t.args:
+            if isinstance(a, T):
+                self.free_parts(a, x, out, seen)
+
+    def inline(self, t, x):
+        if x not in variables(t):
+            return self.name(t)
+        if t.op == 'var':
+            return t.args[0]
+        return self.expr(t, lambda a: self.inline(a, x))
+
     def define(self, root):
         stack = [root]
         while stack:
             t = stack[-1]
             if t.id in self.done or t.op in ('const', 'bconst'):
                 stack.pop()
+                continue
+            if t.op == 'lam':  # the body's parts free of the bound variable first; the rest goes inline
+                x = t.args[0].args[0]
+                parts = []
+                self.free_parts(t.args[1], x, parts, set())
+                pending = [a for a in parts if a.id not in self.done and a.op not in ('const', 'bconst')]
+                if pending:
+                    stack.extend(pending)
+                    continue
+                stack.pop()
+                self.done.add(t.id)
+                self.send('(define-fun t%d () %s (lambda ((%s (_ BitVec 64))) %s))' % (t.id, sort(t.w), x, self.inline(t.args[1], x)))
                 continue
             pending = [a for a in t.args if isinstance(a, T) and a.id not in self.done and a.op not in ('const', 'bconst')]
             if pending:
@@ -496,8 +714,8 @@ class Solver:
             else:
                 self.send('(define-fun t%d () %s %s)' % (t.id, sort(t.w), self.expr(t)))
 
-    def expr(self, t):
-        n = self.name
+    def expr(self, t, n=None):
+        n = n or self.name
         a = t.args
         if t.op in BIN:
             return '(%s %s %s)' % (BIN[t.op], n(a[0]), n(a[1]))
@@ -525,30 +743,80 @@ class Solver:
             return '(select %s %s)' % (n(a[0]), n(a[1]))
         if t.op == 'store':
             return '(store %s %s %s)' % (n(a[0]), n(a[1]), n(a[2]))
+        if t.op == 'fill':
+            return '(lambda ((x (_ BitVec 64))) (ite (and (bvule %s x) (bvult x %s)) %s (select %s x)))' % (n(a[1]), n(a[2]), n(a[3]), n(a[0]))
         raise ValueError(t.op)
 
     def check(self, *conds, keep=False):
-        """sat / unsat / unknown of the conjunction, under a push that is
-        popped, or with keep and a sat answer left for values()."""
-        for c in conds:
-            self.define(c)
+        """sat / unsat / unknown of the conjunction and the assumptions, with
+        keep a sat answer left for values(). Each query in a context of its
+        own, with only the definitions it needs: one z3 session through a
+        whole proof slows down as its terms pile up (a memchr query 0.5 s
+        alone, 45 s there); PROVE_INCREMENTAL=1 has the session, under a push."""
+        t0 = time.time()
         self.queries += 1
-        self.send('(push 1)')
-        for c in conds:
-            if c is not TRUE:
+        if INCREMENTAL:
+            for c in conds:
+                self.define(c)
+            self.send('(push 1)')
+            for c in conds:
+                if c is not TRUE:
+                    self.send('(assert %s)' % self.name(c))
+        else:
+            self.send('(reset)')
+            self.send('(set-option :print-success false)')
+            self.send('(set-option :timeout %d)' % (TIMEOUT * 1000))
+            self.done = set()
+            conds = self.assumed + [c for c in conds if c is not TRUE]
+            for c in conds:
+                self.define(c)
+            for c in conds:
                 self.send('(assert %s)' % self.name(c))
         self.send('(check-sat)')
         self.p.stdin.flush()
+        watch = None
+        if SLOW is not None:  # a query still running after SLOW seconds says where it is
+            where = ' < '.join('%s:%d' % (f.name, f.lineno) for f in traceback.extract_stack()[-5:-1][::-1])
+            watch = threading.Timer(max(SLOW, 60), lambda: print('    query running for %d s: %s' % (max(SLOW, 60), where), file=sys.stderr, flush=True))
+            watch.daemon = True
+            watch.start()
         while True:
             line = self.p.stdout.readline().strip()
             if line in ('sat', 'unsat', 'unknown'):
                 break
             if line.startswith('(error') or not line:
                 raise RuntimeError('z3: %s' % line)
+        if watch is not None:
+            watch.cancel()
         self.result = line
-        if not (keep and line == 'sat'):
+        if INCREMENTAL and not (keep and line == 'sat'):
             self.send('(pop 1)')
+        dt = time.time() - t0
+        if SLOW is not None and dt > SLOW:  # PROVE_SLOW=seconds: where the slow queries come from (PROVE_DUMP=dir: each one standalone)
+            where = ' < '.join('%s:%d' % (f.name, f.lineno) for f in traceback.extract_stack()[-5:-1][::-1])
+            print('    slow query %.1f s, %s: %s' % (dt, line, where), file=sys.stderr, flush=True)
+            if os.environ.get('PROVE_DUMP'):
+                self.slow += 1
+                self.dump((self.assumed if INCREMENTAL else []) + [c for c in conds if c is not TRUE], os.path.join(os.environ['PROVE_DUMP'], 'slow%d.smt2' % self.slow))
         return line
+
+    def assume(self, c):
+        """An assertion for every query (outside the pushes)."""
+        self.define(c)
+        self.send('(assert %s)' % self.name(c))
+        self.assumed.append(c)
+
+    def dump(self, conds, path):
+        """The conjunction as a script of its own."""
+        lines, done, send = [], self.done, self.send
+        self.done, self.send = set(), lines.append
+        try:
+            for c in conds:
+                self.define(c)
+        finally:
+            self.done, self.send = done, send
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines + ['(assert %s)' % self.name(c) for c in conds] + ['(check-sat)']) + '\n')
 
     def values(self, terms):
         """After a sat check: the model's values of terms, then the pop."""
@@ -565,7 +833,8 @@ class Solver:
             depth += line.count('(') - line.count(')')
             if depth <= 0 and text.strip():
                 break
-        self.send('(pop 1)')
+        if INCREMENTAL:
+            self.send('(pop 1)')
         return text
 
     def close(self):

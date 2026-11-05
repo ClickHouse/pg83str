@@ -54,7 +54,34 @@ def gen_strlen(rng):
     return ['p%d' % s], buf
 
 
-GENS = {'strlen': gen_strlen}
+def gen_memchr(rng):
+    buf = bytearray(rng.randrange(1, 256) for _ in range(PAGES))
+    s = offset(rng)
+    n = length(rng, PAGES - s)
+    c = rng.randrange(256)
+    if n and rng.random() < 0.6:
+        buf[s + rng.randrange(n)] = c
+    return ['p%d' % s, 'i%d' % (c | rng.choice((0, 0x100, -0x100 & 0xffffffff))), 'i%d' % n], buf
+
+
+def gen_memset(rng):
+    buf = bytearray(rng.randrange(0, 256) for _ in range(PAGES))
+    d = offset(rng)
+    n = length(rng, PAGES - d)
+    return ['p%d' % d, 'i%d' % rng.randrange(1 << 32), 'i%d' % n], buf
+
+
+def gen_memcpy(rng):
+    buf = bytearray(rng.randrange(0, 256) for _ in range(PAGES))
+    n = length(rng, PAGES // 2)
+    d = rng.randrange(0, PAGES // 2 - n + 1)
+    s = rng.randrange(PAGES // 2, PAGES - n + 1)
+    if rng.random() < 0.5:
+        d, s = s, d
+    return ['p%d' % d, 'p%d' % s, 'i%d' % n], buf
+
+
+GENS = {'strlen': gen_strlen, 'memchr': gen_memchr, 'memset': gen_memset, 'memcpy': gen_memcpy}
 
 
 def emulate(img, mach, func, args, base, buf):
