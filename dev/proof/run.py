@@ -108,7 +108,8 @@ def main():
     ap.add_argument('--max', type=int, default=1024)
     ap.add_argument('--align', default='all')
     ap.add_argument('--induct', action='store_true', help='the loops by induction: every length')
-    ap.add_argument('--one-timeout', type=int, default=3600, help='seconds the one-class try may take')
+    ap.add_argument('--one-timeout', type=int, default=3 * 3600, help='seconds the one-class try may take (memchr sse2: 3863 s)')
+    ap.add_argument('--job-timeout', type=int, default=12 * 3600, help='seconds any other job may take')
     ap.add_argument('--job-memory', type=float, default=7, help='GB a job is given: the jobs a host runs at once (PROVE_MEMORY its solvers\' limit)')
     args = ap.parse_args()
     sys.path.insert(0, str(HERE))
@@ -165,13 +166,13 @@ def main():
             env = dict(os.environ, PATH=str(Path(args.z3).parent) + ':' + os.environ['PATH'])
             if args.bitwuzla:
                 env['PROVE_BITWUZLA'] = args.bitwuzla
-            cmd = [sys.executable, str(HERE / 'worker.py'), '--jobs', str(threads[h]), '--stream']
+            cmd = [sys.executable, str(HERE / 'worker.py'), '--jobs', str(threads[h]), '--stream', '--timeout', str(args.job_timeout)]
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env,
                                  cwd=str(Path(args.elf).parent))
         else:
             d = '$HOME/proof/%s' % digest[:16]
             env = ' '.join('%s=%s' % (k, v) for k, v in os.environ.items() if k.startswith('PROVE_') and k != 'PROVE_BITWUZLA')
-            cmd = ['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % h, 'cd %s && %s PATH=%s/bin:$PATH python3 dev/proof/worker.py --jobs %d --stream' % (d, env, d, threads[h])]
+            cmd = ['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % h, 'cd %s && %s PATH=%s/bin:$PATH python3 dev/proof/worker.py --jobs %d --stream --timeout %d' % (d, env, d, threads[h], args.job_timeout)]
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         for line in p.stdout:
             line = line.rstrip()
