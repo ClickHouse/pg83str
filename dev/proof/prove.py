@@ -49,6 +49,14 @@ class Failure(Exception):
     pass
 
 
+class Restart(Exception):
+    """A loop's invariant candidate failed its step: prove the class again
+    with the next, weaker one for that loop."""
+
+    def __init__(self, head):
+        self.head = head
+
+
 def align_of(img, entry):
     """The classes a function's proof splits a pointer into: 64, or the
     largest alignment its code rounds an address down to (an and with -2^j),
@@ -84,11 +92,19 @@ def aligned_pointer(name, a, align):
     return base, S.add(base, const(64, a)), S.mem_var(name + '_mem')
 
 
-class Strlen:
-    """strlen(s): r, the offset of the first zero byte at s. Reads only in
-    the pages of [s, s + r]; no stores; aligned loads aligned.
-    The loop invariant at a frontier A (a register pointing into the
-    string): no zero byte in [s, A), every load so far ends by A."""
+class Scan:
+    """A scan from s for the first byte that matches: strlen (a zero byte,
+    unbounded) and memchr (c within n bytes, as C11 has it: read as if one
+    byte at a time, stopping at the match, so the object may end there).
+    The answer's offset r; the last byte that must be readable: the match,
+    or for memchr without one the n-th. Every load lies in the pages of
+    [s, s + last]; no stores; aligned loads aligned.
+    A loop's invariant at its frontier F (a register pointing into the
+    object): no match in [s, F), the frontier within the object, and every
+    load so far either in the pages up to F - 1's (B) or ending by F + step
+    with F aligned to the step (A: [F, F + step) is then F's page, and F's
+    byte must be in the object, which the return checks)."""
+    bounded = False
 
     def __init__(self, maxlen, induct):
         self.maxlen, self.induct = maxlen, induct
@@ -96,42 +112,56 @@ class Strlen:
     def setup(self, a, align):
         self.base, self.s, arr = aligned_pointer('s', a, align)
         self.regions = [(self.base, arr)]
-        self.z = var('z', 64)  # a zero byte: the string ends at s + z or before
+        self.z = var('z', 64)  # where the scan must stop at the latest: a match, or n
         self.i = var('i', 64)
-        assume = [S.ule(const(64, USER_LO), self.s), S.ult(self.s, const(64, USER_HI)), S.is_zero(self.byte(S.add(self.s, self.z)))]
-        if self.induct:
-            assume.append(S.ult(self.z, const(64, USER_HI - USER_LO)))
-        else:
+        params = self.params()
+        stop = self.match(self.byte(S.add(self.s, self.z)))
+        if self.bounded:
+            stop = S.or_(S.and_(S.ult(self.z, self.n), stop), S.eq(self.z, self.n))
+        # the object, up to where the scan must stop, inside user space
+        assume = [S.ule(const(64, USER_LO), self.s), S.ult(self.s, const(64, USER_HI)), stop, S.ult(self.z, const(64, USER_HI - USER_LO)),
+                  S.ule(S.add(self.s, self.z), const(64, USER_HI))]
+        if not self.induct:
             assume.append(S.ule(self.z, const(64, self.maxlen)))
-        return [self.s], assume
+        return params, assume
 
     def byte(self, addr):
         st = X.State()
         st.regions, st.mem = self.regions, S.mem_var('M')
         return X.byte(st, addr)
 
-    def zero_at(self, off):
-        return S.is_zero(self.byte(S.add(self.s, off)))
+    def at(self, off):
+        return self.match(self.byte(S.add(self.s, off)))
 
-    def some_zero(self, lo, hi):
-        """A zero byte at an offset in [lo, hi): the bytes one by one when the
-        span is a known number (the same terms the path's conditions hold,
-        no position for the solver to match), else through a free offset."""
+    def some_match(self, lo, hi):
+        """A match at an offset in [lo, hi): the bytes one by one when the span
+        is a known number (the terms the path's conditions hold), else
+        through a free offset."""
         n = S.sub(hi, lo)
         if S.is_const(n) and n.val <= 4096:
-            return [S.or_(*[self.zero_at(S.add(lo, const(64, j))) for j in range(n.val)])]
-        return [S.ule(lo, self.i), S.ult(self.i, hi), self.zero_at(self.i)]
+            return [S.or_(*[self.at(S.add(lo, const(64, j))) for j in range(n.val)])]
+        return [S.ule(lo, self.i), S.ult(self.i, hi), self.at(self.i)]
+
+    def last_readable(self):
+        """The last offset the scan may need, given the stop z."""
+        return S.ite(S.eq(self.z, self.n), S.sub(self.n, const(64, 1)), self.z) if self.bounded else self.z
 
     def early(self, a, n):
-        """A load that may reach past the page of the zero at s + z, or before
-        s's page, is wrong whatever the answer: the string ends by then."""
-        return S.or_(S.ult(page(S.add(self.s, self.z)), page(S.add(a, const(64, n - 1)))), S.ult(page(a), page(self.s)))
+        """A load past the last page the stop allows, or before s's page, is
+        wrong whatever the answer."""
+        out = [S.ult(page(S.add(self.s, self.last_readable())), page(S.add(a, const(64, n - 1)))), S.ult(page(a), page(self.s))]
+        if self.bounded:
+            out.append(S.is_zero(self.n))
+        return S.or_(*out)
 
-    def loads_safe(self, st, end):
+    def loads_unsafe(self, st, last):
         out = []
-        unsafe = [S.or_(S.ult(page(a), page(self.s)), S.ult(page(end), page(S.add(a, const(64, n - 1))))) for a, n, _ in st.loads]
+        s = self.s
+        unsafe = [S.or_(S.ult(page(a), page(s)), S.ult(page(S.add(s, last)), page(S.add(a, const(64, n - 1))))) for a, n, _ in st.loads]
         if unsafe:
-            out.append(('every load in the pages of [s, s + r]', [S.or_(*unsafe)]))
+            if self.bounded:
+                unsafe.append(S.is_zero(self.n))
+            out.append(('every load in the pages of the object', [S.or_(*unsafe)]))
         mis = [S.not_(S.is_zero(S.band(a, const(64, n - 1)))) for a, n, _ in st.aligned]
         if mis:
             out.append(('aligned loads aligned', [S.or_(*mis)]))
@@ -139,60 +169,127 @@ class Strlen:
             raise Failure('stores at %s' % ', '.join('%#x' % rip for _, _, rip in st.stores))
         return out
 
-    def obligations(self, st, frontier=None):
-        """At the return; on a path from a loop's general state, the bytes
-        before the frontier are the invariant's."""
-        s, r, i = self.s, st.gpr['rax'], self.i
-        out = [('the answer is a zero byte', [S.not_(self.zero_at(r))])]
-        if frontier is None:
-            out.append(('no zero byte before the answer', [S.ult(i, r), self.zero_at(i)]))
-        else:
-            lo = S.sub(frontier, s)
-            out.append(('the answer at or past the frontier', [S.ult(r, lo)]))
-            out.append(('no zero byte from the frontier to the answer', [S.ule(lo, i), S.ult(i, r), self.zero_at(i)]))
-        return out + self.loads_safe(st, S.add(s, r)), [s, r, self.z]
+    def obligations(self, st):
+        """At the return. Past a loop the bytes before its frontier are the
+        invariant's."""
+        s = self.s
+        found, idx = self.answer(st)
+        lo = S.sub(st.front_lo, s) if st.front_lo is not None else const(64, 0)
+        out = [('the answer is a match', [found, S.not_(self.at(idx))])]
+        if self.bounded:
+            out.append(('the answer within the n bytes', [found, S.not_(S.ult(idx, self.n))]))
+        out.append(('no match before the answer', [found] + self.some_match(lo, idx)))
+        if st.front_lo is not None:
+            out.append(('the answer at or past the frontier', [found, S.ult(idx, lo)]))
+        last = idx
+        if self.bounded:
+            out.append(('no match in the n bytes when there is no answer', [S.not_(found)] + self.some_match(lo, self.n)))
+            last = S.ite(found, idx, S.sub(self.n, const(64, 1)))
+        for f in st.front_bytes:
+            out.append(('the byte at a loop\'s frontier in the object', [S.ult(S.add(s, last), f)]))
+        return out + self.loads_unsafe(st, last), [s, idx, self.z] + ([self.n] if self.bounded else [])
 
-    def base_case(self, st, a, reach):
-        """At a loop's first arrival, frontier a: the invariant holds. The loads
-        so far end by a + reach: reach is the step when the frontier is aligned
-        to it (a power of two up to a page: [a, a + step) then lies in a's page,
-        which the string reaches), else 0."""
-        s, i = self.s, self.i
-        out = [('the frontier in the string', [S.ult(a, s)]),
-               ('no zero byte before the loop', self.some_zero(const(64, 0), S.sub(a, s)))]
-        if st.loads:
-            end = S.add(a, const(64, reach))
-            out.append(('the loads before the loop end by its frontier%s' % (' and step' if reach else ''),
-                        [S.or_(*[S.ult(end, S.add(la, const(64, n))) for la, n, _ in st.loads])]))
-            out.append(('the loads before the loop after s\'s page', [S.or_(*[S.ult(page(la), page(s)) for la, _, _ in st.loads])]))
-        mis = [S.not_(S.is_zero(S.band(la, const(64, n - 1)))) for la, n, _ in st.aligned]
-        if mis:
-            out.append(('aligned loads before the loop aligned', [S.or_(*mis)]))
+    def frontier_checks(self, st, f, lo):
+        s = self.s
+        out = [('the frontier past s', [S.ule(f, s)])]
+        if lo is not None:
+            out.append(('the frontier at or past the previous loop\'s', [S.ult(f, lo)]))
+        if self.bounded:
+            out.append(('the frontier within the object', [S.ult(self.n, S.sub(f, s))]))
         return out
 
-    def general(self, a):
-        """What the invariant at frontier a gives without a quantifier: the
-        zero at s + z lies at or past it."""
-        return [S.ule(S.sub(a, self.s), self.z)]
-
-    def step_case(self, st, a, a2, reach):
-        """Back at the head, frontier a2 after a: the invariant kept."""
-        s, i = self.s, self.i
-        out = [('no zero byte in the iteration', self.some_zero(S.sub(a, s), S.sub(a2, s)))]
+    def loads_by(self, st, f, mode, step, what):
+        out = []
+        s = self.s
         if st.loads:
-            end = S.add(a2, const(64, reach))
-            out.append(('the iteration\'s loads end by the next frontier', [S.or_(*[S.ult(end, S.add(la, const(64, n))) for la, n, _ in st.loads])]))
-            out.append(('the iteration\'s loads after s\'s page', [S.or_(*[S.ult(page(la), page(s)) for la, _, _ in st.loads])]))
-        mis = [S.not_(S.is_zero(S.band(la, const(64, n - 1)))) for la, n, _ in st.aligned]
+            if mode == 'B':
+                bad = [S.ult(page(S.sub(f, const(64, 1))), page(S.add(a, const(64, n - 1)))) for a, n, _ in st.loads]
+                out.append(('%s in the pages up to the frontier\'s' % what, [S.or_(*bad)]))
+            else:
+                bad = [S.ult(S.add(f, const(64, step)), S.add(a, const(64, n))) for a, n, _ in st.loads]
+                out.append(('%s end by the frontier and a step' % what, [S.or_(*bad)]))
+            out.append(('%s after s\'s page' % what, [S.or_(*[S.ult(page(a), page(s)) for a, _, _ in st.loads])]))
+        mis = [S.not_(S.is_zero(S.band(a, const(64, n - 1)))) for a, n, _ in st.aligned]
         if mis:
-            out.append(('the iteration\'s aligned loads aligned', [S.or_(*mis)]))
+            out.append(('%s: aligned ones aligned' % what, [S.or_(*mis)]))
         return out
+
+    def base_case(self, st, f, mode, step):
+        s = self.s
+        lo = S.sub(st.front_lo, s) if st.front_lo is not None else const(64, 0)
+        out = self.frontier_checks(st, f, st.front_lo)
+        out.append(('no match before the loop', self.some_match(lo, S.sub(f, s))))
+        return out + self.loads_by(st, f, mode, step, 'the loads before the loop')
+
+    def general(self, f):
+        """What the invariant at frontier f gives without a quantifier: the
+        stop lies at or past it."""
+        return [S.ule(S.sub(f, self.s), self.z)]
+
+    def candidates(self, f, step):
+        """Bounds on the frontier to try as part of the invariant, the strongest
+        first: the next iteration's bytes inside the object (a loop that checks
+        at its bottom), the frontier inside it (one that checks at its top)."""
+        if not self.bounded:
+            return [('none', S.TRUE)]
+        off = S.sub(f, self.s)
+        return [('the next iteration inside the object', S.ule(S.add(off, const(64, step)), self.n)),
+                ('the frontier inside the object', S.ule(off, self.n))]
+
+    def step_case(self, st, f, f2, mode, step):
+        s = self.s
+        out = [('no match in the iteration', self.some_match(S.sub(f, s), S.sub(f2, s)))]
+        if self.bounded:
+            out.append(('the next frontier within the object', [S.ult(self.n, S.sub(f2, s))]))
+        return out + self.loads_by(st, f2, mode, step, 'the iteration\'s loads')
+
+    def mode(self, solver, st, f, step):
+        """The loads invariant this loop can have: B if the loads so far lie in
+        the pages up to F - 1's, else A if F is aligned to the step and the
+        loads end by F + step."""
+        if not st.loads or solver.check(*st.pc, S.or_(*[S.ult(page(S.sub(f, const(64, 1))), page(S.add(a, const(64, n - 1))))
+                                                         for a, n, _ in st.loads])) == 'unsat':
+            return 'B'
+        if step <= 4096 and solver.check(*st.pc, S.not_(S.is_zero(S.band(f, const(64, step - 1))))) == 'unsat':
+            return 'A'
+        return 'B'  # the base case then fails with a counterexample
 
     def show(self):
-        return [self.s, self.z]
+        return [self.s, self.z] + ([self.n] if self.bounded else [])
 
 
-SPECS = {'strlen': Strlen}
+class Strlen(Scan):
+    """strlen(s): the offset of the first zero byte."""
+
+    def params(self):
+        return [self.s]
+
+    def match(self, b):
+        return S.is_zero(b)
+
+    def answer(self, st):
+        return S.TRUE, st.gpr['rax']
+
+
+class Memchr(Scan):
+    """memchr(s, c, n): s + r for the first r < n with s[r] == (u8)c, else
+    null; n == 0 reads nothing (s may be unreadable)."""
+    bounded = True
+
+    def params(self):
+        self.c = var('c', 64)
+        self.n = var('n', 64)
+        return [self.s, self.c, self.n]
+
+    def match(self, b):
+        return S.eq(b, S.extract(self.c, 7, 0))
+
+    def answer(self, st):
+        r = st.gpr['rax']
+        return S.not_(S.is_zero(r)), S.sub(r, self.s)
+
+
+SPECS = {'strlen': Strlen, 'memchr': Memchr}
 
 
 def result(args, a, what, paths, obligations, queries, seconds, detail):
@@ -214,6 +311,7 @@ class Prover:
     def __init__(self, args, mach, spec, solver, a):
         self.args, self.mach, self.spec, self.solver, self.a = args, mach, spec, solver, a
         self.paths = self.proved = self.loops = 0
+        self.weak = {}  # loop head -> the invariant candidate to start from
         self.t0 = time.time()
 
     def fail(self, what, st, show):
@@ -246,27 +344,28 @@ class Prover:
                 moved[r] = S.signed(d)
             else:
                 havoc.append(r)  # recomputed in the loop: any value (sound; a proof that needs it fails)
-        steps = set(moved.values())
-        if len(steps) != 1:
-            raise Failure('loop at %#x: the registers step by %s, not one amount' % (s1.rip, sorted(steps)))
-        step = steps.pop()
-        if step <= 0 or step & (step - 1):
-            raise Failure('loop at %#x: a step of %d' % (s1.rip, step))
-        front = [r for r in moved if X.offset_from(s1.gpr[r], self.spec.base) is not None]
+        front = [r for r in moved if X.offset_from(s1.gpr[r], self.spec.base) is not None and moved[r] > 0]
         if len(front) != 1:
             raise Failure('loop at %#x: frontier registers %s' % (s1.rip, front))
+        step = moved[front[0]]  # the frontier's step; the other registers move by multiples of it (a count down, say)
+        if step & (step - 1) or any(d % step for d in moved.values()):
+            raise Failure('loop at %#x: steps %s, not multiples of a power of two %d' % (s1.rip, sorted(moved.values()), step))
         a1 = s1.gpr[front[0]]
-        reach = 0
-        if step <= 4096 and self.solver.check(*s1.pc, S.not_(S.is_zero(S.band(a1, const(64, step - 1))))) == 'unsat':
-            reach = step  # the frontier aligned to the step
-        self.prove(s1, self.spec.base_case(s1, a1, reach), self.spec.show())
+        mode = self.spec.mode(self.solver, s1, a1, step)
+        self.prove(s1, self.spec.base_case(s1, a1, mode, step), self.spec.show())
+        cands = self.spec.candidates(a1, step)
+        inv = self.weak.get(s1.rip, 0)
+        while inv < len(cands) - 1 and self.solver.check(*s1.pc, S.not_(cands[inv][1])) != 'unsat':
+            inv += 1  # does not hold at the first arrival: weaker
+        self.prove(s1, [('the invariant at the first arrival: %s' % cands[inv][0], [S.not_(cands[inv][1])])], self.spec.show())
         self.loops += 1
         sh = step.bit_length() - 1
         k = S.concat(var('k%d_hi' % self.loops, 64 - sh), const(sh, 0))  # any multiple of the step
         g = s1.copy()
         g.fresh = 'g%d_' % self.loops
-        for r in moved:
-            g.gpr[r] = S.add(s1.gpr[r], k)
+        for r, d in moved.items():
+            m = d // step
+            g.gpr[r] = S.add(s1.gpr[r], k) if m == 1 else S.sub(s1.gpr[r], k) if m == -1 else S.add(s1.gpr[r], S.mul(k, const(64, m)))
         for r in havoc:
             g.gpr[r] = var(g.fresh + r, 64)
         g.vec = {n: v for n, v in s1.vec.items() if all(x is y for x, y in zip(v, s2.vec.get(n, ())))}  # the same lanes: kept
@@ -275,11 +374,15 @@ class Prover:
         g.loads, g.aligned, g.stores = [], [], []
         g.snaps = {}
         a = g.gpr[front[0]]
-        g.pc = list(s1.pc) + [S.ult(k, const(64, K_LIMIT))] + self.spec.general(a)
-        g.gen = {'head': s1.rip, 'front': front[0], 'moved': moved, 'havoc': havoc, 'step': step, 'reach': reach, 'regs': dict(g.gpr),
-                 'steps': g.steps}
+        g.front_lo = a
+        g.front_bytes = list(s1.front_bytes) + ([a] if mode == 'A' else [])
+        g.gen_heads = list(s1.gen_heads) + [s1.rip]
+        g.pc = list(s1.pc) + [S.ult(k, const(64, K_LIMIT))] + self.spec.general(a) + [self.spec.candidates(a, step)[inv][1]]
+        g.gen = {'head': s1.rip, 'front': front[0], 'moved': moved, 'havoc': havoc, 'step': step, 'mode': mode, 'regs': dict(g.gpr),
+                 'steps': g.steps, 'inv': inv}
         if self.args.verbose:
-            print('  loop at %#x: step %d, frontier %s, %s move, %s recomputed' % (s1.rip, step, front[0], sorted(moved), sorted(havoc)), flush=True)
+            print('  loop at %#x: step %d, frontier %s, loads %s, %s move, %s recomputed' % (s1.rip, step, front[0], mode, sorted(moved),
+                                                                                             sorted(havoc)), flush=True)
         return g
 
     def back_at_head(self, st):
@@ -290,13 +393,19 @@ class Prover:
             if r in gen['havoc']:
                 continue
             if r in gen['moved']:
-                ok = S.sub(st.gpr[r], v) is const(64, gen['step'])
+                ok = S.sub(st.gpr[r], v) is const(64, gen['moved'][r])
             else:
                 ok = st.gpr[r] is v
             if not ok:
                 raise Failure('loop at %#x: %s comes back as %r, not of the form the general state has' % (st.rip, r, st.gpr[r]))
         a, a2 = gen['regs'][gen['front']], st.gpr[gen['front']]
-        self.prove(st, self.spec.step_case(st, a, a2, gen['reach']), self.spec.show())
+        cands = self.spec.candidates(a2, gen['step'])
+        if self.solver.check(*st.pc, S.not_(cands[gen['inv']][1])) != 'unsat':
+            if gen['inv'] + 1 < len(cands):
+                raise Restart(gen['head'])
+            self.prove(st, [('the invariant kept: %s' % cands[gen['inv']][0], [S.not_(cands[gen['inv']][1])])], self.spec.show())
+        self.proved += 1
+        self.prove(st, self.spec.step_case(st, a, a2, gen['mode'], gen['step']), self.spec.show())
 
     def run(self, entry, params):
         work = [X.fresh_state(entry, params, self.spec.regions)]
@@ -312,14 +421,14 @@ class Prover:
                         self.back_at_head(st)
                         closed = True
                         break
+                    if st.rip in st.gen_heads and st.rip != st.gen['head']:
+                        raise Failure('back at the loop at %#x from inside the loop at %#x: nested loops are not done' % (st.rip, st.gen['head']))
                     snap = st.snaps.get(st.rip)
                     if snap is None:
                         st.snaps[st.rip] = st.copy()
-                    elif st.gen is None:
-                        st = self.generalize(snap, st)
+                    else:
+                        st = self.generalize(snap, st)  # a loop; after another one on this path, the next in a row
                         continue
-                    elif st.rip != st.gen['head']:
-                        raise Failure('a loop at %#x inside the loop at %#x' % (st.rip, st.gen['head']))
                 seen = len(st.loads)
                 succ = self.mach.step(st)
                 for la, ln, lrip in st.loads[seen:]:
@@ -347,8 +456,7 @@ class Prover:
             if closed:
                 continue
             check_abi(st)
-            frontier = st.gen['regs'][st.gen['front']] if st.gen else None
-            obligations, show = self.spec.obligations(st, frontier)
+            obligations, show = self.spec.obligations(st)
             self.prove(st, obligations, show)
 
 
@@ -384,7 +492,15 @@ def main():
             raise Failure('the assumptions contradict each other: the proof would be empty')
         p = Prover(args, mach, spec, solver, a)
         p.align = align
-        p.run(entry, params)
+        while True:
+            try:
+                p.run(entry, params)
+                break
+            except Restart as e:
+                p.weak[e.head] = p.weak.get(e.head, 0) + 1
+                p.paths = p.proved = 0
+                if args.verbose:
+                    print('  the loop at %#x: a weaker invariant, again' % e.head, flush=True)
         print('s %% %d == %2d: %d paths, %d loops by induction, %d obligations, %d queries (%.1f s)' % (
             align, a, p.paths, p.loops, p.proved, solver.queries, time.time() - t0), flush=True)
         result(args, a, 'proved', p.paths, p.proved, solver.queries, time.time() - p.t0, '')

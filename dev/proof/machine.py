@@ -57,6 +57,9 @@ class State:
         self.fresh = 'init_'  # the prefix of the variables a register read before any write gets
         self.snaps = {}       # branch target -> the state at the path's first visit (loop heads, for induction)
         self.gen = None       # the loop this state stands for every iteration of
+        self.front_lo = None  # the latest loop frontier: the bytes before it are its invariant's
+        self.front_bytes = []  # frontiers whose byte must be in the object (loads invariant A)
+        self.gen_heads = []   # the heads of the loops generalized on this path
 
     def copy(self):
         s = State.__new__(State)
@@ -65,6 +68,7 @@ class State:
         s.regions = self.regions
         s.cmem = None if self.cmem is None else (self.cmem[0], bytearray(self.cmem[1]))
         s.fresh, s.snaps, s.gen = self.fresh, dict(self.snaps), self.gen
+        s.front_lo, s.front_bytes, s.gen_heads = self.front_lo, list(self.front_bytes), list(self.gen_heads)
         s.pc, s.loads, s.aligned, s.stores, s.trace = list(self.pc), list(self.loads), list(self.aligned), list(self.stores), list(self.trace)
         return s
 
@@ -467,6 +471,23 @@ class Machine:
         w = ops[0]['size'] if ops[0]['kind'] == 'Register' else ops[0]['mem']['size'] * 8
         op_store(self, st, j, ops[0], op_value(self, st, j, ops[1], w))
 
+    def i_neg(self, st, j, ops):
+        w = ops[0]['size']
+        a = op_value(self, st, j, ops[0], w)
+        r = S.neg(a)
+        st.flags = {'CF': S.not_(S.is_zero(a)), 'ZF': S.is_zero(r), 'SF': S.msb(r), 'OF': S.eq(a, const(w, 1 << (w - 1))), 'PF': None}
+        op_store(self, st, j, ops[0], r)
+
+    def i_not(self, st, j, ops):
+        w = ops[0]['size']
+        op_store(self, st, j, ops[0], S.bnot(op_value(self, st, j, ops[0], w)))
+
+    def _cmov(self, st, j, ops, cc):
+        w = ops[0]['size']
+        src = op_value(self, st, j, ops[1], w)  # read (and loaded from memory) whatever the condition
+        old = read_reg(st, ops[0]['reg'])
+        write_reg(st, ops[0]['reg'], S.ite(condition(st, cc), src, old))  # a 32-bit cmov zero-extends either way: write_reg does
+
     def i_movzx(self, st, j, ops):
         w = ops[0]['size']
         src = op_value(self, st, j, ops[1], ops[1]['size'])
@@ -476,7 +497,10 @@ class Machine:
         w = ops[0]['size']
         write_reg(st, ops[0]['reg'], S.sext(op_value(self, st, j, ops[1], ops[1]['size']), w))
 
+    i_movabs = i_mov
     i_movsxd = i_movsx
+    i_movzb = i_movzw = i_movzbl = i_movzwl = i_movzx
+    i_movsb = i_movsw = i_movsx
 
     def _alu(self, st, j, ops, fn, flags, store=True):
         w = ops[0]['size']
@@ -674,6 +698,73 @@ class Machine:
 
     i_pminub = i_vpminub
 
+    def i_movd(self, st, j, ops):
+        d, s = ops
+        if d['kind'] == 'Register' and vec_index(d['reg']):
+            w = s['size'] if s['kind'] == 'Register' else 32 if j['mnemonic'].endswith('d') else 64
+            v = op_value(self, st, j, s, w)
+            n = vec_index(d['reg'])[1]
+            lanes = [S.extract(v, 8 * i + 7, 8 * i) for i in range(w // 8)] + [const(8, 0)] * (16 - w // 8)
+            if j.get('encoding') == 'Legacy':
+                write_vec(st, 'xmm%d' % vec_index(d['reg'])[0], lanes, legacy=True)
+            else:
+                write_vec(st, 'xmm%d' % vec_index(d['reg'])[0], lanes)
+        else:
+            lanes = read_vec(st, s['reg'])
+            w = d['size'] if d['kind'] == 'Register' else 32 if j['mnemonic'].endswith('d') else 64
+            op_store(self, st, j, d, to_bv(lanes[:w // 8]))
+
+    i_vmovd = i_movq = i_vmovq = i_movd
+
+    def i_punpcklbw(self, st, j, ops):
+        n = self._width(ops)
+        legacy = len(ops) == 2
+        a = vec_operand(self, st, j, ops[0 if legacy else 1], n)
+        b = vec_operand(self, st, j, ops[1 if legacy else 2], n, aligned=legacy)
+        out = []
+        for lane in range(0, n, 16):  # per 128-bit lane: the low 8 bytes of each, interleaved
+            for i in range(8):
+                out += [a[lane + i], b[lane + i]]
+        write_vec(st, ops[0]['reg'], out, legacy)
+
+    i_vpunpcklbw = i_punpcklbw
+
+    def i_pshuflw(self, st, j, ops):
+        n = self._width(ops)
+        legacy = j.get('encoding') == 'Legacy'
+        src = vec_operand(self, st, j, ops[1], n, aligned=legacy)
+        imm = ops[2]['imm']
+        out = []
+        for lane in range(0, n, 16):
+            words = [src[lane + 2 * w:lane + 2 * w + 2] for w in range(8)]
+            lo = [words[(imm >> (2 * k)) & 3] for k in range(4)]
+            out += [b for w in lo + words[4:] for b in w]
+        write_vec(st, ops[0]['reg'], out, legacy)
+
+    def i_pshufd(self, st, j, ops):
+        n = self._width(ops)
+        legacy = j.get('encoding') == 'Legacy'
+        src = vec_operand(self, st, j, ops[1], n, aligned=legacy)
+        imm = ops[2]['imm']
+        out = []
+        for lane in range(0, n, 16):
+            dw = [src[lane + 4 * w:lane + 4 * w + 4] for w in range(4)]
+            out += [b for k in range(4) for b in dw[(imm >> (2 * k)) & 3]]
+        write_vec(st, ops[0]['reg'], out, legacy)
+
+    i_vpshufd = i_pshufd
+
+    def i_vpbroadcastb(self, st, j, ops):
+        n = self._width(ops[:1])
+        s = ops[1]
+        if s['kind'] == 'Register' and s['reg'] in GPR:
+            b = S.extract(read_reg(st, s['reg']), 7, 0)
+        elif s['kind'] == 'Register':
+            b = read_vec(st, s['reg'])[0]
+        else:
+            b = load(self, st, mem_addr(st, j, s['mem']), 1, j['offset'])[0]
+        write_vec(st, ops[0]['reg'], [b] * n)
+
     def i_pcmpeqb(self, st, j, ops):
         self._lanewise(st, j, ops, lambda x, y: S.ite(S.eq(x, y), const(8, 0xff), const(8, 0)))
 
@@ -713,3 +804,8 @@ class Machine:
         for n in range(16):
             lanes = read_vec(st, 'zmm%d' % n)
             st.vec[n] = lanes[:16] + [const(8, 0)] * 48
+
+
+for _cc in x86.CC:
+    setattr(Machine, 'i_cmov' + _cc, (lambda cc: lambda self, st, j, ops: self._cmov(st, j, ops, cc))(_cc))
+    setattr(Machine, 'i_set' + _cc, (lambda cc: lambda self, st, j, ops: op_store(self, st, j, ops[0], S.zext(S.bit(condition(st, cc)), 8)))(_cc))

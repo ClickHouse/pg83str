@@ -14,6 +14,7 @@ struct oracle_fn {
     const char *name;
     void *fn;
 };
+
 extern const struct oracle_fn oracle_fns[];
 
 typedef uint64_t (*fn6)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
