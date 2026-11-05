@@ -15,6 +15,7 @@ import traceback
 BOOL, MEM = 0, -1
 SLOW = float(os.environ['PROVE_SLOW']) if os.environ.get('PROVE_SLOW') else None
 INCREMENTAL = os.environ.get('PROVE_INCREMENTAL') == '1'
+MEMORY = int(os.environ.get('PROVE_MEMORY', '6000'))  # megabytes z3 may take
 TIMEOUT = int(os.environ.get('PROVE_TIMEOUT', '900'))  # seconds a query may take: then unknown, which no proof accepts
 
 
@@ -693,7 +694,9 @@ class Solver:
     """z3 -in: definitions at the base level, assertions under push/pop."""
 
     def __init__(self, z3='z3', log=None):
-        self.p = subprocess.Popen([z3, '-in'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, preexec_fn=_die_with_parent)
+        # a memory limit: a query that would take more answers unknown (16 parallel jobs on a lab host fit)
+        self.p = subprocess.Popen([z3, '-in', '-memory:%d' % MEMORY], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+                                  preexec_fn=_die_with_parent)
         self.done = set()
         self.log = log
         self.queries = 0

@@ -63,6 +63,7 @@ class State:
         self.front_bytes = []  # frontiers whose byte must be in the object (loads invariant A)
         self.cover = []       # writers: (lo, hi, cond) index ranges of the object written right before the stores since
         self.win = {}         # region -> (lo, hi, array): a loop's general memory, the array but in [lo, hi) (offsets)
+        self.aliases = []     # (pointer, region, offset): addresses from the pointer are in the region at offset + their distance from it
 
     def copy(self):
         s = State.__new__(State)
@@ -74,12 +75,13 @@ class State:
         s.front_lo, s.front_bytes = self.front_lo, list(self.front_bytes)
         s.cover = list(self.cover)
         s.win = self.win
+        s.aliases = self.aliases
         s.pc, s.loads, s.aligned, s.stores, s.trace = list(self.pc), list(self.loads), list(self.aligned), list(self.stores), list(self.trace)
         s.requires = list(self.requires)
         return s
 
 
-def fresh_state(entry, args, regions=()):
+def fresh_state(entry, args, regions=(), aliases=()):
     """The state at a function's entry: args are terms for rdi, rsi, rdx, rcx,
     r8, r9 in order; every other register a variable of its own."""
     st = State()
@@ -95,6 +97,7 @@ def fresh_state(entry, args, regions=()):
     for i in range(8):
         stack = S.store(stack, const(64, i), const(8, RET_MARK >> 8 * i & 0xff))
     st.regions = list(regions) + [(RSP0, stack)]  # the stack: bytes like any memory, the return address at rsp0
+    st.aliases = list(aliases)
     return st
 
 
@@ -289,6 +292,10 @@ def region_of(st, addr):
         off = offset_from(addr, base)
         if off is not None:
             return k, off
+    for p, k, poff in st.aliases:  # another pointer into a region (memmove's source: d's memory at s - d's base)
+        off = offset_from(addr, p)
+        if off is not None:
+            return k, S.add(poff, off)
     for x, rest in rounded(addr):  # a pointer rounded down, plus an offset (no other region's base added in): its region
         r = region_of(st, x)
         if r is not None and not any(offset_from(rest, b) is not None for k, (b, _) in enumerate(st.regions) if k != r[0]):
@@ -365,7 +372,7 @@ def load(m, st, addr, n, rip, conds=None):
         st.loads.append((addr, n, rip, S.TRUE))
     else:
         st.loads.extend((S.add(addr, const(64, i)), 1, rip, c) for i, c in enumerate(conds) if c is not S.FALSE)
-    if st.win:
+    if st.win or any(st.regions[k][1].op == 'store' for k in range(len(st.regions) - 1)):
         lanes = window_load(m, st, addr, n)
         if lanes is not None:
             return lanes
@@ -379,17 +386,27 @@ def within(x, o, n):
 
 
 def window_load(m, st, addr, n):
-    """A load from a loop's general memory clear of the window and of the
-    stores since: the bytes of the memory under the window (one query
-    instead of a case split in every lane). j: any byte of the load."""
+    """A load clear of the stores since the region's memory was last set (at
+    the entry, or at a loop's general state; and clear of that state's
+    window): the bytes of the memory under them, one query instead of a
+    case split in every lane (memmove's source read after stores that may
+    overlap it). j: any byte of the load."""
     r = region_of(st, addr)
-    if r is None or r[0] not in st.win or m.decide is None:
+    if r is None or m.decide is None:
         return None
     k, off = r
-    lo, hi, arr = st.win[k]
+    if k in st.win:
+        lo, hi, arr = st.win[k]
+        hit = [S.and_(S.ule(lo, S.add(off, var('jw', 64))), S.ult(S.add(off, var('jw', 64)), hi))]
+    else:
+        arr = st.regions[k][1]
+        while arr.op == 'store':  # the memory before the stores since
+            arr = arr.args[0]
+        if arr is st.regions[k][1]:
+            return None
+        hit = []
     j = var('jw', 64)
     x = S.add(off, j)
-    hit = [S.and_(S.ule(lo, x), S.ult(x, hi))]
     for a, nb, _, c, _ in st.stores:
         rs = region_of(st, a)
         if rs is not None and rs[0] == k:

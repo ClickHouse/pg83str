@@ -67,12 +67,13 @@ def main():
     threads = {}
     for h in hosts:
         if h == 'local':
-            threads[h] = os.cpu_count()
+            threads[h] = min(os.cpu_count(), os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') // (7 << 30))
             continue
         # a directory per bundle: runs with other ELFs at the same time do not touch it
         ssh(h, 'd=$HOME/proof/%s; if [ ! -f $d/.done ]; then rm -rf $d && mkdir -p $d && cd $d && tar xzf - && touch .done; else cat > /dev/null; fi' % digest[:16],
             input=data, check=True)
-        threads[h] = int(ssh(h, 'nproc', capture_output=True, text=True, check=True).stdout)
+        cpus, mem = ssh(h, 'nproc; awk \'/MemTotal/ {print $2}\' /proc/meminfo', capture_output=True, text=True, check=True).stdout.split()
+        threads[h] = min(int(cpus), int(mem) // (1 << 20) // 7)  # a job's z3 may take up to 6 GB (smt.MEMORY)
     total = sum(threads.values())
     share, start = {}, 0
     for i, h in enumerate(hosts):

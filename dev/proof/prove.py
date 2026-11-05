@@ -656,11 +656,12 @@ class Move(Copy):
 
     def setup(self, a, align):
         self.base, self.d, arr = aligned_pointer('d', a, align)
-        self.t = var('t', 64)
-        self.sbase, self.s = self.base, S.add(self.base, self.t)
+        self.s = var('s', 64)  # a pointer of its own (its pages' arithmetic simple), into d's memory at s - base
+        self.sbase = self.base
         self.regions = [(self.base, arr)]
+        self.aliases = [(self.s, 0, S.sub(self.s, self.base))]
         self.src = arr
-        self.foreign = S.variables(self.t)  # what makes an address the source's
+        self.foreign = S.variables(self.s)  # what makes an address the source's
         self.n, self.i = var('n', 64), var('i', 64)
         d, s, n = self.d, self.s, self.n
         assume = [S.ule(const(64, USER_LO), d), S.ult(d, const(64, USER_HI)), S.ule(const(64, USER_LO), s), S.ult(s, const(64, USER_HI)),
@@ -1308,27 +1309,33 @@ class Prover:
             if r == 'sat':
                 self.fail(what, st, show)
             if r == 'unknown':
-                raise Failure('%s: z3 answered unknown' % what)
+                raise Failure('%s: z3 answered unknown; branches at %s' % (what, ' '.join('%#x' % x for x in st.trace)))
             self.proved += 1
 
     def prove_alt(self, st, what, alt, show):
-        for k, parts in enumerate(alt.alts):
-            last = k == len(alt.alts) - 1
+        """The ways in rounds: each but the last for 10 s, again for 120,
+        then the last with the full timeout."""
+        ways = alt.alts
+        rounds = [(k, AUX // 2) for k in range(len(ways) - 1)] + [(k, 6 * AUX) for k in range(len(ways) - 1)] + [(len(ways) - 1, None)]
+        done = set()  # the parts proved in an earlier round
+        for k, limit in rounds:
             t1 = time.time()
             rs = []
-            for conds in parts:
-                r = self.solver.check(*st.pc, *conds, keep=True, timeout=None if last else AUX // 2)
+            for i, conds in enumerate(ways[k]):
+                r = 'unsat' if (k, i) in done else self.solver.check(*st.pc, *conds, keep=True, timeout=limit)
+                if r == 'unsat':
+                    done.add((k, i))
                 if r == 'sat':
                     self.fail(what, st, show)
                 rs.append(r)
                 if r != 'unsat':
                     break
             if self.args.verbose:
-                print('   %-50s %s (way %d of %d) %.1f s' % (what, '/'.join(rs), k + 1, len(alt.alts), time.time() - t1), flush=True)
-            if all(r == 'unsat' for r in rs) and len(rs) == len(parts):
+                print('   %-50s %s (way %d of %d, %s s) %.1f s' % (what, '/'.join(rs), k + 1, len(ways), limit or 'all', time.time() - t1), flush=True)
+            if len(rs) == len(ways[k]) and all(r == 'unsat' for r in rs):
                 self.proved += 1
                 return
-        raise Failure('%s: z3 answered unknown every way' % what)
+        raise Failure('%s: z3 answered unknown every way; branches at %s' % (what, ' '.join('%#x' % x for x in st.trace)))
 
     def generalize(self, s1, s2, dropped=frozenset(), widen=frozenset()):
         """s1 and s2: the same path at a loop's head, the first and the second
@@ -1379,7 +1386,7 @@ class Prover:
             a1 = s1.gpr[front[0]]
             # a register past the bytes it reads (loads at rcx - 3 .. rcx): the frontier is the lowest of them
             acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
-            below = [S.signed(X.offset_from(x, a1)) for x in acc if X.offset_from(x, a1) is not None and S.is_const(X.offset_from(x, a1))]
+            below = [S.signed(S.sub(x, a1)) for x in acc if S.is_const(S.sub(x, a1))]
             if below and min(below) < 0:
                 a1 = S.add(a1, const(64, min(below)))
         elif not front and not [d for d in moved.values() if d > 0] and [r for r in deltas if into(r)]:
@@ -1678,7 +1685,7 @@ class Prover:
         self.lost = {}
         self.unroll = getattr(self.spec, 'unroll', 1)
         self.contracts = self.spec.contracts(self.mach.image, entry) if hasattr(self.spec, 'contracts') else {}
-        st = X.fresh_state(entry, params, self.spec.regions)
+        st = X.fresh_state(entry, params, self.spec.regions, getattr(self.spec, 'aliases', ()))
         st.front_lo = getattr(self.spec, 'front0', None)  # a precondition's: no stop before it
         self.explore(st)
 
