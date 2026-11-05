@@ -1616,7 +1616,7 @@ class Prover:
                 if X.offset_from(x, base) is not None or any(inside(y) and not any(X.offset_from(r, b) is not None for b, _ in s1.regions
                                                                                               if b is not base) for y, r in X.rounded(x)):
                     return True
-                return bv & S.variables(x) and not others & S.variables(x)
+                return bv & S.variables(x) and not others & S.variables(x) and S.interval(x) is None  # bounded: an index (memcmp's 0xa0 - (a & 31)), not an address
 
             def into(r):
                 return inside(s1.gpr[r])
