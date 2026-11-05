@@ -1267,6 +1267,7 @@ class Prover:
         self.dropped = {}  # loop head -> the invariant candidates a step did not keep
         self.lost = {}     # this run's: dropped at its end
         self.widen = {}    # loop head -> registers, vectors and masks some way round changed that the general state kept
+        self.best_way = {}  # an obligation written several ways -> the one that proved it last
         self.t0 = time.time()
 
     def fail(self, what, st, show):
@@ -1317,6 +1318,9 @@ class Prover:
         then the last with the full timeout."""
         ways = alt.alts
         rounds = [(k, AUX // 2) for k in range(len(ways) - 1)] + [(k, 6 * AUX) for k in range(len(ways) - 1)] + [(len(ways) - 1, None)]
+        best = self.best_way.get((what, len(ways)))
+        if best is not None:  # the way that did it last time first
+            rounds.insert(0, (best, 6 * AUX))
         done = set()  # the parts proved in an earlier round
         for k, limit in rounds:
             t1 = time.time()
@@ -1334,6 +1338,7 @@ class Prover:
                 print('   %-50s %s (way %d of %d, %s s) %.1f s' % (what, '/'.join(rs), k + 1, len(ways), limit or 'all', time.time() - t1), flush=True)
             if len(rs) == len(ways[k]) and all(r == 'unsat' for r in rs):
                 self.proved += 1
+                self.best_way[(what, len(ways))] = k
                 return
         raise Failure('%s: z3 answered unknown every way; branches at %s' % (what, ' '.join('%#x' % x for x in st.trace)))
 

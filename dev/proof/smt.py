@@ -6,6 +6,7 @@ first time an assertion needs them. Widths: n > 0 a bit-vector of n bits,
 0 a Bool, -1 memory (an array from 64-bit addresses to bytes).
 """
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -690,13 +691,36 @@ def _die_with_parent():
         pass
 
 
+_lam = {}
+
+
+def has_lambda(t):
+    """Whether t has an array written as a lambda (rep movs and stos, a
+    loop's window, a contract's copy): bitwuzla does not read those."""
+    r = _lam.get(t.id)
+    if r is None:
+        r = t.op in ('lam', 'fill') or any(isinstance(x, T) and has_lambda(x) for x in t.args)
+        _lam[t.id] = r
+    return r
+
+
 class Solver:
-    """z3 -in: definitions at the base level, assertions under push/pop."""
+    """bitwuzla, and z3 for what bitwuzla does not read (lambdas): each query
+    in a context of its own (PROVE_INCREMENTAL=1: one z3 session, the
+    definitions at the base level, assertions under push/pop). bitwuzla is
+    what makes the proofs go: on the queries z3 took 40 to over 300 s over
+    it took 1.4 to 69 (PROVE_BITWUZLA: its path; without it, z3 alone)."""
 
     def __init__(self, z3='z3', log=None):
         # a memory limit: a query that would take more answers unknown (16 parallel jobs on a lab host fit)
-        self.p = subprocess.Popen([z3, '-in', '-memory:%d' % MEMORY], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
-                                  preexec_fn=_die_with_parent)
+        self.zp = subprocess.Popen([z3, '-in', '-memory:%d' % MEMORY], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+                                   preexec_fn=_die_with_parent)
+        bw = os.environ.get('PROVE_BITWUZLA') or shutil.which('bitwuzla')
+        self.bp = None
+        if bw and not INCREMENTAL:
+            self.bp = subprocess.Popen([bw, '-M', str(MEMORY)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+                                       preexec_fn=_die_with_parent)
+        self.p = self.zp
         self.done = set()
         self.log = log
         self.queries = 0
@@ -816,11 +840,20 @@ class Solver:
                 if c is not TRUE:
                     self.send('(assert %s)' % self.name(c))
         else:
-            self.send('(reset)')
-            self.send('(set-option :print-success false)')
-            self.send('(set-option :timeout %d)' % (min(TIMEOUT, timeout or TIMEOUT) * 1000))
-            self.done = set()
             conds = self.assumed + [c for c in conds if c is not TRUE]
+            limit = min(TIMEOUT, timeout or TIMEOUT) * 1000
+            if self.bp is not None and not any(has_lambda(c) for c in conds):
+                self.p = self.bp
+                self.send('(reset)')
+                self.send('(set-option :print-success false)')
+                self.send('(set-option :produce-models true)')
+                self.send('(set-option :time-limit-per %d)' % limit)
+            else:
+                self.p = self.zp
+                self.send('(reset)')
+                self.send('(set-option :print-success false)')
+                self.send('(set-option :timeout %d)' % limit)
+            self.done = set()
             for c in conds:
                 self.define(c)
             for c in conds:
@@ -837,8 +870,8 @@ class Solver:
             line = self.p.stdout.readline().strip()
             if line in ('sat', 'unsat', 'unknown'):
                 break
-            if line.startswith('(error') or not line:
-                raise RuntimeError('z3: %s' % line)
+            if line.startswith(('(error', '[error')) or not line:
+                raise RuntimeError('%s: %s' % ('bitwuzla' if self.p is self.bp else 'z3', line))
         if watch is not None:
             watch.cancel()
         self.result = line
@@ -891,5 +924,7 @@ class Solver:
         return text
 
     def close(self):
-        self.p.stdin.close()
-        self.p.wait()
+        for p in (self.zp, self.bp):
+            if p is not None:
+                p.stdin.close()
+                p.wait()

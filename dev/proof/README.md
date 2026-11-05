@@ -7,9 +7,9 @@ not on the C: what the compiler and the post pass made is what is checked.
 
 ```
 ix run lib/c bld/compiler -- ./build proof                 # .build/proof/libstr.elf, .build/proof/oracle
-ix run bin/z3 -- python3 dev/proof/prove.py --elf .build/proof/libstr.elf \
+ix run bin/z3 bin/bitwuzla -- python3 dev/proof/prove.py --elf .build/proof/libstr.elf \
     --func avx2.memchr_avx2 --spec memchr --induct --align 49 [--verbose]
-dev/proof/run.py --z3 $(ix path bin/z3)/bin/z3 --func avx2.memchr_avx2,evex.memchr_evex \
+dev/proof/run.py --z3 .../bin/z3 --bitwuzla .../bin/bitwuzla --func avx2.memchr_avx2,evex.memchr_evex \
     --spec memchr --induct                                 # every alignment class, spread over the lab
 python3 dev/proof/replay.py --func avx2.strspn_avx2 --spec strspn --n 2000
 ix run bin/z3 -- python3 dev/proof/check_smt.py
@@ -63,7 +63,10 @@ registers and `rsp` restored; rep movs with no backward overlap.
 
 ## What the proofs rest on
 
-- z3 (each query's `unsat`; `unknown` is a failure, never a pass);
+- the solvers, bitwuzla for every query it reads and z3 for those with an
+  array written as a lambda (each query's `unsat`; `unknown` is a failure,
+  never a pass); bitwuzla is what makes the slow proofs go (6 to 50 times
+  faster than z3 on their queries);
 - the instruction semantics in `machine.py`, checked against the hardware by
   `replay.py` (random inputs run natively by the oracle and through the
   machine, results and memory compared);

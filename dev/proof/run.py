@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -30,13 +31,15 @@ def ssh(host, cmd, **kw):
     return subprocess.run(['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % host, cmd], **kw)
 
 
-def bundle(elf, z3):
+def bundle(elf, z3, bitwuzla=None):
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode='w:gz', compresslevel=1, dereference=True) as tar:  # .build's outputs are links into its store
         for f in FILES:
             tar.add(ROOT / f, arcname=f)
         tar.add(elf, arcname='libstr.elf')
         tar.add(z3, arcname='bin/z3')
+        if bitwuzla:
+            tar.add(bitwuzla, arcname='bin/bitwuzla')
     data = buf.getvalue()
     return data, hashlib.sha256(data).hexdigest()
 
@@ -46,6 +49,8 @@ def main():
     ap.add_argument('--hosts', default='local,lab1,lab2,lab3')
     ap.add_argument('--elf', default=str(ROOT / '.build/proof/libstr.elf'))
     ap.add_argument('--z3', required=True, help='the z3 binary (static)')
+    ap.add_argument('--bitwuzla', default=os.environ.get('PROVE_BITWUZLA') or shutil.which('bitwuzla'),
+                    help='the bitwuzla binary (static; ix build bin/bitwuzla): the queries without lambdas')
     ap.add_argument('--func', required=True, help='comma list')
     ap.add_argument('--spec', required=True)
     ap.add_argument('--max', type=int, default=1024)
@@ -63,7 +68,7 @@ def main():
         classes = range(prove.align_of(img, img.symbols[f])) if args.align == 'all' else [int(x) for x in args.align.split(',')]
         jobs += [['--elf', 'libstr.elf', '--func', f, '--spec', args.spec, *mode, '--align', str(a)] for a in classes]
     hosts = args.hosts.split(',')
-    data, digest = bundle(args.elf, args.z3)
+    data, digest = bundle(args.elf, args.z3, args.bitwuzla)
     threads = {}
     for h in hosts:
         if h == 'local':
@@ -87,6 +92,8 @@ def main():
             return
         if h == 'local':
             env = dict(os.environ, PATH=str(Path(args.z3).parent) + ':' + os.environ['PATH'])
+            if args.bitwuzla:
+                env['PROVE_BITWUZLA'] = args.bitwuzla
             cmd = [sys.executable, str(HERE / 'worker.py'), '--jobs', str(threads[h])]
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env,
                                  cwd=str(Path(args.elf).parent))
