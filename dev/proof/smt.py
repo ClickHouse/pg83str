@@ -626,6 +626,9 @@ def select(m, addr):
             m = base
             continue
         break
+    if m.op in ('win', 'fill'):  # read through: no lambda reaches the solver for it
+        inside = and_(ule(m.args[1], addr), ult(addr, m.args[2]))
+        return ite(inside, select(m.args[3], addr) if m.op == 'win' else m.args[3], select(m.args[0], addr))
     return _mk('select', 8, (m, addr))
 
 
@@ -642,6 +645,30 @@ def lam(x, body):
     """The array whose element at index x (a 64-bit var) is body."""
     assert x.op == 'var' and x.w == 64 and body.w == 8
     return _mk('lam', MEM, (x, body))
+
+
+def forall_(x, body):
+    """For every value of the variable x, body (a Bool)."""
+    assert x.op == 'var' and body.w == BOOL
+    if x.args[0] not in variables(body):
+        return body
+    return _mk('forall', BOOL, (x, body))
+
+
+def exists_(x, body):
+    assert x.op == 'var' and body.w == BOOL
+    if x.args[0] not in variables(body):
+        return body
+    return _mk('exists', BOOL, (x, body))
+
+
+BINDERS = ('lam', 'forall', 'exists')
+
+
+def win(m, lo, hi, h):
+    """m but in [lo, hi), there h's bytes (a loop's general memory)."""
+    assert m.w == MEM and h.w == MEM
+    return _mk('win', MEM, (m, lo, hi, h))
 
 
 def fill(m, lo, hi, v):
@@ -699,8 +726,19 @@ def has_lambda(t):
     loop's window, a contract's copy): bitwuzla does not read those."""
     r = _lam.get(t.id)
     if r is None:
-        r = t.op in ('lam', 'fill') or any(isinstance(x, T) and has_lambda(x) for x in t.args)
+        r = t.op in ('lam', 'fill', 'win', 'forall', 'exists') or any(isinstance(x, T) and has_lambda(x) for x in t.args)
         _lam[t.id] = r
+    return r
+
+
+_quant = {}
+
+
+def has_quantifier(t):
+    r = _quant.get(t.id)
+    if r is None:
+        r = t.op in ('forall', 'exists') or any(isinstance(x, T) and has_quantifier(x) for x in t.args)
+        _quant[t.id] = r
     return r
 
 
@@ -742,24 +780,37 @@ class Solver:
             return t.args[0]
         return 't%d' % t.id
 
-    def free_parts(self, t, x, out, seen):
-        """The largest subterms of t that do not depend on the variable x."""
-        if t.id in seen:
+    def free_parts(self, t, xs, out, seen):
+        """The largest subterms of t that depend on none of the bound
+        variables xs (a binder inside adds its own)."""
+        key = (t.id, xs)
+        if key in seen:
             return
-        seen.add(t.id)
-        if x not in variables(t):
+        seen.add(key)
+        if not xs & variables(t):
             out.append(t)
+            return
+        if t.op in BINDERS:
+            self.free_parts(t.args[1], xs | {t.args[0].args[0]}, out, seen)
             return
         for a in t.args:
             if isinstance(a, T):
-                self.free_parts(a, x, out, seen)
+                self.free_parts(a, xs, out, seen)
 
-    def inline(self, t, x):
-        if x not in variables(t):
+    def inline(self, t, xs):
+        if not xs & variables(t):
             return self.name(t)
         if t.op == 'var':
             return t.args[0]
-        return self.expr(t, lambda a: self.inline(a, x))
+        if t.op in BINDERS:
+            return self.binder(t, xs)
+        return self.expr(t, lambda a: self.inline(a, xs))
+
+    def binder(self, t, xs):
+        x = t.args[0]
+        body = self.inline(t.args[1], xs | {x.args[0]})
+        word = {'lam': 'lambda', 'forall': 'forall', 'exists': 'exists'}[t.op]
+        return '(%s ((%s %s)) %s)' % (word, x.args[0], sort(x.w), body)
 
     def define(self, root):
         stack = [root]
@@ -768,17 +819,16 @@ class Solver:
             if t.id in self.done or t.op in ('const', 'bconst'):
                 stack.pop()
                 continue
-            if t.op == 'lam':  # the body's parts free of the bound variable first; the rest goes inline
-                x = t.args[0].args[0]
+            if t.op in BINDERS:  # the body's parts free of the bound variables first; the rest goes inline
                 parts = []
-                self.free_parts(t.args[1], x, parts, set())
+                self.free_parts(t.args[1], frozenset({t.args[0].args[0]}), parts, set())
                 pending = [a for a in parts if a.id not in self.done and a.op not in ('const', 'bconst')]
                 if pending:
                     stack.extend(pending)
                     continue
                 stack.pop()
                 self.done.add(t.id)
-                self.send('(define-fun t%d () %s (lambda ((%s (_ BitVec 64))) %s))' % (t.id, sort(t.w), x, self.inline(t.args[1], x)))
+                self.send('(define-fun t%d () %s %s)' % (t.id, sort(t.w), self.binder(t, frozenset())))
                 continue
             pending = [a for a in t.args if isinstance(a, T) and a.id not in self.done and a.op not in ('const', 'bconst')]
             if pending:
@@ -822,9 +872,25 @@ class Solver:
             return '(store %s %s %s)' % (n(a[0]), n(a[1]), n(a[2]))
         if t.op == 'fill':
             return '(lambda ((x (_ BitVec 64))) (ite (and (bvule %s x) (bvult x %s)) %s (select %s x)))' % (n(a[1]), n(a[2]), n(a[3]), n(a[0]))
+        if t.op == 'win':
+            return '(lambda ((x (_ BitVec 64))) (ite (and (bvule %s x) (bvult x %s)) (select %s x) (select %s x)))' % (n(a[1]), n(a[2]), n(a[3]), n(a[0]))
         raise ValueError(t.op)
 
-    def check(self, *conds, keep=False, timeout=None):
+    def check(self, *conds, keep=False, timeout=None, bare=False, loose=False):
+        """With quantifiers among the conditions (strspn's long sets): first
+        without them (fewer hypotheses: unsat holds for the whole), the full
+        query only when that is not unsat; loose: a sat or unknown answer
+        need not be the full query's (a branch kept that might be dead)."""
+        if not INCREMENTAL:
+            allc = ([] if bare else self.assumed) + list(conds)
+            if any(has_quantifier(c) for c in allc):
+                plain = [c for c in allc if not has_quantifier(c)]
+                r = self._check(*plain, keep=keep and loose, timeout=timeout, bare=True)
+                if r == 'unsat' or loose:
+                    return r
+        return self._check(*conds, keep=keep, timeout=timeout, bare=bare)
+
+    def _check(self, *conds, keep=False, timeout=None, bare=False):
         """sat / unsat / unknown of the conjunction and the assumptions, with
         keep a sat answer left for values(). Each query in a context of its
         own, with only the definitions it needs: one z3 session through a
@@ -840,7 +906,7 @@ class Solver:
                 if c is not TRUE:
                     self.send('(assert %s)' % self.name(c))
         else:
-            conds = self.assumed + [c for c in conds if c is not TRUE]
+            conds = ([] if bare else self.assumed) + [c for c in conds if c is not TRUE]  # bare: without the assumptions (fewer hypotheses: still sound)
             limit = min(TIMEOUT, timeout or TIMEOUT) * 1000
             if self.bp is not None and not any(has_lambda(c) for c in conds):
                 self.p = self.bp

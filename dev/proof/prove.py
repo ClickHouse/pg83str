@@ -1230,7 +1230,104 @@ class Cspan(Span):
     spn = False
 
 
-SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan}
+class SpanLong(Span):
+    """strspn and strcspn for sets longer than SETMAX bytes, any length: the
+    set's length L its first NUL and a byte in the set when it equals one
+    of the L, both with quantifiers (z3 takes those queries). The loop that
+    builds the table from the set is generalized as a side loop: its
+    invariant, the table's bit for every byte x set exactly when x is one of
+    the set's bytes before the frontier (and the NUL for strcspn when the
+    table has it), is one of the candidates read off the first iteration's
+    stores to the stack (a byte table, sse2's; a bit table at
+    16 (x >> 7) + (x & 15), bit (x >> 4) & 7, the avx2 units' truffle), kept
+    Houdini's way like the others; after the loop the scan's queries have it
+    for the bytes they look up."""
+
+    def setup(self, a, align):
+        params, assume = Span.setup(self, a, align)
+        L, t, top = self.L, self.t, const(64, USER_HI)
+        qk = var('qk0', 64)
+        assume = [c for c in assume if c is not S.ule(L, const(64, SETMAX))]  # the short form's bound (its first bytes' facts stay: instances)
+        assume += [S.ult(const(64, SETMAX), L), S.ult(L, const(64, USER_HI - USER_LO)),
+                   S.forall_(qk, S.or_(S.ule(L, qk), S.not_(S.is_zero(self.tbyte(qk)))))]  # no NUL before L
+        self.side_base = self.tbase
+        return params, assume
+
+    def member(self, b):
+        k = var('qk', 64)
+        return S.exists_(k, S.and_(S.ult(k, self.L), S.eq(self.tbyte(k), b)))
+
+    def keep_unrolling(self, prev, now):
+        """Only a loop that reads neither string (the table's zeroing)."""
+        return not now.loads[len(prev.loads):]
+
+    def in_first(self, x, n):
+        """x one of the set's first n bytes."""
+        k = var('qk', 64)
+        return S.exists_(k, S.and_(S.ult(k, n), S.eq(self.tbyte(k), x)))
+
+    def side_base_case(self, st, f, step):
+        return [('the set loop\'s frontier in the set', [S.ult(f, self.t)])]
+
+    def side_step_case(self, st, f, f2, step):
+        return []
+
+    def side_candidates(self, s1, s2, a1, step):
+        """The frontier within the set; the table's invariants: a table the
+        code cleared before the loop (a run of stack bytes at constant
+        offsets, 256 of them for a byte table, 32 for a bit table), holding
+        the set's bytes before the frontier (or the one before it: a loop
+        that stores the byte it loaded the time before), and the NUL or not."""
+        t, L = self.t, self.L
+        out = [('the set frontier at most its length', lambda st, f: S.ule(S.sub(f, t), L))]
+        offs, m = set(), s1.regions[-1][1]
+        while m.op == 'store':
+            if S.is_const(m.args[1]):
+                offs.add(S.signed(m.args[1]))
+            m = m.args[0]
+        runs, start = [], None
+        for o in sorted(offs):
+            if start is None or o != prev + 1:
+                if start is not None:
+                    runs.append((start, prev + 1))
+                start = o
+            prev = o
+        if start is not None:
+            runs.append((start, prev + 1))
+        forms = []
+        for lo, hi in runs:
+            for kind, size in (('byte', 256), ('bit', 32)):
+                if hi - lo >= size:
+                    forms += [(kind, lo), (kind, hi - size)]
+        for kind, c in sorted(set(forms)):
+            for d in (-1, 0):
+                for nul in (False, True):
+                    name = 'the %s table at rsp0%+d, the set before F%+d%s' % (kind, c, d, ', the NUL' if nul else '')
+                    out.append((name, (lambda kind, c, d, nul: lambda st, f: self.table_inv(st, kind, c, d, nul, f))(kind, c, d, nul)))
+        return out
+
+    def table_bit(self, mem, kind, c, x):
+        if kind == 'byte':
+            return S.not_(S.is_zero(S.select(mem, S.add(const(64, c), S.zext(x, 64)))))
+        hi = S.zext(S.lshr(x, const(8, 7)), 64)
+        lo = S.zext(S.band(x, const(8, 15)), 64)
+        byte = S.select(mem, S.add(S.add(const(64, c), S.mul(hi, const(64, 16))), lo))
+        return S.not_(S.is_zero(S.band(S.lshr(byte, S.band(S.lshr(x, const(8, 4)), const(8, 7))), const(8, 1))))
+
+    def table_inv(self, st, kind, c, d, nul, f):
+        x = var('qx', 8)
+        n = S.add(S.sub(f, self.t), const(64, d & S.mask(64)))
+        want = self.in_first(x, n)
+        if nul:
+            want = S.or_(want, S.is_zero(x))
+        return S.forall_(x, S.eq(self.table_bit(st.regions[-1][1], kind, c, x), want))
+
+
+class CspanLong(SpanLong):
+    spn = False
+
+
+SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan, 'strspn_long': SpanLong, 'strcspn_long': CspanLong}
 
 
 def moved_by(v, d, step, k):
@@ -1363,65 +1460,81 @@ class Prover:
             if r in s1.gpr and r not in havoc:
                 havoc.append(r)
         deltas = {r: d for r, d in deltas.items() if r not in widen}
-        bv = S.variables(self.spec.base)
-        others = frozenset().union(*[S.variables(b) for b, _ in s1.regions if b is not self.spec.base], getattr(self.spec, 'foreign', frozenset())) - bv
+        def detect(base, moved, havoc):
+            """The frontier into the object at base: (front, step, a1, down,
+            variable, moved, havoc), or a Failure."""
+            moved, havoc = dict(moved), list(havoc)
+            bv = S.variables(base)
+            others = frozenset().union(*[S.variables(b) for b, _ in s1.regions if b is not base], getattr(self.spec, 'foreign', frozenset())) - bv
 
-        foreign = getattr(self.spec, 'foreign', frozenset())
+            foreign = getattr(self.spec, 'foreign', frozenset())
 
-        def inside(x):  # an address into the object: a sum with its base, a pointer to it rounded down, else a term of its base's variables and no other's (not the source's of a memmove)
-            if foreign & S.variables(x):
-                return False
-            if X.offset_from(x, self.spec.base) is not None or any(inside(y) and not any(X.offset_from(r, b) is not None for b, _ in s1.regions
-                                                                                          if b is not self.spec.base) for y, r in X.rounded(x)):
-                return True
-            return bv & S.variables(x) and not others & S.variables(x)
+            def inside(x):  # an address into the object: a sum with its base, a pointer to it rounded down, else a term of its base's variables and no other's (not the source's of a memmove)
+                if foreign & S.variables(x):
+                    return False
+                if X.offset_from(x, base) is not None or any(inside(y) and not any(X.offset_from(r, b) is not None for b, _ in s1.regions
+                                                                                              if b is not base) for y, r in X.rounded(x)):
+                    return True
+                return bv & S.variables(x) and not others & S.variables(x)
 
-        def into(r):
-            return inside(s1.gpr[r])
+            def into(r):
+                return inside(s1.gpr[r])
 
-        front = [r for r in moved if X.offset_from(s1.gpr[r], self.spec.base) is not None and moved[r] > 0 and not others & S.variables(s1.gpr[r])]
-        if not front:  # a pointer rounded down: one that depends on the object's base, not on another region's
-            front = [r for r in moved if moved[r] > 0 and into(r)]
-            if len(front) > 1:  # the one the iteration's accesses are at
-                acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):]]
-                front = [r for r in front if any(X.offset_from(x, s1.gpr[r]) is not None and S.is_const(X.offset_from(x, s1.gpr[r])) for x in acc)]
-        down = variable = False
-        if len(front) == 1:
-            step = moved[front[0]]  # the frontier's step; the other registers move by multiples of it (a count down, say)
-            a1 = s1.gpr[front[0]]
-            # a register past the bytes it reads (loads at rcx - 3 .. rcx): the frontier is the lowest of them
-            acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
-            below = [S.signed(S.sub(x, a1)) for x in acc if S.is_const(S.sub(x, a1))]
-            if below and min(below) < 0:
-                a1 = S.add(a1, const(64, min(below)))
-        elif not front and not [d for d in moved.values() if d > 0] and [r for r in deltas if into(r)]:
-            # moved by what an inner loop did: the pointers into the object
-            # and every register that moved by the same amount
-            cand = [r for r in deltas if into(r)]
-            # the most registers moved alike (a's and b's pointers), a sum with the base first
-            r0 = max(cand, key=lambda r: (sum(deltas[x] is deltas[r] for x in deltas), X.offset_from(s1.gpr[r], self.spec.base) is not None))
-            front, step, a1, variable = [r0], 1, s1.gpr[r0], True
-            for r in list(havoc):
-                if deltas.get(r) is deltas[r0]:
-                    havoc.remove(r)
-                    moved[r] = 1
-            for r in [r for r in moved if r not in deltas or deltas[r] is not deltas[r0]]:
-                del moved[r]  # the constant movers: their counts unknown
-                havoc.append(r)
-        else:
-            # no register points into the object (a base and an index): the
-            # lowest address the first iteration touched, the smallest step;
-            # nothing moves up: a loop that runs down, the frontier the lowest
-            # address of the iteration it is about to run
-            steps = [d for d in moved.values() if d > 0]
-            if not steps and not front:
-                steps, down = [-d for d in moved.values() if d < 0], True
-            acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
-            low = [x for x in acc if all(S.is_const(S.sub(y, x)) and S.signed(S.sub(y, x)) >= 0 for y in acc)]
-            if not steps or not low:
-                raise Failure('loop at %#x: no frontier (registers %s, %d accesses into the object, none the lowest)' % (s1.rip, front, len(acc)))
-            step = min(steps)
-            a1 = low[0]
+            front = [r for r in moved if X.offset_from(s1.gpr[r], base) is not None and moved[r] > 0 and not others & S.variables(s1.gpr[r])]
+            if not front:  # a pointer rounded down: one that depends on the object's base, not on another region's
+                front = [r for r in moved if moved[r] > 0 and into(r)]
+                if len(front) > 1:  # the one the iteration's accesses are at
+                    acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):]]
+                    front = [r for r in front if any(X.offset_from(x, s1.gpr[r]) is not None and S.is_const(X.offset_from(x, s1.gpr[r])) for x in acc)]
+            down = variable = False
+            if len(front) == 1:
+                step = moved[front[0]]  # the frontier's step; the other registers move by multiples of it (a count down, say)
+                a1 = s1.gpr[front[0]]
+                # a register past the bytes it reads (loads at rcx - 3 .. rcx): the frontier is the lowest of them
+                acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
+                below = [S.signed(S.sub(x, a1)) for x in acc if S.is_const(S.sub(x, a1))]
+                if below and min(below) < 0:
+                    a1 = S.add(a1, const(64, min(below)))
+            elif not front and not [d for d in moved.values() if d > 0] and [r for r in deltas if into(r)]:
+                # moved by what an inner loop did: the pointers into the object
+                # and every register that moved by the same amount
+                cand = [r for r in deltas if into(r)]
+                # the most registers moved alike (a's and b's pointers), a sum with the base first
+                r0 = max(cand, key=lambda r: (sum(deltas[x] is deltas[r] for x in deltas), X.offset_from(s1.gpr[r], base) is not None))
+                front, step, a1, variable = [r0], 1, s1.gpr[r0], True
+                for r in list(havoc):
+                    if deltas.get(r) is deltas[r0]:
+                        havoc.remove(r)
+                        moved[r] = 1
+                for r in [r for r in moved if r not in deltas or deltas[r] is not deltas[r0]]:
+                    del moved[r]  # the constant movers: their counts unknown
+                    havoc.append(r)
+            else:
+                # no register points into the object (a base and an index): the
+                # lowest address the first iteration touched, the smallest step;
+                # nothing moves up: a loop that runs down, the frontier the lowest
+                # address of the iteration it is about to run
+                steps = [d for d in moved.values() if d > 0]
+                if not steps and not front:
+                    steps, down = [-d for d in moved.values() if d < 0], True
+                acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
+                low = [x for x in acc if all(S.is_const(S.sub(y, x)) and S.signed(S.sub(y, x)) >= 0 for y in acc)]
+                if not steps or not low:
+                    raise Failure('loop at %#x: no frontier (registers %s, %d accesses into the object, none the lowest)' % (s1.rip, front, len(acc)))
+                step = min(steps)
+                a1 = low[0]
+            return front, step, a1, down, variable, moved, havoc
+
+        side = False
+        try:
+            front, step, a1, down, variable, moved, havoc = detect(self.spec.base, moved, havoc)
+        except Failure:
+            if getattr(self.spec, 'side_base', None) is None:
+                raise
+            # a loop over the spec's other object (strspn's set, building its
+            # table): the spec's side invariants, the scan's frontier kept
+            front, step, a1, down, variable, moved, havoc = detect(self.spec.side_base, moved, havoc)
+            side = True
         if down and not hasattr(self.spec, 'cover_general'):
             raise Failure('loop at %#x runs down: only the writers have that' % s1.rip)
         lane_step = step  # a vector's lanes move by multiples of the first iteration's step
@@ -1437,9 +1550,12 @@ class Prover:
             step = 1
         if step & (step - 1):
             raise Failure('loop at %#x: the frontier\'s step %d, not a power of two' % (s1.rip, step))
-        mode = 'B' if variable else self.spec.mode(self.solver, s1, a1, step)
-        self.prove(s1, self.spec.base_case(s1, a1, mode, step, down) if down else self.spec.base_case(s1, a1, mode, step), self.spec.show())
-        kept = [(n, f) for n, f in self.candidates(s1, moved, havoc, step, a1) if n not in dropped and self.holds(s1, n, f, a1)]  # true at the first arrival
+        mode = 'B' if variable or side else self.spec.mode(self.solver, s1, a1, step)
+        if side:
+            self.prove(s1, self.spec.side_base_case(s1, a1, step), self.spec.show())
+        else:
+            self.prove(s1, self.spec.base_case(s1, a1, mode, step, down) if down else self.spec.base_case(s1, a1, mode, step), self.spec.show())
+        kept = [(n, f) for n, f in self.candidates(s1, moved, havoc, step, a1, side, s2) if n not in dropped and self.holds(s1, n, f, a1)]  # true at the first arrival
         self.proved += len(kept)
         self.loops += 1
         sh = step.bit_length() - 1
@@ -1451,6 +1567,19 @@ class Prover:
         for r in havoc:
             g.gpr[r] = var(g.fresh + r, 64)
         g.regions = [(b, a if a is s2.regions[i][1] else S.mem_var('%smem%d' % (g.fresh, i))) for i, (b, a) in enumerate(s1.regions)]  # written: unknown
+        swin = None
+        if s1.regions[-1][1] is not s2.regions[-1][1] and '#stack' not in widen:
+            # the stack the iteration wrote (spills, a call's return address):
+            # unknown only there, the return address and the rest kept
+            offs, m = [], s2.regions[-1][1]
+            while m is not s1.regions[-1][1] and m.op == 'store':
+                offs.append(m.args[1])
+                m = m.args[0]
+            ivs = [S.interval(o) for o in offs]  # a table's c + a byte: [c, c + 255]
+            if m is s1.regions[-1][1] and offs and all(iv is not None for iv in ivs):
+                lo, hi = min(iv[0] for iv in ivs), max(iv[1] for iv in ivs) + 1
+                swin = (lo, hi)
+                g.regions[-1] = (X.RSP0, S.win(s1.regions[-1][1], const(64, lo & S.mask(64)), const(64, hi & S.mask(64)), S.mem_var('%sstack' % g.fresh)))
         windows = []
         a = S.sub(a1, k) if down else S.add(a1, k)  # the frontier: up, where the next iteration starts; down, the lowest address it touches
         lo, hi = (S.add(a, const(64, step)), S.add(a1, const(64, step))) if down else (a1, a)  # what the iterations so far covered
@@ -1515,21 +1644,24 @@ class Prover:
         g.flags = {}
         g.loads, g.aligned, g.stores, g.requires = [], [], [], []
         g.snaps = dict(s1.snaps)  # the heads met before: an enclosing loop's, generalized when this one's exit gets back to it
-        g.front_lo = a
-        g.front_bytes = list(s1.front_bytes) + ([a] if mode == 'A' else [])
-        g.pc = list(s1.pc) + [S.ult(k, const(64, K_LIMIT))] + self.spec.general(a) + [f(g, a) for n, f in kept]
+        if not side:  # a side loop leaves the scan's frontier as it was
+            g.front_lo = a
+            g.front_bytes = list(s1.front_bytes) + ([a] if mode == 'A' else [])
+        g.pc = list(s1.pc) + [S.ult(k, const(64, K_LIMIT))] + ([] if side else self.spec.general(a)) + [f(g, a) for n, f in kept]
         g.gen = {'head': s1.rip, 'front': a, 'moved': moved, 'havoc': havoc, 'step': step, 'mode': mode, 'regs': dict(g.gpr),
                  'steps': g.steps, 'kept': kept, 'k': k, 'vec': dict(g.vec), 'vmoved': vmoved, 'kregs': dict(g.k),
-                 'mem': [arr for _, arr in g.regions], 'down': down, 'a1': a1, 'windows': windows, 'parent': s1.gen, 'fresh': g.fresh, 'w': w}
+                 'mem': [arr for _, arr in g.regions], 'down': down, 'a1': a1, 'windows': windows, 'parent': s1.gen, 'fresh': g.fresh, 'w': w,
+                 'side': side, 'swin': swin}
         if self.args.verbose:
             print('  loop at %#x: step %s, frontier %s, loads %s, %s move, %s recomputed, %d invariant candidates; vectors kept %s, moved %s' % (
                 s1.rip, 'any' if variable else ('-' if down else '') + str(step), front[0] if len(front) == 1 else 'from the accesses', mode,
                 sorted(moved), sorted(havoc), len(kept), sorted(set(g.vec) - set(vmoved)), sorted(vmoved)), flush=True)
+            if side:
+                print('    side loop, kept: %s' % '; '.join(n for n, f in kept), flush=True)
         return g
 
     def window(self, arr, lo, hi, h):
-        x = var('x%d' % self.loops, 64)
-        return S.lam(x, S.ite(S.and_(S.ule(lo, x), S.ult(x, hi)), S.select(h, x), S.select(arr, x)))
+        return S.win(arr, lo, hi, h)
 
     def holds(self, st, name, f, front):
         """Whether candidate f holds at a head state with that frontier. A
@@ -1540,14 +1672,15 @@ class Prover:
             r = way(st, name, front)
             if r is not None:
                 return r
-        return self.solver.check(*st.pc, S.not_(f(st, front))) == 'unsat'
+        # a table's invariant needs no assumption (they have quantifiers: z3 slows down on them)
+        return self.solver.check(*st.pc, S.not_(f(st, front)), bare=' table ' in name) == 'unsat'
 
-    def candidates(self, s1, moved, havoc, step, a1):
+    def candidates(self, s1, moved, havoc, step, a1, side=False, s2=None):
         """Invariant candidates, as functions of a head state and its frontier:
         the spec's bounds on the frontier; every moving register against every
         register the loop leaves alone and against the constants its body
         compares with (<, <= signed and unsigned, both ways)."""
-        out = list(self.spec.candidates(step))
+        out = list(self.spec.side_candidates(s1, s2, a1, step) if side else self.spec.candidates(step))
         rels = [('<u', S.ult), ('<=u', S.ule), ('<s', S.slt), ('<=s', S.sle)]
         pairs, consts = set(), {}
         a = s1.rip
@@ -1639,6 +1772,18 @@ class Prover:
             self.widen.setdefault(gen['head'], set()).update(changed)
             return
         win = {i for i, _, _ in gen['windows']}
+        if gen['swin'] is not None:  # the stack: written only inside its window (else the loop again with the stack unknown)
+            win.add(len(gen['mem']) - 1)
+            m = st.regions[-1][1]
+            while m is not gen['mem'][-1] and m.op == 'store':
+                iv = S.interval(m.args[1])
+                if iv is None or not gen['swin'][0] <= iv[0] <= iv[1] < gen['swin'][1]:
+                    self.widen.setdefault(gen['head'], set()).add('#stack')
+                    return
+                m = m.args[0]
+            if m is not gen['mem'][-1]:
+                self.widen.setdefault(gen['head'], set()).add('#stack')
+                return
         for i, arr in enumerate(gen['mem']):
             if i in win or arr.op == 'var' and arr.args[0].startswith(gen['fresh']):
                 continue  # the window's, checked below; unknown in the general state: anything
@@ -1646,11 +1791,12 @@ class Prover:
                 raise Failure('loop at %#x: region %d written though the general state keeps it' % (st.rip, i))
         a = gen['front']
         a2 = S.sub(a, D) if gen['down'] else S.add(a, D)  # the next iteration's frontier
-        allkept = [f(st, a2) for n, f in gen['kept']]
-        if allkept and self.solver.check(*st.pc, S.or_(*[S.not_(x) for x in allkept])) == 'unsat':
+        plain = [(n, f) for n, f in gen['kept'] if ' table ' not in n]  # tables one by one, without the assumptions (holds)
+        if plain and self.solver.check(*st.pc, S.or_(*[S.not_(f(st, a2)) for n, f in plain])) == 'unsat':
             lost = []  # all kept, one query
         else:
-            lost = [n for n, f in gen['kept'] if not self.holds(st, n, f, a2)]
+            lost = [n for n, f in plain if not self.holds(st, n, f, a2)]
+        lost += [n for n, f in gen['kept'] if ' table ' in n and not self.holds(st, n, f, a2)]
         if lost:  # gathered over the loop's subtree, then the loop again without them
             self.lost.setdefault(gen['head'], set()).update(lost)
             return
@@ -1684,6 +1830,9 @@ class Prover:
         self.prove(st, out, self.spec.show())
         w = gen['w']
         cov = None if w is None else (w, S.add(w, const(64, step)) if gen['down'] else S.add(w, D))  # the stores' part of this iteration
+        if gen['side']:
+            self.prove(st, self.spec.side_step_case(st, a, a2, step), self.spec.show())
+            return
         self.prove(st, self.spec.step_case(st, a, S.add(a, const(64, step)) if gen['down'] else a2, gen['mode'], step, cov), self.spec.show())
 
     def run(self, entry, params):
@@ -1770,7 +1919,7 @@ class Prover:
                     if c is S.TRUE:
                         live.append(s)
                         continue
-                    if self.solver.check(*s.pc, c) != 'unsat':
+                    if self.solver.check(*s.pc, c, loose=True) != 'unsat':  # a dead branch may stay: sound
                         s.pc.append(c)
                         s.trace.append(s.rip)
                         live.append(s)
