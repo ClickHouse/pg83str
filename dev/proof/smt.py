@@ -20,6 +20,7 @@ SLOW = float(os.environ['PROVE_SLOW']) if os.environ.get('PROVE_SLOW') else None
 INCREMENTAL = os.environ.get('PROVE_INCREMENTAL') == '1'
 MEMORY = int(os.environ.get('PROVE_MEMORY', '6000'))  # megabytes z3 may take
 TIMEOUT = int(os.environ.get('PROVE_TIMEOUT', '900'))  # seconds a query may take: then unknown, which no proof accepts
+QTIMEOUT = int(os.environ.get('PROVE_QTIMEOUT', '120'))  # a query with quantifiers whose part without them was not unsat
 
 
 class T:
@@ -928,8 +929,10 @@ class Solver:
     def check(self, *conds, keep=False, timeout=None, bare=False, loose=False):
         """With quantifiers among the conditions (strspn's long sets): first
         without them (fewer hypotheses: unsat holds for the whole), the full
-        query only when that is not unsat; loose: a sat or unknown answer
-        need not be the full query's (a branch kept that might be dead)."""
+        query only when that is not unsat, for QTIMEOUT at most (z3 may never
+        settle a query with quantifiers that is sat: unknown, no proof);
+        loose: a sat or unknown answer need not be the full query's (a
+        branch kept that might be dead)."""
         if not INCREMENTAL:
             allc = ([] if bare else self.assumed) + list(conds)
             if any(has_quantifier(c) for c in allc):
@@ -937,6 +940,7 @@ class Solver:
                 r = self._check(*plain, keep=keep and loose, timeout=timeout, bare=True)
                 if r == 'unsat' or loose:
                     return r
+                return self._check(*conds, keep=keep, timeout=min(timeout or TIMEOUT, QTIMEOUT), bare=bare)
         return self._check(*conds, keep=keep, timeout=timeout, bare=bare)
 
     def _check(self, *conds, keep=False, timeout=None, bare=False):

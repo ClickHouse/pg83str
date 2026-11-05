@@ -1474,9 +1474,13 @@ def result(args, a, what, paths, obligations, queries, seconds, detail):
                                   'detail': detail}), flush=True)
 
 
-def check_abi(st):
+def check_abi(st, solver):
+    """The callee-saved registers and rsp as at the entry: the same term, or
+    (read back past stores at computed places: a frame aligned down) a
+    query that they can not differ."""
     for r in X.CALLEE_SAVED:
-        if st.gpr[r] is not var('init_' + r, 64):
+        v, v0 = st.gpr[r], var('init_' + r, 64)
+        if v is not v0 and solver.check(*st.pc, S.not_(S.eq(v, v0))) != 'unsat':
             raise Failure('%s not preserved' % r)
     if st.gpr['rsp'] is not S.add(X.RSP0, const(64, 8)):
         raise Failure('rsp at the return: %r' % st.gpr['rsp'])
@@ -2077,7 +2081,7 @@ class Prover:
             self.paths += 1
             if closed:
                 continue
-            check_abi(st)
+            check_abi(st, self.solver)
             obligations, show = self.spec.obligations(st)
             self.prove(st, obligations, show)
 
