@@ -101,10 +101,24 @@ def aligned_pointer(name, a, align):
     return base, S.add(base, const(64, a)), S.mem_var(name + '_mem')
 
 
-SPANS = (64, 128, 256, 512, 1024)
+SPANS = (16, 32, 64, 128, 256, 512, 1024)
+AUX = 20  # seconds for a query that only picks a cheaper form of an obligation (unknown: the plain form)
 
 
-def span(spec, st, lo, hi, pred, given=()):
+class Alt:
+    """An obligation written in several equivalent ways: alternatives, each
+    a list of parts (queries) that must all be unsat; the prover tries them
+    in turn (a short timeout for all but the last), sat in any part is a
+    counterexample."""
+
+    def __init__(self, alts):
+        self.alts = alts
+
+    def __radd__(self, prefix):
+        return Alt([[list(prefix) + part for part in alt] for alt in self.alts])
+
+
+def span(spec, st, lo, hi, pred, given=(), down=False, anchor=None):
     """pred at an offset in [lo, hi), as conditions for a query: the offsets
     one by one when the span is a known number, or when the path bounds it
     (a span up to an index from a mask's trailing zeros: offsets past lo by
@@ -116,9 +130,49 @@ def span(spec, st, lo, hi, pred, given=()):
         return [S.or_(*[pred(S.add(lo, const(64, j))) for j in range(n.val)])]
     if st is not None:
         for b in SPANS:
-            if spec.solver.check(*st.pc, *given, S.ult(const(64, b), n)) == 'unsat':
-                return [S.or_(*[S.and_(S.ult(const(64, j), n), pred(S.add(lo, const(64, j)))) for j in range(b)])]
+            if spec.solver.check(*st.pc, *given, S.ult(const(64, b), n), timeout=AUX) == 'unsat':
+                # the offsets from both ends: the path's loads past the frontier
+                # and those back from an end (memcmp's last blocks at n - 64)
+                # match one of them term for term; either is the whole span
+                up = S.or_(*[S.and_(S.ult(const(64, j), n), pred(S.add(lo, const(64, j)))) for j in range(b)])
+                if not down:
+                    return [up]
+                # the span split where the code's blocks from lo meet its last
+                # ones back from the anchor (n: memcmp's last pair, memchr's last
+                # block): offsets from lo below anchor - c, back from it above
+                a = hi if anchor is None else anchor
+                inside = lambda x: S.and_(S.ule(lo, x), S.ult(x, hi))  # noqa: E731
+                alts = []
+                for c in (16, 32, 64, 128):
+                    if c < b:
+                        upc = S.or_(*[S.and_(S.ult(const(64, j), n), S.ult(S.add(lo, const(64, j)), S.sub(a, const(64, c))), pred(S.add(lo, const(64, j))))
+                                      for j in range(b)])
+                        dnc = S.or_(*[S.and_(inside(S.sub(a, const(64, j + 1))), pred(S.sub(a, const(64, j + 1)))) for j in range(c)])
+                        alts.append([[upc], [dnc]])
+                return Alt(alts + [[[up]]])
     return [S.ule(lo, spec.i), S.ult(spec.i, hi), pred(spec.i)]
+
+
+def pinned(spec, st, idx, pred, ends, given=()):
+    """pred(idx) for an index the path bounds near one of the ends (lo for
+    an index past it, hi for one before it): the same written out over the
+    offsets it can be, one form per end it is near, any of them equivalent
+    to pred(idx) where the bound holds (so a query may take them all, and
+    their negations all for not pred(idx)). The bytes are then the path's
+    own terms, not a select at a computed index."""
+    direct = pred(idx)
+    if direct is S.TRUE or direct is S.FALSE:  # the answer built from those very bytes: settled already
+        return [direct]
+    forms = []
+    for lo, hi in ends:
+        for b in SPANS[:4]:
+            if lo is not None and spec.solver.check(*st.pc, *given, S.ule(const(64, b), S.sub(idx, lo)), timeout=AUX) == 'unsat':
+                forms.append(S.or_(*[S.and_(S.eq(idx, S.add(lo, const(64, j))), pred(S.add(lo, const(64, j)))) for j in range(b)]))
+                break
+            if hi is not None and spec.solver.check(*st.pc, *given, S.ule(const(64, b), S.sub(S.sub(hi, idx), const(64, 1))), timeout=AUX) == 'unsat':  # hi - b <= idx < hi
+                forms.append(S.or_(*[S.and_(S.eq(idx, S.sub(hi, const(64, j + 1))), pred(S.sub(hi, const(64, j + 1)))) for j in range(b)]))
+                break
+    return forms + [direct]
 
 
 def owner(addr, objects):
@@ -129,6 +183,10 @@ def owner(addr, objects):
     is a's."""
     for p, base in objects:
         if X.offset_from(addr, base) is not None:
+            return p
+    for x, rest in X.rounded(addr):  # rounded down, plus an offset of no other object's: the pointer's
+        p = owner(x, objects)
+        if not any(X.offset_from(rest, b) is not None for q, b in objects if q is not p):
             return p
     hits = [p for p, base in objects if S.variables(base) & S.variables(addr)]
     if len(hits) != 1:
@@ -177,8 +235,8 @@ class Scan:
     def at(self, off):
         return self.match(self.byte(S.add(self.s, off)))
 
-    def some_match(self, lo, hi, st=None, given=()):
-        return span(self, st, lo, hi, self.at, given)
+    def some_match(self, lo, hi, st=None, given=(), down=False, anchor=None):
+        return span(self, st, lo, hi, self.at, given, down, anchor)
 
     def last_readable(self):
         """The last offset the scan may need, given the stop z."""
@@ -216,15 +274,16 @@ class Scan:
         s = self.s
         found, idx = self.answer(st)
         lo = S.sub(st.front_lo, s) if st.front_lo is not None else const(64, 0)
-        out = [('the answer is a match', [found, S.not_(self.at(idx))])]
+        ends = [(lo, None)] + ([(None, self.n)] if self.bounded else [])
+        out = [('the answer is a match', [found] + Alt([[[S.not_(f)]] for f in pinned(self, st, idx, self.at, ends, [found])]))]
         if self.bounded:
             out.append(('the answer within the n bytes', [found, S.not_(S.ult(idx, self.n))]))
-        out.append(('no match before the answer', [found] + self.some_match(lo, idx, st, [found])))
+        out.append(('no match before the answer', [found] + self.some_match(lo, idx, st, [found], down=self.bounded, anchor=self.n if self.bounded else None)))
         if st.front_lo is not None:
             out.append(('the answer at or past the frontier', [found, S.ult(idx, lo)]))
         last = idx
         if self.bounded:
-            out.append(('no match in the n bytes when there is no answer', [S.not_(found)] + self.some_match(lo, self.n, st, [S.not_(found)])))
+            out.append(('no match in the n bytes when there is no answer', [S.not_(found)] + self.some_match(lo, self.n, st, [S.not_(found)], down=True)))
             last = S.ite(found, idx, S.sub(self.n, const(64, 1)))
         for f in st.front_bytes:
             out.append(('the byte at a loop\'s frontier in the object', [S.ult(S.add(s, last), f)]))
@@ -420,8 +479,13 @@ class StrCompare(Scan):
     def obligations(self, st):
         out, show = Scan.obligations(self, st)
         r = S.extract(st.gpr['rax'], 31, 0)
-        x, y = self.bytes_at(self.answer(st)[1])
-        return [('the answer the difference of the bytes at its index', [S.not_(S.eq(r, S.sub(S.zext(x, 32), S.zext(y, 32))))])] + out, show
+        lo = S.sub(st.front_lo, self.s) if st.front_lo is not None else const(64, 0)
+
+        def right(j):
+            x, y = self.bytes_at(j)
+            return S.eq(r, S.sub(S.zext(x, 32), S.zext(y, 32)))
+        forms = pinned(self, st, self.answer(st)[1], right, [(lo, None)])
+        return [('the answer the difference of the bytes at its index', [S.not_(f) for f in forms])] + out, show
 
     def show(self):
         return [self.s, self.b, self.z, self.i]
@@ -666,8 +730,13 @@ class Compare:
     def differ(self, off):
         return S.not_(S.eq(self.at(self.A, self.base, self.a, off), self.at(self.B, self.bbase, self.b, off)))
 
-    def some_diff(self, lo, hi, st=None, given=()):
-        return span(self, st, lo, hi, self.differ, given)
+    def some_diff(self, lo, hi, st=None, given=(), down=False, anchor=None):
+        return span(self, st, lo, hi, self.differ, given, down, anchor)
+
+    @staticmethod
+    def alt_parts(x):
+        """A span's ways as alternatives' parts: one alternative for a plain one."""
+        return [p for alt in x.alts for p in [alt]] if isinstance(x, Alt) else [[x]]
 
     def owner(self, addr):
         return owner(addr, ((self.a, self.base), (self.b, self.bbase)))
@@ -695,13 +764,16 @@ class Compare:
         idx = self.answer_index(r)
         if idx is None:
             out = [('a constant answer is 0', [S.not_(S.is_zero(r))]),
-                   ('no difference in the n bytes when the answer is 0', self.some_diff(lo, self.n, st))]
+                   ('no difference in the n bytes when the answer is 0', self.some_diff(lo, self.n, st, down=True))]
         else:
-            ba, bb = self.at(self.A, self.base, self.a, idx), self.at(self.B, self.bbase, self.b, idx)
-            out = [('the answer the difference of the bytes at its index', [S.not_(S.eq(r, S.sub(S.zext(ba, 32), S.zext(bb, 32))))]),
+            ends = [(lo, None), (None, self.n)]
+            right = lambda j: S.eq(r, S.sub(S.zext(self.at(self.A, self.base, self.a, j), 32), S.zext(self.at(self.B, self.bbase, self.b, j), 32)))  # noqa: E731
+            same = pinned(self, st, idx, lambda j: S.not_(self.differ(j)), ends)
+            out = [('the answer the difference of the bytes at its index', Alt([[[S.not_(f)]] for f in pinned(self, st, idx, right, ends)])),
                    ('the index within n', [S.not_(S.ult(idx, self.n))]),
-                   ('no difference before the index', self.some_diff(lo, idx, st)),
-                   ('no difference at all when the bytes at the index are equal', [S.eq(ba, bb)] + self.some_diff(lo, self.n, st, [S.eq(ba, bb)]))]
+                   ('no difference before the index', self.some_diff(lo, idx, st, down=True, anchor=self.n)),
+                   ('no difference at all when the bytes at the index are equal', Alt([[[f] + x for x in part] for f in same for part in
+                                                                                     self.alt_parts(self.some_diff(lo, self.n, st, [f], down=True))]))]
         return out, self.show()  # the loads: each checked as it ran (early)
 
     def general(self, f):
@@ -1063,7 +1135,113 @@ class StrCat(Writer):
         return [self.d, self.s, self.z0, self.z, self.i]
 
 
-SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat}
+SETMAX = 32  # strspn and strcspn: sets of up to this many bytes
+
+
+class Span(Scan):
+    """strspn(s, set) (in = True: the length of s's prefix of set bytes) and
+    strcspn (in = False: of bytes not in it, the NUL ending it). The set a
+    string of L <= SETMAX bytes (L its first NUL, written out byte by byte),
+    a byte in it when it equals one of the L: no quantifier anywhere. A stop
+    of s: for strspn a byte not in the set (the NUL among them), for strcspn
+    one in it or the NUL; the scan's obligations for the answer, s read up
+    to the stop's page, the set up to its NUL's. Loops over the set and the
+    stack (tables built from it) run out unrolled; the scan of s by
+    induction. s's low bits are the alignment class; set any pointer."""
+    bounded = False
+    spn = True
+
+    def setup(self, a, align):
+        self.base, self.s, self.S = aligned_pointer('s', a, align)
+        self.tbase, self.t, self.T = aligned_pointer('set', 0, 1)
+        self.regions = [(self.base, self.S), (self.tbase, self.T)]
+        self.z, self.i, self.L = var('z', 64), var('i', 64), var('L', 64)
+        s, t, z, L = self.s, self.t, self.z, self.L
+        top = const(64, USER_HI)
+        assume = [S.ule(const(64, USER_LO), s), S.ult(s, top), S.ule(const(64, USER_LO), t), S.ult(t, top),
+                  S.ule(L, const(64, SETMAX)), S.is_zero(self.tbyte(L)), S.ule(S.add(t, L), top)]
+        assume += [S.or_(S.ule(L, const(64, m)), S.not_(S.is_zero(self.tbyte(const(64, m))))) for m in range(SETMAX)]  # L the first NUL
+        assume += [self.at(z), S.ult(z, const(64, USER_HI - USER_LO)), S.ule(S.add(s, z), top)]
+        if not self.induct:
+            assume.append(S.ule(z, const(64, self.maxlen)))
+        return [s, t], assume
+
+    def tbyte(self, j):
+        return S.select(self.T, S.add(S.sub(self.t, self.tbase), j))
+
+    def member(self, b):
+        """b one of the set's bytes before its NUL: written as the machine's
+        pcmpistri writes it (a set byte valid when no NUL is at or before
+        it), so that the path's terms and the spec's are the same terms."""
+        tb = [self.tbyte(const(64, k)) for k in range(SETMAX)]
+        return S.or_(*[S.and_(S.not_(S.or_(*[S.is_zero(x) for x in tb[:k + 1]])), S.eq(tb[k], b)) for k in range(SETMAX)])
+
+    def at(self, off):
+        b = S.select(self.S, S.add(S.sub(self.s, self.base), off))
+        return S.not_(self.member(b)) if self.spn else S.or_(self.member(b), S.is_zero(b))
+
+    def owner(self, addr):
+        return owner(addr, ((self.s, self.base), (self.t, self.tbase)))
+
+    def early(self, a, n):
+        p = self.owner(a)
+        last = self.z if p is self.s else self.L
+        return S.and_(nonempty(n), S.or_(S.ult(page(a), page(p)), S.ult(page(S.add(p, last)), page(last_of(a, n)))))
+
+    def loads_unsafe(self, st, last):
+        bad = []
+        for a, n, _, c in st.loads:
+            p = self.owner(a)
+            end = last if p is self.s else self.L
+            bad.append(S.and_(c, S.or_(S.ult(page(a), page(p)), S.ult(page(S.add(p, end)), page(last_of(a, n))))))
+        if st.stores:
+            raise Failure('stores at %s' % ', '.join('%#x' % e[2] for e in st.stores))
+        return [('every load in the pages of its string up to the answer or the set\'s NUL', [S.or_(*bad)])] if bad else []
+
+    def loads_by(self, st, f, mode, step, what):
+        return []  # each load checked as it ran against the pages up to any stop z
+
+    def mode(self, solver, st, f, step):
+        return 'B'
+
+    def frontier_checks(self, st, f, lo):
+        out = [('the frontier at or past s', [S.ult(f, self.s)])]
+        if lo is not None:
+            out.append(('the frontier at or past the previous loop\'s', [S.ult(f, lo)]))
+        return out
+
+    def params(self):
+        return [self.s, self.t]
+
+    def answer(self, st):
+        return S.TRUE, st.gpr['rax']
+
+    def keep_unrolling(self, prev, now):
+        """A loop that read nothing of s since its last arrival: over the set
+        or the stack, bounded by the set's length; it runs out unrolled."""
+        return not any(self.owner(a) is self.s for a, _, _, _ in now.loads[len(prev.loads):])
+
+    def show(self):
+        return [self.s, self.t, self.z, self.L, self.i]
+
+
+class Cspan(Span):
+    spn = False
+
+
+SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan}
+
+
+def moved_by(v, d, step, k):
+    """v moved by d an iteration, after k / step of them (k a multiple of the
+    step, so the division is exact)."""
+    if d == step:
+        return S.add(v, k)
+    if d == -step:
+        return S.sub(v, k)
+    if d % step == 0:
+        return S.add(v, S.mul(k, const(64, d // step)))
+    return S.add(v, S.mul(S.lshr(k, const(64, step.bit_length() - 1)), const(64, d)))
 
 
 def result(args, a, what, paths, obligations, queries, seconds, detail):
@@ -1077,7 +1255,7 @@ def check_abi(st):
     for r in X.CALLEE_SAVED:
         if st.gpr[r] is not var('init_' + r, 64):
             raise Failure('%s not preserved' % r)
-    if st.gpr['rsp'] is not S.add(var('rsp0', 64), const(64, 8)):
+    if st.gpr['rsp'] is not S.add(X.RSP0, const(64, 8)):
         raise Failure('rsp at the return: %r' % st.gpr['rsp'])
 
 
@@ -1100,8 +1278,19 @@ class Prover:
 
     def never(self, st, conds, what):
         """conds can not hold on the path: a counterexample when they can,
-        a failure when z3 can not tell."""
-        r = self.solver.check(*st.pc, *conds, keep=True)
+        a failure when z3 can not tell. A disjunction among them goes one
+        disjunct at a time (a load's page bounds, below and above: two
+        queries of 6 and 17 s where the one took 72)."""
+        flat = []
+        for c in conds:
+            flat.extend(c.args if c.op == 'and_b' else [c])
+        ors = [c for c in flat if c.op == 'or_b' and len(c.args) <= 4]
+        if ors:
+            rest = [c for c in flat if c is not ors[0]]
+            for x in ors[0].args:
+                self.never(st, rest + [x], what)
+            return
+        r = self.solver.check(*st.pc, *flat, keep=True)
         if r == 'sat':
             self.fail(what, st, self.spec.show())
         if r != 'unsat':
@@ -1109,6 +1298,9 @@ class Prover:
 
     def prove(self, st, obligations, show):
         for what, conds in obligations:
+            if isinstance(conds, Alt):
+                self.prove_alt(st, what, conds, show)
+                continue
             t1 = time.time()
             r = self.solver.check(*st.pc, *conds, keep=True)
             if self.args.verbose:
@@ -1118,6 +1310,25 @@ class Prover:
             if r == 'unknown':
                 raise Failure('%s: z3 answered unknown' % what)
             self.proved += 1
+
+    def prove_alt(self, st, what, alt, show):
+        for k, parts in enumerate(alt.alts):
+            last = k == len(alt.alts) - 1
+            t1 = time.time()
+            rs = []
+            for conds in parts:
+                r = self.solver.check(*st.pc, *conds, keep=True, timeout=None if last else AUX // 2)
+                if r == 'sat':
+                    self.fail(what, st, show)
+                rs.append(r)
+                if r != 'unsat':
+                    break
+            if self.args.verbose:
+                print('   %-50s %s (way %d of %d) %.1f s' % (what, '/'.join(rs), k + 1, len(alt.alts), time.time() - t1), flush=True)
+            if all(r == 'unsat' for r in rs) and len(rs) == len(parts):
+                self.proved += 1
+                return
+        raise Failure('%s: z3 answered unknown every way' % what)
 
     def generalize(self, s1, s2, dropped=frozenset(), widen=frozenset()):
         """s1 and s2: the same path at a loop's head, the first and the second
@@ -1145,10 +1356,13 @@ class Prover:
 
         foreign = getattr(self.spec, 'foreign', frozenset())
 
-        def inside(x):  # an address into the object: a sum with its base, else a term of its base's variables and no other's (not the source's of a memmove)
+        def inside(x):  # an address into the object: a sum with its base, a pointer to it rounded down, else a term of its base's variables and no other's (not the source's of a memmove)
             if foreign & S.variables(x):
                 return False
-            return X.offset_from(x, self.spec.base) is not None or bv & S.variables(x) and not others & S.variables(x)
+            if X.offset_from(x, self.spec.base) is not None or any(inside(y) and not any(X.offset_from(r, b) is not None for b, _ in s1.regions
+                                                                                          if b is not self.spec.base) for y, r in X.rounded(x)):
+                return True
+            return bv & S.variables(x) and not others & S.variables(x)
 
         def into(r):
             return inside(s1.gpr[r])
@@ -1163,11 +1377,17 @@ class Prover:
         if len(front) == 1:
             step = moved[front[0]]  # the frontier's step; the other registers move by multiples of it (a count down, say)
             a1 = s1.gpr[front[0]]
+            # a register past the bytes it reads (loads at rcx - 3 .. rcx): the frontier is the lowest of them
+            acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
+            below = [S.signed(X.offset_from(x, a1)) for x in acc if X.offset_from(x, a1) is not None and S.is_const(X.offset_from(x, a1))]
+            if below and min(below) < 0:
+                a1 = S.add(a1, const(64, min(below)))
         elif not front and not [d for d in moved.values() if d > 0] and [r for r in deltas if into(r)]:
             # moved by what an inner loop did: the pointers into the object
             # and every register that moved by the same amount
-            ptrs = [r for r in deltas if X.offset_from(s1.gpr[r], self.spec.base) is not None and not others & S.variables(s1.gpr[r])]
-            r0 = max(ptrs or [r for r in deltas if into(r)], key=lambda r: sum(deltas[x] is deltas[r] for x in deltas))  # the most registers moved alike
+            cand = [r for r in deltas if into(r)]
+            # the most registers moved alike (a's and b's pointers), a sum with the base first
+            r0 = max(cand, key=lambda r: (sum(deltas[x] is deltas[r] for x in deltas), X.offset_from(s1.gpr[r], self.spec.base) is not None))
             front, step, a1, variable = [r0], 1, s1.gpr[r0], True
             for r in list(havoc):
                 if deltas.get(r) is deltas[r0]:
@@ -1203,8 +1423,8 @@ class Prover:
                     del moved[r]
                     havoc.append(r)
             step = 1
-        if step & (step - 1) or any(d % step for d in moved.values()):
-            raise Failure('loop at %#x: steps %s, not multiples of a power of two %d' % (s1.rip, sorted(moved.values()), step))
+        if step & (step - 1):
+            raise Failure('loop at %#x: the frontier\'s step %d, not a power of two' % (s1.rip, step))
         mode = 'B' if variable else self.spec.mode(self.solver, s1, a1, step)
         self.prove(s1, self.spec.base_case(s1, a1, mode, step, down) if down else self.spec.base_case(s1, a1, mode, step), self.spec.show())
         kept = [(n, f) for n, f in self.candidates(s1, moved, havoc, step, a1) if n not in dropped and self.holds(s1, n, f, a1)]  # true at the first arrival
@@ -1214,9 +1434,8 @@ class Prover:
         k = S.concat(var('k%d_hi' % self.loops, 64 - sh), const(sh, 0)) if sh else var('k%d' % self.loops, 64)  # any multiple of the step
         g = s1.copy()
         g.fresh = 'g%d_' % self.loops
-        for r, d in moved.items():
-            m = d // step
-            g.gpr[r] = S.add(s1.gpr[r], k) if m == 1 else S.sub(s1.gpr[r], k) if m == -1 else S.add(s1.gpr[r], S.mul(k, const(64, m)))
+        for r, d in moved.items():  # d each iteration: d times K / step (a count down by 1 beside a pointer by 128, say)
+            g.gpr[r] = moved_by(s1.gpr[r], d, step, k)
         for r in havoc:
             g.gpr[r] = var(g.fresh + r, 64)
         g.regions = [(b, a if a is s2.regions[i][1] else S.mem_var('%smem%d' % (g.fresh, i))) for i, (b, a) in enumerate(s1.regions)]  # written: unknown
@@ -1334,6 +1553,13 @@ class Prover:
             if j.get('branch_target') == s1.rip:
                 break
             a += j['len']
+        for r, d in moved.items():  # counters: down ones stay at or above 1 and below where they began (no wrap), up ones above
+            r1 = s1.gpr[r]
+            if d < 0:
+                out.append(('%s >=u 1' % r, (lambda r: lambda st, f: S.ule(const(64, 1), st.gpr[r]))(r)))
+                out.append(('%s <=u its first' % r, (lambda r, r1: lambda st, f: S.ule(st.gpr[r], r1))(r, r1)))
+            else:
+                out.append(('%s >=u its first' % r, (lambda r, r1: lambda st, f: S.ule(r1, st.gpr[r]))(r, r1)))
         for x, y in pairs:
             if x not in moved and y not in moved:
                 continue
@@ -1357,7 +1583,7 @@ class Prover:
         this time (a multiple of the step; in a loop that runs down, the
         step), K + D below the limit, the invariant kept."""
         step, regs, moved = gen['step'], gen['regs'], gen['moved']
-        ref = [r for r in moved if moved[r] // step in (1, -1)]
+        ref = [r for r in moved if moved[r] in (step, -step)]
         if not ref:
             raise Failure('loop at %#x: no register moves by the frontier\'s step' % st.rip)
         dd = S.sub(st.gpr[ref[0]], regs[ref[0]])
@@ -1367,8 +1593,7 @@ class Prover:
             if r in gen['havoc']:
                 continue
             if r in moved:
-                m = moved[r] // step
-                want = S.add(v, D) if m == 1 else S.sub(v, D) if m == -1 else S.add(v, S.mul(D, const(64, m)))
+                want = moved_by(v, moved[r], step, D)
                 if st.gpr[r] is not want:
                     off_form.append(S.not_(S.eq(st.gpr[r], want)))
             elif st.gpr[r] is not v:
@@ -1381,12 +1606,18 @@ class Prover:
             now = X.read_vec(st, 'zmm%d' % n)
             if n in gen['vmoved']:
                 want = [o if a is None else S.select(a, S.add(o, k1 if m == 1 else S.mul(k1, const(64, m)))) for a, o, m in gen['vmoved'][n]]
+                mine = []
                 for x, y in zip(now, want):  # loaded from the memory as it is now: the same byte, the solver decides
                     if x is not y:
                         if x.op != 'select' or y.op != 'select':
                             changed.add('zmm%d' % n)
                             break
-                        lanes_differ.append(S.not_(S.eq(x, y)))
+                        mine.append(S.not_(S.eq(x, y)))
+                if mine and 'zmm%d' % n not in changed:
+                    if self.solver.check(*st.pc, S.or_(*mine)) == 'unsat':
+                        lanes_differ += mine
+                    else:
+                        changed.add('zmm%d' % n)  # not of that form after all (reloaded each time round): unknown
             elif any(x is not y for x, y in zip(now, lanes)):
                 changed.add('zmm%d' % n)
         for n, v in gen['kregs'].items():
@@ -1403,7 +1634,11 @@ class Prover:
                 raise Failure('loop at %#x: region %d written though the general state keeps it' % (st.rip, i))
         a = gen['front']
         a2 = S.sub(a, D) if gen['down'] else S.add(a, D)  # the next iteration's frontier
-        lost = [n for n, f in gen['kept'] if not self.holds(st, n, f, a2)]
+        allkept = [f(st, a2) for n, f in gen['kept']]
+        if allkept and self.solver.check(*st.pc, S.or_(*[S.not_(x) for x in allkept])) == 'unsat':
+            lost = []  # all kept, one query
+        else:
+            lost = [n for n, f in gen['kept'] if not self.holds(st, n, f, a2)]
         if lost:  # gathered over the loop's subtree, then the loop again without them
             self.lost.setdefault(gen['head'], set()).update(lost)
             return
@@ -1486,7 +1721,8 @@ class Prover:
                         closed = True
                         break
                     seen_n, snap = st.snaps.get(st.rip, (0, None))
-                    if seen_n < self.unroll:  # the first arrivals run on (a short loop runs out in them)
+                    if seen_n < self.unroll or (snap is not None and seen_n < 4 * SETMAX and hasattr(self.spec, 'keep_unrolling')
+                                                and self.spec.keep_unrolling(snap, st)):  # the first arrivals run on (a short loop runs out in them)
                         st.snaps[st.rip] = (seen_n + 1, st.copy())
                     else:
                         self.explore_loop(snap, st)  # a loop; after another one on this path, the next in a row
@@ -1502,12 +1738,16 @@ class Prover:
                     self.never(st, [bad], '%s at %#x' % (what, rrip))
                 for aa, an, arip in st.aligned[seen_al:]:  # a misaligned movaps, movdqa or legacy SSE operand faults, its mask whatever
                     self.never(st, [S.not_(S.is_zero(S.band(aa, const(64, an - 1))))], 'the access at %#x needs %d-byte alignment and may not have it' % (arip, an))
-                for la, ln, lrip, lc in st.loads[seen:]:
+                new = st.loads[seen:]
+                if len(new) == 1:
+                    la, ln, lrip, lc = new[0]
                     self.never(st, [lc, self.spec.early(la, ln)], 'the load at %#x reaches past what the object allows' % lrip)
-                for e in st.stores[seen_st:]:
-                    bad = self.spec.early_store(e)
-                    if bad is not S.FALSE:
-                        self.never(st, [bad], 'the store at %#x lands outside the object' % e[2])
+                elif new:  # a masked load's lanes: one query for them all
+                    self.never(st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])],
+                               'the load at %#x reaches past what the object allows' % new[0][2])
+                bads = [b for b in (self.spec.early_store(e) for e in st.stores[seen_st:]) if b is not S.FALSE]
+                if bads:  # a masked store's lanes: one query for them all
+                    self.never(st, [S.or_(*bads)], 'the store at %#x lands outside the object' % st.stores[seen_st][2])
                 if len(succ) == 1:
                     st = succ[0][0]
                     continue

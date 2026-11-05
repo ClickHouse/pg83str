@@ -436,6 +436,8 @@ def zext(a, w):
         return a
     if is_const(a):
         return const(w, a.val)
+    if a.op == 'zext':
+        return zext(a.args[0], w)
     return _mk('zext', w, (a,))
 
 
@@ -573,16 +575,55 @@ def or_(*xs):
 
 # ------------------------------------------------------------- memory
 
+_iv = {}
+
+
+def interval(t):
+    """(lo, hi): t's value as a signed number lies there, or None. Constants,
+    zero extensions and masks bound their values; sums add the bounds (a
+    table's index c + a byte: [c, c + 255])."""
+    r = _iv.get(t.id, 0)
+    if r != 0:
+        return r
+    r = None
+    lim = 1 << (t.w - 2)
+    if t.op == 'const':
+        r = (signed(t), signed(t))
+    elif t.op == 'zext':
+        ix = interval(t.args[0]) if t.args[0].w > 1 else None
+        r = ix if ix is not None and ix[0] >= 0 else (0, (1 << t.args[0].w) - 1)
+    elif t.op == 'and' and is_const(t.args[1]) and t.args[1].val < lim:
+        r = (0, t.args[1].val)
+    elif t.op in ('add', 'sub', 'neg'):
+        f, c = linear(t)
+        lo = hi = signed(const(t.w, c))
+        for x, v in f.items():
+            k = signed(const(t.w, v))
+            ix = interval(x) if abs(k) == 1 else None
+            if ix is None:
+                break
+            lo, hi = (lo + ix[0], hi + ix[1]) if k == 1 else (lo - ix[1], hi - ix[0])
+        else:
+            r = (lo, hi) if -lim < lo <= hi < lim else None
+    _iv[t.id] = r
+    return r
+
+
 def select(m, addr):
     assert m.w == MEM and addr.w == 64
-    while m.op == 'store':  # past the stores at a known distance from addr
+    while m.op == 'store':  # past the stores at a known distance from addr, or bounded clear of it
         base, a, v = m.args
         if a is addr:
             return v
         d = sub(a, addr)
-        if not is_const(d):
-            break
-        m = base
+        if is_const(d):
+            m = base
+            continue
+        ia, ib = interval(a), interval(addr)
+        if ia is not None and ib is not None and (ia[1] < ib[0] or ib[1] < ia[0]):
+            m = base
+            continue
+        break
     return _mk('select', 8, (m, addr))
 
 
@@ -639,11 +680,20 @@ BIN = {'add': 'bvadd', 'sub': 'bvsub', 'mul': 'bvmul', 'and': 'bvand', 'or': 'bv
        'ashr': 'bvashr', 'ult': 'bvult', 'ule': 'bvule', 'slt': 'bvslt', 'sle': 'bvsle', 'eq': '='}
 
 
+def _die_with_parent():
+    """z3 goes when the prover does (a killed run left it on a long query)."""
+    try:
+        import ctypes
+        ctypes.CDLL(None).prctl(1, 9)  # PR_SET_PDEATHSIG, SIGKILL
+    except Exception:
+        pass
+
+
 class Solver:
     """z3 -in: definitions at the base level, assertions under push/pop."""
 
     def __init__(self, z3='z3', log=None):
-        self.p = subprocess.Popen([z3, '-in'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.p = subprocess.Popen([z3, '-in'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, preexec_fn=_die_with_parent)
         self.done = set()
         self.log = log
         self.queries = 0
@@ -747,7 +797,7 @@ class Solver:
             return '(lambda ((x (_ BitVec 64))) (ite (and (bvule %s x) (bvult x %s)) %s (select %s x)))' % (n(a[1]), n(a[2]), n(a[3]), n(a[0]))
         raise ValueError(t.op)
 
-    def check(self, *conds, keep=False):
+    def check(self, *conds, keep=False, timeout=None):
         """sat / unsat / unknown of the conjunction and the assumptions, with
         keep a sat answer left for values(). Each query in a context of its
         own, with only the definitions it needs: one z3 session through a
@@ -765,7 +815,7 @@ class Solver:
         else:
             self.send('(reset)')
             self.send('(set-option :print-success false)')
-            self.send('(set-option :timeout %d)' % (TIMEOUT * 1000))
+            self.send('(set-option :timeout %d)' % (min(TIMEOUT, timeout or TIMEOUT) * 1000))
             self.done = set()
             conds = self.assumed + [c for c in conds if c is not TRUE]
             for c in conds:

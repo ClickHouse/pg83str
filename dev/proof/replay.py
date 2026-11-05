@@ -81,7 +81,30 @@ def gen_memcpy(rng):
     return ['p%d' % d, 'p%d' % s, 'i%d' % n], buf
 
 
-GENS = {'strlen': gen_strlen, 'memchr': gen_memchr, 'memset': gen_memset, 'memcpy': gen_memcpy}
+def gen_span(rng):
+    """strspn/strcspn: a set of 0..48 bytes (more often short), the text
+    mostly of the set's bytes with others among them, either near a page's
+    end."""
+    buf = bytearray(rng.randrange(0, 256) for _ in range(PAGES))
+    m = rng.choice([rng.randrange(0, 4), rng.randrange(0, 17), rng.randrange(0, 33), rng.randrange(0, 49)])
+    alphabet = rng.sample(range(1, 256), m) if m else []
+    t = offset(rng, m + 1)
+    for i in range(m):
+        buf[t + i] = alphabet[i]
+    buf[t + m] = 0
+    s = offset(rng)
+    n = length(rng, PAGES - 1 - s)
+    taken = set(range(t, t + m + 1))
+    for i in range(n):
+        if s + i in taken:
+            continue
+        buf[s + i] = rng.choice(alphabet) if alphabet and rng.random() < 0.9 else nonzero(rng)
+    if s + n not in taken:
+        buf[s + n] = 0
+    return ['p%d' % s, 'p%d' % t], buf
+
+
+GENS = {'strlen': gen_strlen, 'memchr': gen_memchr, 'memset': gen_memset, 'memcpy': gen_memcpy, 'strspn': gen_span}
 
 
 def emulate(img, mach, func, args, base, buf):
