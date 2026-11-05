@@ -323,8 +323,28 @@ size_t strlen_avx2(const char *str) {
    joined by or, then single blocks, then the last 32 bytes as one block
    that may overlap what was scanned. */
 void *memchr_large_avx2(const u8 *s, u8 c, size_t n) {
+    if (n > PTRDIFF_MAX) {
+        n = PTRDIFF_MAX; /* memchr(p, c, SIZE_MAX): C11 lets the object end at the match, so n may pass the address space; s + n must not wrap */
+    }
+
     __m256i v = _mm256_set1_epi8((char)c);
     const u8 *end = s + n, *a = align_down(s + 32, 32);
+
+    /* C11 lets the object end at the match too: no load may reach a page past
+       the one that holds the first byte not yet checked. 32-byte blocks up to
+       a 128-byte boundary, then whole aligned 128-byte groups, each in one
+       page (unaligned groups read up to 96 bytes into the next page: a fault
+       when it is not there, dev/proof found it) */
+
+    while (((uintptr_t)a & 127) && end - a >= 32) {
+        unsigned m = mask256(_mm256_cmpeq_epi8(load256a(a), v));
+
+        if (m) {
+            return (void *)(a + ctz(m));
+        }
+
+        a += 32;
+    }
 
     while (end - a >= 128) {
         __m256i e0 = _mm256_cmpeq_epi8(load256a(a), v), e1 = _mm256_cmpeq_epi8(load256a(a + 32), v);
@@ -392,6 +412,7 @@ void *memchr_avx2(const void *p, int c, size_t n) {
     }
 
     size_t left = page_left(s);
+    const u8 *a = align_down(s, 32) + 32; /* the first aligned block not yet checked */
 
     if (left >= 32) {
         m = mask256(_mm256_cmpeq_epi8(load256(s), v));
@@ -417,32 +438,40 @@ void *memchr_avx2(const void *p, int c, size_t n) {
             return 0;
         }
 
-        /* the rest goes on in the next page: its first aligned block, so that
-           the first 32 bytes the kernel takes as done are */
+        /* the next page's first aligned block */
         m = mask256(_mm256_cmpeq_epi8(load256a(s + left), v));
 
         if (m) {
-            return left + ctz(m) < n ? (void *)(s + left + ctz(m)) : 0;
+            size_t i = left + ctz(m);
+            return i < n ? (void *)(s + i) : 0;
         }
 
         if (n <= left + 32) {
             return 0;
         }
 
-        if (n <= 64) { /* the last 32 bytes, all inside the object */
-            m = mask256(_mm256_cmpeq_epi8(load256(s + n - 32), v));
-            return m ? (void *)(s + n - 32 + ctz(m)) : 0;
+        a = s + left + 32;
+    }
+
+    /* C11 lets the object end at the match, n past it: from here no load may
+       reach a page past the one holding the first byte not yet checked, so
+       aligned blocks only (the last-W-bytes loads this had did: a fault next
+       to an unmapped page, dev/proof found it) */
+
+    for (int k = 0; k < 2; k++, a += 32) { /* two blocks in line: every n up to 64 decided here */
+        m = mask256(_mm256_cmpeq_epi8(load256a(a), v));
+
+        if (m) {
+            size_t i = (size_t)(a - s) + ctz(m);
+            return i < n ? (void *)(s + i) : 0;
         }
 
-        return str_memchr_large(s, (u8)c, n);
+        if ((size_t)(a - s) + 32 >= n) {
+            return 0;
+        }
     }
 
-    if (n <= 64) {
-        m = mask256(_mm256_cmpeq_epi8(load256(s + n - 32), v));
-        return m ? (void *)(s + n - 32 + ctz(m)) : 0;
-    }
-
-    return str_memchr_large(s, (u8)c, n);
+    return str_memchr_large(s, (u8)c, n); /* the first 32 bytes scanned; the kernel's loads are aligned */
 }
 
 /* ------------------------------------------------------------------ copy */

@@ -136,6 +136,7 @@ void *memchr_evex512(const void *p, int c, size_t n) {
     }
 
     size_t left = page_left(s);
+    const u8 *a = align_down(s, 64) + 64; /* the first aligned block not yet checked */
 
     if (left >= 64) {
         m = _mm512_cmpeq_epi8_mask(load512(s), v);
@@ -161,32 +162,40 @@ void *memchr_evex512(const void *p, int c, size_t n) {
             return 0;
         }
 
-        /* the rest goes on in the next page: its first aligned block, so that
-           the first 64 bytes the kernel takes as done are */
+        /* the next page's first aligned block */
         m = _mm512_cmpeq_epi8_mask(load512a(s + left), v);
 
         if (m) {
-            return left + ctz64(m) < n ? (void *)(s + left + ctz64(m)) : 0;
+            size_t i = left + ctz64(m);
+            return i < n ? (void *)(s + i) : 0;
         }
 
         if (n <= left + 64) {
             return 0;
         }
 
-        if (n <= 128) { /* the last 64 bytes, all inside the object */
-            m = _mm512_cmpeq_epi8_mask(load512(s + n - 64), v);
-            return m ? (void *)(s + n - 64 + ctz64(m)) : 0;
+        a = s + left + 64;
+    }
+
+    /* C11 lets the object end at the match, n past it: from here no load may
+       reach a page past the one holding the first byte not yet checked, so
+       aligned blocks only (the last-W-bytes loads this had did: a fault next
+       to an unmapped page, dev/proof found it) */
+
+    for (int k = 0; k < 2; k++, a += 64) { /* two blocks in line: every n up to 128 decided here */
+        m = _mm512_cmpeq_epi8_mask(load512a(a), v);
+
+        if (m) {
+            size_t i = (size_t)(a - s) + ctz64(m);
+            return i < n ? (void *)(s + i) : 0;
         }
 
-        return str_memchr_large(s, (u8)c, n);
+        if ((size_t)(a - s) + 64 >= n) {
+            return 0;
+        }
     }
 
-    if (n <= 128) {
-        m = _mm512_cmpeq_epi8_mask(load512(s + n - 64), v);
-        return m ? (void *)(s + n - 64 + ctz64(m)) : 0;
-    }
-
-    return str_memchr_large(s, (u8)c, n);
+    return str_memchr_large(s, (u8)c, n); /* the first 32 bytes scanned; the kernel's loads are aligned */
 }
 
 /* ------------------------------------------------------------------ copy */

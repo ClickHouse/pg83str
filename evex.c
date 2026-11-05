@@ -123,6 +123,7 @@ void *memchr_evex(const void *p, int c, size_t n) {
     }
 
     size_t left = page_left(s);
+    const u8 *a = align_down(s, 32) + 32; /* the first aligned block not yet checked */
 
     if (left >= 32) {
         m = _mm256_cmpeq_epi8_mask(load256(s), v);
@@ -148,32 +149,40 @@ void *memchr_evex(const void *p, int c, size_t n) {
             return 0;
         }
 
-        /* the rest goes on in the next page: its first aligned block, so that
-           the first 32 bytes the kernel takes as done are */
+        /* the next page's first aligned block */
         m = _mm256_cmpeq_epi8_mask(load256a(s + left), v);
 
         if (m) {
-            return left + ctz(m) < n ? (void *)(s + left + ctz(m)) : 0;
+            size_t i = left + ctz(m);
+            return i < n ? (void *)(s + i) : 0;
         }
 
         if (n <= left + 32) {
             return 0;
         }
 
-        if (n <= 64) { /* the last 32 bytes, all inside the object */
-            m = _mm256_cmpeq_epi8_mask(load256(s + n - 32), v);
-            return m ? (void *)(s + n - 32 + ctz(m)) : 0;
+        a = s + left + 32;
+    }
+
+    /* C11 lets the object end at the match, n past it: from here no load may
+       reach a page past the one holding the first byte not yet checked, so
+       aligned blocks only (the last-W-bytes loads this had did: a fault next
+       to an unmapped page, dev/proof found it) */
+
+    for (int k = 0; k < 2; k++, a += 32) { /* two blocks in line: every n up to 64 decided here */
+        m = _mm256_cmpeq_epi8_mask(load256a(a), v);
+
+        if (m) {
+            size_t i = (size_t)(a - s) + ctz(m);
+            return i < n ? (void *)(s + i) : 0;
         }
 
-        return str_memchr_large(s, (u8)c, n);
+        if ((size_t)(a - s) + 32 >= n) {
+            return 0;
+        }
     }
 
-    if (n <= 64) {
-        m = _mm256_cmpeq_epi8_mask(load256(s + n - 32), v);
-        return m ? (void *)(s + n - 32 + ctz(m)) : 0;
-    }
-
-    return str_memchr_large(s, (u8)c, n);
+    return str_memchr_large(s, (u8)c, n); /* the first 32 bytes scanned; the kernel's loads are aligned */
 }
 
 /* ------------------------------------------------------------------ copy */

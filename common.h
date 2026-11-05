@@ -71,7 +71,7 @@ struct str_table {
     void *(*strcpy_long)(u8 *d, const u8 *s, const u8 *a);     /* no NUL in [s, a), a 16-aligned and past s */
     void *(*copy_huge)(u8 *d, const u8 *s, size_t n);          /* n >= REP_THRESHOLD, no backward overlap */
     void *(*fill_huge)(u8 *d, int c, size_t n);                /* n >= REP_THRESHOLD */
-    void *(*memchr_large)(const u8 *s, u8 c, size_t n);        /* n > 64, no match in the first 32 bytes */
+    void *(*memchr_large)(const u8 *s, u8 c, size_t n);        /* n > 32, no match in the first 32 bytes; aligned loads only (C11) */
 };
 
 extern struct str_table str_table;

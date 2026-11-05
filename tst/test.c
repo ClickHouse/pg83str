@@ -109,6 +109,7 @@ static void suite(int full) {
                     s[at] = 0x9a;
                     CHECK(T->memchr(s, 0x9a, n) == memchr(s, 0x9a, n)); /* at `at` unless the pattern has one before */
                     CHECK(T->memchr(s, 0x9a, at) == memchr(s, 0x9a, at));
+                    CHECK(T->memchr(s, 0x9a, SIZE_MAX) == memchr(s, 0x9a, n)); /* C11: the object may end at the match; s + n wraps */
                     s[at] = old;
                 }
 
@@ -331,6 +332,11 @@ guards:;
             CHECK(T->strlen((char *)s) == n - 1);
             CHECK(T->memchr(s, 0x9a, n) == memchr(s, 0x9a, n));     /* scans to the guard */
             CHECK(T->memchr(s, 0, n) == memchr(s, 0, n));           /* the last byte before it at the latest */
+            /* C11: the object may end at the match, n past it and past the page:
+               no load may touch the guard (the unaligned 4-block groups of the
+               long kernels did, dev/proof found it) */
+            CHECK(T->memchr(s, 0, n + 1000) == memchr(s, 0, n));
+            CHECK(T->memchr(s, 0, SIZE_MAX) == memchr(s, 0, n));
             CHECK(T->memchr(s, s[0], n) == s);
             CHECK(T->memchr(s, 0x9a, n - 1) == memchr(s, 0x9a, n - 1));
             CHECK(T->strcpy((char *)d, (char *)s) == (char *)d && !memcmp(d, s, n));

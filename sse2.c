@@ -410,8 +410,28 @@ char *strcat_sse2(char *dst, const char *src) {
    blocks, then the last 16 bytes as one block that may overlap what was
    scanned. */
 void *memchr_large_sse2(const u8 *s, u8 c, size_t n) {
+    if (n > PTRDIFF_MAX) {
+        n = PTRDIFF_MAX; /* memchr(p, c, SIZE_MAX): C11 lets the object end at the match, so n may pass the address space; s + n must not wrap */
+    }
+
     __m128i v = splat16(c);
     const u8 *end = s + n, *a = align_down(s + 32, 16);
+
+    /* C11 lets the object end at the match too: no load may reach a page past
+       the one that holds the first byte not yet checked. 16-byte blocks up to
+       a 64-byte boundary, then whole aligned 64-byte groups, each in one page
+       (unaligned groups read up to 48 bytes into the next page: a fault when
+       it is not there, dev/proof found it) */
+
+    while (((uintptr_t)a & 63) && end - a >= 16) {
+        unsigned m = mask16(_mm_cmpeq_epi8(load16a(a), v));
+
+        if (m) {
+            return (void *)(a + ctz(m));
+        }
+
+        a += 16;
+    }
 
     while (end - a >= 64) {
         __m128i e0 = _mm_cmpeq_epi8(load16a(a), v), e1 = _mm_cmpeq_epi8(load16a(a + 16), v);
@@ -502,65 +522,25 @@ void *memchr_sse2(const void *p, int c, size_t n) {
         if (n <= left) {
             return 0;
         }
-
-        /* the rest goes on in the next page: its first two aligned blocks, so
-           that the 32 bytes the kernel takes as done are */
-
-        for (size_t k = left; k < left + 32; k += 16) {
-            m = eq_mask16(load16a(s + k), v);
-
-            if (m) {
-                return k + ctz(m) < n ? (void *)(s + k + ctz(m)) : 0;
-            }
-        }
-
-        if (n <= left + 32) {
-            return 0;
-        }
-
-        if (n <= 64) { /* the last 32 bytes, all inside the object */
-            m = eq_mask16(load16(s + n - 32), v);
-
-            if (m) {
-                return (void *)(s + n - 32 + ctz(m));
-            }
-
-            m = eq_mask16(load16(s + n - 16), v);
-            return m ? (void *)(s + n - 16 + ctz(m)) : 0;
-        }
-
-        return str_memchr_large(s, (u8)c, n);
     }
 
-    if (n <= 32) {
-        m = eq_mask16(load16(s + n - 16), v);
-        return m ? (void *)(s + n - 16 + ctz(m)) : 0;
-    }
-
-    if (n <= 64) {
-        m = eq_mask16(load16(s + 16), v);
-
-        if (m) {
-            return (void *)(s + 16 + ctz(m));
-        }
-
-        m = eq_mask16(load16(s + n - 32), v);
-
-        if (m) {
-            return (void *)(s + n - 32 + ctz(m));
-        }
-
-        m = eq_mask16(load16(s + n - 16), v);
-        return m ? (void *)(s + n - 16 + ctz(m)) : 0;
-    }
-
-    m = eq_mask16(load16(s + 16), v); /* the kernel takes the first 32 bytes as scanned */
+    /* C11 lets the object end at the match, n past it: from here no load may
+       reach a page past the one holding the first byte not yet checked, so
+       aligned blocks only (the last-W-bytes loads this had did: a fault next
+       to an unmapped page, dev/proof found it) */
+    const u8 *a = align_down(s, 16) + 16;
+    m = eq_mask16(load16a(a), v);
 
     if (m) {
-        return (void *)(s + 16 + ctz(m));
+        size_t i = (size_t)(a - s) + ctz(m);
+        return i < n ? (void *)(s + i) : 0;
     }
 
-    return str_memchr_large(s, (u8)c, n);
+    if ((size_t)(a - s) + 16 >= n) {
+        return 0;
+    }
+
+    return str_memchr_large(s, (u8)c, n); /* scanned up to a + 16, the kernel's align_down(s + 32, 16) */
 }
 
 /* --------------------------------------------------------- strspn/strcspn */
