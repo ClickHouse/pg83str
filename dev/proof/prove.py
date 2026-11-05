@@ -76,7 +76,8 @@ def align_of(img, entry):
     split is a case split: any number of classes covers every pointer; the
     fewest that keep the proofs fast (memset sse2: one class in 284 s, 64
     of a minute each; memchr sse2, which rounds to 16: 16 classes of 525 s,
-    64 of 111)."""
+    64 of 111). A 32-bit and is a count's (strcmp's page distance to 128),
+    rsp's the frame's: neither a pointer the classes are of."""
     best, seen, todo = 1, set(), [entry]
     while todo:
         a = todo.pop()
@@ -86,7 +87,7 @@ def align_of(img, entry):
             mn = j['mnemonic']
             if mn == 'int3':
                 break
-            if mn == 'and':
+            if mn == 'and' and j['ops'][0]['kind'] == 'Register' and j['ops'][0]['size'] == 64 and j['ops'][0]['reg'] != 'rsp':  # not a count's, not a frame's
                 for o in j['ops']:
                     if o['kind'] == 'Immediate':
                         v = S.signed(S.sext(const(o['size'], o['imm']), 64)) if o.get('signed') else o['imm']
