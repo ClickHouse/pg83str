@@ -372,8 +372,10 @@ def branch_targets(image):
 
 
 class Machine:
-    def __init__(self, image):
+    def __init__(self, image, bmi=True):
         self.image = image
+        self.bmi = bmi  # False: tzcnt runs as bsf (a CPU without BMI1, the sse2 and sse42 configurations' targets)
+        self.fresh_n = 0
 
     def step(self, st):
         """Execute one instruction: [(state, condition)] successors, where a
@@ -491,11 +493,49 @@ class Machine:
         write_reg(st, ops[0]['reg'], S.extract(a, w - 1, 0))
 
     def i_tzcnt(self, st, j, ops):
+        if not self.bmi:
+            return self.i_bsf(st, j, ops)
         w = ops[0]['size']
         x = op_value(self, st, j, ops[1], w)
         r = tzcnt(x)
         st.flags = {'CF': S.is_zero(x), 'ZF': S.is_zero(r), 'SF': None, 'OF': None, 'PF': None}
         write_reg(st, ops[0]['reg'], r)
+
+    def i_bsf(self, st, j, ops):
+        """The lowest set bit; with a zero source the destination is left
+        undefined (an unknown value here) and ZF set."""
+        w = ops[0]['size']
+        x = op_value(self, st, j, ops[1], w)
+        self.fresh_n += 1
+        r = S.ite(S.is_zero(x), var('%sbsf%d' % (st.fresh, self.fresh_n), w), tzcnt(x))
+        st.flags = {'ZF': S.is_zero(x), 'CF': None, 'SF': None, 'OF': None, 'PF': None}
+        write_reg(st, ops[0]['reg'], r)
+
+    def _shift(self, st, j, ops, fn, out_bit):
+        w = ops[0]['size']
+        a = op_value(self, st, j, ops[0], w)
+        cnt = ops[1] if len(ops) > 1 else {'kind': 'Immediate', 'imm': 1, 'size': 8}
+        if cnt['kind'] == 'Immediate':
+            n = cnt['imm'] & (63 if w == 64 else 31)
+            if n == 0:
+                return
+            r = fn(a, const(w, n))
+            cf = S.eq(S.extract(a, out_bit(w, n), out_bit(w, n)), const(1, 1))
+            st.flags = {'CF': cf, 'ZF': S.is_zero(r), 'SF': S.msb(r), 'OF': None, 'PF': None}
+        else:
+            n = S.band(S.zext(read_reg(st, cnt['reg']), w), const(w, 63 if w == 64 else 31))
+            r = fn(a, n)
+            st.flags = {'CF': None, 'ZF': None, 'SF': None, 'OF': None, 'PF': None}  # unchanged for a count of 0: not modelled
+        op_store(self, st, j, ops[0], r)
+
+    def i_shr(self, st, j, ops):
+        self._shift(st, j, ops, S.lshr, lambda w, n: n - 1)
+
+    def i_shl(self, st, j, ops):
+        self._shift(st, j, ops, S.shl, lambda w, n: w - n)
+
+    def i_sar(self, st, j, ops):
+        self._shift(st, j, ops, S.ashr, lambda w, n: n - 1)
 
     def _shiftx(self, st, j, ops, fn):
         w = ops[0]['size']
@@ -610,3 +650,45 @@ class Machine:
 
     def i_vpminub(self, st, j, ops):
         self._lanewise(st, j, ops, lambda x, y: S.ite(S.ult(x, y), x, y))
+
+    i_pminub = i_vpminub
+
+    def i_pcmpeqb(self, st, j, ops):
+        self._lanewise(st, j, ops, lambda x, y: S.ite(S.eq(x, y), const(8, 0xff), const(8, 0)))
+
+    def i_vpcmpeqb(self, st, j, ops):
+        if ops[0]['kind'] == 'Register' and ops[0]['reg'].startswith('k'):
+            n = self._width(ops)
+            a = vec_operand(self, st, j, ops[1], n)
+            b = vec_operand(self, st, j, ops[2], n)
+            write_k(st, ops[0]['reg'], bits([S.eq(x, y) for x, y in zip(a, b)]), n)
+        else:
+            self.i_pcmpeqb(st, j, ops)
+
+    def i_pxor(self, st, j, ops):
+        self._lanewise(st, j, ops, S.bxor)
+
+    i_vpxor = i_vpxord = i_vpxorq = i_xorps = i_vxorps = i_pxor
+
+    def i_por(self, st, j, ops):
+        self._lanewise(st, j, ops, S.bor)
+
+    i_vpor = i_vpord = i_vporq = i_por
+
+    def i_pand(self, st, j, ops):
+        self._lanewise(st, j, ops, S.band)
+
+    i_vpand = i_vpandd = i_vpandq = i_pand
+
+    def i_pmovmskb(self, st, j, ops):
+        n = self._width(ops)
+        lanes = vec_operand(self, st, j, ops[1], n)
+        m = bits([S.msb(x) for x in lanes])
+        write_reg(st, ops[0]['reg'], S.zext(m, ops[0]['size']) if m.w < ops[0]['size'] else S.extract(m, ops[0]['size'] - 1, 0))
+
+    i_vpmovmskb = i_pmovmskb
+
+    def i_vzeroupper(self, st, j, ops):
+        for n in range(16):
+            lanes = read_vec(st, 'zmm%d' % n)
+            st.vec[n] = lanes[:16] + [const(8, 0)] * 48

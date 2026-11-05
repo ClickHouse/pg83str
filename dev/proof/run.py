@@ -52,9 +52,16 @@ def main():
     ap.add_argument('--align', default='all')
     ap.add_argument('--induct', action='store_true', help='the loops by induction: every length')
     args = ap.parse_args()
-    classes = range(64) if args.align == 'all' else [int(x) for x in args.align.split(',')]
+    sys.path.insert(0, str(HERE))
+    sys.path.insert(0, str(HERE.parent))
+    import machine
+    import prove
+    img = machine.Image(args.elf)
     mode = ['--induct'] if args.induct else ['--max', str(args.max)]
-    jobs = [['--elf', 'libstr.elf', '--func', f, '--spec', args.spec, *mode, '--align', str(a)] for f in args.func.split(',') for a in classes]
+    jobs = []
+    for f in args.func.split(','):
+        classes = range(prove.align_of(img, img.symbols[f])) if args.align == 'all' else [int(x) for x in args.align.split(',')]
+        jobs += [['--elf', 'libstr.elf', '--func', f, '--spec', args.spec, *mode, '--align', str(a)] for a in classes]
     hosts = args.hosts.split(',')
     data, digest = bundle(args.elf, args.z3)
     threads = {}
@@ -62,7 +69,9 @@ def main():
         if h == 'local':
             threads[h] = os.cpu_count()
             continue
-        ssh(h, 'mkdir -p $HOME/proof && cd $HOME/proof && rm -rf dev && tar xzf - && echo %s > .hash' % digest, input=data, check=True)
+        # a directory per bundle: runs with other ELFs at the same time do not touch it
+        ssh(h, 'd=$HOME/proof/%s; if [ ! -f $d/.done ]; then rm -rf $d && mkdir -p $d && cd $d && tar xzf - && touch .done; else cat > /dev/null; fi' % digest[:16],
+            input=data, check=True)
         threads[h] = int(ssh(h, 'nproc', capture_output=True, text=True, check=True).stdout)
     total = sum(threads.values())
     share, start = {}, 0
@@ -81,7 +90,8 @@ def main():
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env,
                                  cwd=str(Path(args.elf).parent))
         else:
-            cmd = ['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % h, 'cd $HOME/proof && PATH=$HOME/proof/bin:$PATH python3 dev/proof/worker.py --jobs %d' % threads[h]]
+            d = '$HOME/proof/%s' % digest[:16]
+            cmd = ['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % h, 'cd %s && PATH=%s/bin:$PATH python3 dev/proof/worker.py --jobs %d' % (d, d, threads[h])]
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         mine = share[h]
         if h == 'local':
@@ -95,7 +105,7 @@ def main():
                 r['host'] = h
                 with lock:
                     results.append(r)
-                    print('%-5s %4d/%d %-28s s %% 64 == %-2s %-6s %5s paths %6.1f s  %s' % (
+                    print('%-5s %4d/%d %-28s class %-3s %-6s %5s paths %6.1f s  %s' % (
                         h, len(results), len(jobs), r.get('func', '?'), r.get('align', '?'), r['result'], r.get('paths', ''), r.get('seconds', 0),
                         r.get('detail', '')[:200]), flush=True)
             elif line.startswith('FAIL'):

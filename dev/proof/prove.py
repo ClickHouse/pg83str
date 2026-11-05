@@ -37,7 +37,7 @@ from smt import const, var  # noqa: E402
 import machine as X  # noqa: E402
 
 USER_LO, USER_HI = 0x10000, (1 << 47) - (1 << 32)  # canonical user addresses, with room for any object
-ALIGN = 64  # the proof splits on a pointer's low bits: the widest vector's alignment
+ALIGN = 64  # the proof splits on a pointer's low bits: at least the widest vector's alignment, more when the code aligns further (align_of)
 K_LIMIT = 1 << 40  # a loop's distance from its first iteration: below this, no address wraps
 
 
@@ -49,10 +49,38 @@ class Failure(Exception):
     pass
 
 
-def aligned_pointer(name, a):
+def align_of(img, entry):
+    """The classes a function's proof splits a pointer into: 64, or the
+    largest alignment its code rounds an address down to (an and with -2^j),
+    so that every such address stays the base plus a known offset."""
+    best, seen, todo = ALIGN, set(), [entry]
+    while todo:
+        a = todo.pop()
+        while a not in seen:
+            seen.add(a)
+            j = img.decode(a)
+            mn = j['mnemonic']
+            if mn == 'int3':
+                break
+            if mn == 'and':
+                for o in j['ops']:
+                    if o['kind'] == 'Immediate':
+                        v = S.signed(S.sext(const(o['size'], o['imm']), 64)) if o.get('signed') else o['imm']
+                        if v < 0 and (-v) & (-v - 1) == 0 and -v <= 4096:
+                            best = max(best, -v)
+            if j.get('branch_target') is not None:
+                todo.append(j['branch_target'])
+            if mn in ('ret', 'jmp'):
+                break
+            a += j['len']
+    return best
+
+
+def aligned_pointer(name, a, align):
     """A pointer with its low bits a and the rest unknown: base + a, the base
-    known to be ALIGN-aligned, and the memory around it an array of its own."""
-    base = S.concat(var(name + '_hi', 64 - 6), const(6, 0))
+    known to be align-aligned, and the memory around it an array of its own."""
+    sh = align.bit_length() - 1
+    base = S.concat(var(name + '_hi', 64 - sh), const(sh, 0))
     return base, S.add(base, const(64, a)), S.mem_var(name + '_mem')
 
 
@@ -65,8 +93,8 @@ class Strlen:
     def __init__(self, maxlen, induct):
         self.maxlen, self.induct = maxlen, induct
 
-    def setup(self, a):
-        self.base, self.s, arr = aligned_pointer('s', a)
+    def setup(self, a, align):
+        self.base, self.s, arr = aligned_pointer('s', a, align)
         self.regions = [(self.base, arr)]
         self.z = var('z', 64)  # a zero byte: the string ends at s + z or before
         self.i = var('i', 64)
@@ -124,13 +152,18 @@ class Strlen:
             out.append(('no zero byte from the frontier to the answer', [S.ule(lo, i), S.ult(i, r), self.zero_at(i)]))
         return out + self.loads_safe(st, S.add(s, r)), [s, r, self.z]
 
-    def base_case(self, st, a):
-        """At a loop's first arrival, frontier a: the invariant holds."""
+    def base_case(self, st, a, reach):
+        """At a loop's first arrival, frontier a: the invariant holds. The loads
+        so far end by a + reach: reach is the step when the frontier is aligned
+        to it (a power of two up to a page: [a, a + step) then lies in a's page,
+        which the string reaches), else 0."""
         s, i = self.s, self.i
         out = [('the frontier in the string', [S.ult(a, s)]),
                ('no zero byte before the loop', self.some_zero(const(64, 0), S.sub(a, s)))]
         if st.loads:
-            out.append(('the loads before the loop end by its frontier', [S.or_(*[S.ult(a, S.add(la, const(64, n))) for la, n, _ in st.loads])]))
+            end = S.add(a, const(64, reach))
+            out.append(('the loads before the loop end by its frontier%s' % (' and step' if reach else ''),
+                        [S.or_(*[S.ult(end, S.add(la, const(64, n))) for la, n, _ in st.loads])]))
             out.append(('the loads before the loop after s\'s page', [S.or_(*[S.ult(page(la), page(s)) for la, _, _ in st.loads])]))
         mis = [S.not_(S.is_zero(S.band(la, const(64, n - 1)))) for la, n, _ in st.aligned]
         if mis:
@@ -142,12 +175,13 @@ class Strlen:
         zero at s + z lies at or past it."""
         return [S.ule(S.sub(a, self.s), self.z)]
 
-    def step_case(self, st, a, a2):
+    def step_case(self, st, a, a2, reach):
         """Back at the head, frontier a2 after a: the invariant kept."""
         s, i = self.s, self.i
         out = [('no zero byte in the iteration', self.some_zero(S.sub(a, s), S.sub(a2, s)))]
         if st.loads:
-            out.append(('the iteration\'s loads end by the next frontier', [S.or_(*[S.ult(a2, S.add(la, const(64, n))) for la, n, _ in st.loads])]))
+            end = S.add(a2, const(64, reach))
+            out.append(('the iteration\'s loads end by the next frontier', [S.or_(*[S.ult(end, S.add(la, const(64, n))) for la, n, _ in st.loads])]))
             out.append(('the iteration\'s loads after s\'s page', [S.or_(*[S.ult(page(la), page(s)) for la, _, _ in st.loads])]))
         mis = [S.not_(S.is_zero(S.band(la, const(64, n - 1)))) for la, n, _ in st.aligned]
         if mis:
@@ -184,7 +218,7 @@ class Prover:
 
     def fail(self, what, st, show):
         detail = '%s; branches at %s; %s' % (what, ' '.join('%#x' % x for x in st.trace), ' '.join(self.solver.values(show).split()))
-        print('FAIL %s, s %% %d == %d: %s' % (self.args.func, ALIGN, self.a, detail))
+        print('FAIL %s, s %% %d == %d: %s' % (self.args.func, self.align, self.a, detail))
         result(self.args, self.a, 'fail', self.paths, self.proved, self.solver.queries, time.time() - self.t0, detail)
         sys.exit(1)
 
@@ -203,15 +237,15 @@ class Prover:
     def generalize(self, s1, s2):
         """s1 and s2: the same path at a loop's head, the first and the second
         time. The state for every iteration, after the base case is proved."""
-        step = None
-        moved = {}
+        moved, havoc = {}, []
         for r in s1.gpr:
             if s2.gpr[r] is s1.gpr[r]:
                 continue
             d = S.sub(s2.gpr[r], s1.gpr[r])
-            if not S.is_const(d):
-                raise Failure('loop at %#x: %s changes by %r, not a constant' % (s1.rip, r, d))
-            moved[r] = S.signed(d)
+            if S.is_const(d):
+                moved[r] = S.signed(d)
+            else:
+                havoc.append(r)  # recomputed in the loop: any value (sound; a proof that needs it fails)
         steps = set(moved.values())
         if len(steps) != 1:
             raise Failure('loop at %#x: the registers step by %s, not one amount' % (s1.rip, sorted(steps)))
@@ -222,22 +256,30 @@ class Prover:
         if len(front) != 1:
             raise Failure('loop at %#x: frontier registers %s' % (s1.rip, front))
         a1 = s1.gpr[front[0]]
-        self.prove(s1, self.spec.base_case(s1, a1), self.spec.show())
+        reach = 0
+        if step <= 4096 and self.solver.check(*s1.pc, S.not_(S.is_zero(S.band(a1, const(64, step - 1))))) == 'unsat':
+            reach = step  # the frontier aligned to the step
+        self.prove(s1, self.spec.base_case(s1, a1, reach), self.spec.show())
         self.loops += 1
         sh = step.bit_length() - 1
         k = S.concat(var('k%d_hi' % self.loops, 64 - sh), const(sh, 0))  # any multiple of the step
         g = s1.copy()
+        g.fresh = 'g%d_' % self.loops
         for r in moved:
             g.gpr[r] = S.add(s1.gpr[r], k)
-        g.vec, g.k, g.flags = {}, {}, {}
-        g.fresh = 'g%d_' % self.loops
+        for r in havoc:
+            g.gpr[r] = var(g.fresh + r, 64)
+        g.vec = {n: v for n, v in s1.vec.items() if all(x is y for x, y in zip(v, s2.vec.get(n, ())))}  # the same lanes: kept
+        g.k = {n: v for n, v in s1.k.items() if s2.k.get(n) is v}
+        g.flags = {}
         g.loads, g.aligned, g.stores = [], [], []
         g.snaps = {}
         a = g.gpr[front[0]]
         g.pc = list(s1.pc) + [S.ult(k, const(64, K_LIMIT))] + self.spec.general(a)
-        g.gen = {'head': s1.rip, 'front': front[0], 'moved': moved, 'step': step, 'regs': dict(g.gpr), 'steps': g.steps}
+        g.gen = {'head': s1.rip, 'front': front[0], 'moved': moved, 'havoc': havoc, 'step': step, 'reach': reach, 'regs': dict(g.gpr),
+                 'steps': g.steps}
         if self.args.verbose:
-            print('  loop at %#x: step %d, frontier %s, %d registers move' % (s1.rip, step, front[0], len(moved)), flush=True)
+            print('  loop at %#x: step %d, frontier %s, %s move, %s recomputed' % (s1.rip, step, front[0], sorted(moved), sorted(havoc)), flush=True)
         return g
 
     def back_at_head(self, st):
@@ -245,6 +287,8 @@ class Prover:
         K + step, the invariant kept."""
         gen = st.gen
         for r, v in gen['regs'].items():
+            if r in gen['havoc']:
+                continue
             if r in gen['moved']:
                 ok = S.sub(st.gpr[r], v) is const(64, gen['step'])
             else:
@@ -252,7 +296,7 @@ class Prover:
             if not ok:
                 raise Failure('loop at %#x: %s comes back as %r, not of the form the general state has' % (st.rip, r, st.gpr[r]))
         a, a2 = gen['regs'][gen['front']], st.gpr[gen['front']]
-        self.prove(st, self.spec.step_case(st, a, a2), self.spec.show())
+        self.prove(st, self.spec.step_case(st, a, a2, gen['reach']), self.spec.show())
 
     def run(self, entry, params):
         work = [X.fresh_state(entry, params, self.spec.regions)]
@@ -321,26 +365,28 @@ def main():
     ap.add_argument('--align', default='all', help="the pointer's low bits to prove for: all, or a list")
     args = ap.parse_args()
     img = X.Image(args.elf)
-    mach = X.Machine(img)
+    mach = X.Machine(img, bmi=not args.func.startswith(('sse2.', 'sse42.')))
     mach.targets = X.branch_targets(img) if args.induct else set()
     entry = img.symbols[args.func]
-    classes = range(ALIGN) if args.align == 'all' else [int(x) for x in args.align.split(',')]
+    align = align_of(img, entry)
+    classes = range(align) if args.align == 'all' else [int(x) for x in args.align.split(',')]
     log = open(args.log, 'w') if args.log else None
     t0 = time.time()
     total = [0, 0, 0]
     for a in classes:
         spec = SPECS[args.spec](args.max, args.induct)
         solver = S.Solver(log=log)
-        params, assume = spec.setup(a)
+        params, assume = spec.setup(a, align)
         for c in assume:
             solver.define(c)
             solver.send('(assert %s)' % solver.name(c))
         if solver.check() != 'sat':
             raise Failure('the assumptions contradict each other: the proof would be empty')
         p = Prover(args, mach, spec, solver, a)
+        p.align = align
         p.run(entry, params)
         print('s %% %d == %2d: %d paths, %d loops by induction, %d obligations, %d queries (%.1f s)' % (
-            ALIGN, a, p.paths, p.loops, p.proved, solver.queries, time.time() - t0), flush=True)
+            align, a, p.paths, p.loops, p.proved, solver.queries, time.time() - t0), flush=True)
         result(args, a, 'proved', p.paths, p.proved, solver.queries, time.time() - p.t0, '')
         total[0] += p.paths
         total[1] += p.proved
