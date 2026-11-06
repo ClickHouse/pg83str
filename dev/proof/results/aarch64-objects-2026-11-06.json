@@ -2453,5 +2453,376 @@
   },
   "proof_driver_sha256": "024df4da1c567fd95b1f034ffca7ad0e8fed4ddd3927a9794b0dd3b79ac9e379",
   "elf_reader_sha256": "5fcf461bbb91039d170fb262552adfd60def7f1e5b54eb29c0fdebb3c88267fd",
-  "full_library_certified": false
+  "full_library_certified": false,
+  "phase1_model_commit": "be66a492bb995ecb5b0482b0ed23a62c7c82d0e6",
+  "revised_model_audit": {
+    "revised-memchr": {
+      "elf_sha256": "8ece707433500ccef2ab628ea4aa88a3eef36a558c1aaa23eb835a38749e83be",
+      "benchmark_sha256": "f75c302facfc5005d6386765893d8e55aad3a887aae2001e5f241fd5e85f55e7",
+      "model_sha256": {
+        "aarch64_machine.py": "8a8b62b48904640debcc1c912bb54b8b79f92d5a6d48feda7cecc880060d64a8",
+        "aarch64_vectors.py": "b7f993fbfa1f709051b1290e143f868f7b1c34cf107a9c531b3661cffbadfc59",
+        "machine.py": "9315f960c77094789f10b9b3755a168863e8414787913b0bae687d76099d9777",
+        "prove.py": "ef7a700b273ac0330b1f1e23eb36d92c368cda3be7214c26f40cec67c653a7e5",
+        "smt.py": "4cab6c1277099fdb91986fd50cf1b41ad15c890b1b9475529c1ec5ee5d31ba5b"
+      },
+      "proof_mode": "unbounded_induction",
+      "max": null,
+      "sve_vl_bytes": 16,
+      "assumptions": "untagged lower-47-bit addresses,4096-byte pages,standard AAPCS64,explicit VL16; model validation separate",
+      "full_library_certified": false,
+      "manifest_sha256": "4570d667cc6b5d6862f4c73e4a08e1b079ac5968f6fb0c6d010b4ff1e8bced36",
+      "functions": {
+        "kl_memchr_sve_pred1": {
+          "spec": "memchr",
+          "status": "timeout",
+          "exit_code": null,
+          "results": [],
+          "command": [
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+            "--arch",
+            "aarch64",
+            "--elf",
+            ".build/object-proofs/fixed/kernels.elf",
+            "--sve-vl",
+            "16",
+            "--func",
+            "kl_memchr_sve_pred1",
+            "--spec",
+            "memchr",
+            "--classes",
+            "1",
+            "--workers",
+            "2",
+            "--verbose",
+            "--induct"
+          ]
+        }
+      }
+    },
+    "revised-memchr-bounded": {
+      "elf_sha256": "8ece707433500ccef2ab628ea4aa88a3eef36a558c1aaa23eb835a38749e83be",
+      "benchmark_sha256": "f75c302facfc5005d6386765893d8e55aad3a887aae2001e5f241fd5e85f55e7",
+      "model_sha256": {
+        "aarch64_machine.py": "8a8b62b48904640debcc1c912bb54b8b79f92d5a6d48feda7cecc880060d64a8",
+        "aarch64_vectors.py": "b7f993fbfa1f709051b1290e143f868f7b1c34cf107a9c531b3661cffbadfc59",
+        "machine.py": "9315f960c77094789f10b9b3755a168863e8414787913b0bae687d76099d9777",
+        "prove.py": "ef7a700b273ac0330b1f1e23eb36d92c368cda3be7214c26f40cec67c653a7e5",
+        "smt.py": "4cab6c1277099fdb91986fd50cf1b41ad15c890b1b9475529c1ec5ee5d31ba5b"
+      },
+      "proof_mode": "bounded",
+      "max": 4,
+      "sve_vl_bytes": 16,
+      "assumptions": "untagged lower-47-bit addresses,4096-byte pages,standard AAPCS64,explicit VL16; model validation separate",
+      "full_library_certified": false,
+      "manifest_sha256": "331b8237047763dd6a528ab70d92de15fd76f6661df804295c9b4868b469fc3d",
+      "functions": {
+        "kl_memchr_sve_pred1": {
+          "spec": "memchr",
+          "status": "proved_in_model",
+          "exit_code": 0,
+          "results": [
+            {
+              "func": "kl_memchr_sve_pred1",
+              "spec": "memchr",
+              "max": 4,
+              "classes": 1,
+              "align": 0,
+              "result": "proved",
+              "paths": 4,
+              "obligations": 20,
+              "queries": 59,
+              "seconds": 89.6,
+              "detail": ""
+            }
+          ],
+          "command": [
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+            "--arch",
+            "aarch64",
+            "--elf",
+            ".build/object-proofs/fixed/kernels.elf",
+            "--sve-vl",
+            "16",
+            "--func",
+            "kl_memchr_sve_pred1",
+            "--spec",
+            "memchr",
+            "--classes",
+            "1",
+            "--workers",
+            "2",
+            "--verbose",
+            "--max",
+            "4"
+          ]
+        }
+      }
+    },
+    "revised-spans": {
+      "elf_sha256": "8ece707433500ccef2ab628ea4aa88a3eef36a558c1aaa23eb835a38749e83be",
+      "benchmark_sha256": "f75c302facfc5005d6386765893d8e55aad3a887aae2001e5f241fd5e85f55e7",
+      "model_sha256": {
+        "aarch64_machine.py": "8a8b62b48904640debcc1c912bb54b8b79f92d5a6d48feda7cecc880060d64a8",
+        "aarch64_vectors.py": "b7f993fbfa1f709051b1290e143f868f7b1c34cf107a9c531b3661cffbadfc59",
+        "machine.py": "9315f960c77094789f10b9b3755a168863e8414787913b0bae687d76099d9777",
+        "prove.py": "ef7a700b273ac0330b1f1e23eb36d92c368cda3be7214c26f40cec67c653a7e5",
+        "smt.py": "4cab6c1277099fdb91986fd50cf1b41ad15c890b1b9475529c1ec5ee5d31ba5b"
+      },
+      "proof_mode": "unbounded_induction",
+      "max": null,
+      "sve_vl_bytes": 16,
+      "assumptions": "untagged lower-47-bit addresses,4096-byte pages,standard AAPCS64,explicit VL16; model validation separate",
+      "full_library_certified": false,
+      "manifest_sha256": "92f7d05c1abd31ed1017ee725006c53ede05f1f5f5148251446345f2ccfe8e35",
+      "functions": {
+        "kl_strspn_neon_adaptive": {
+          "spec": "strspn",
+          "status": "timeout",
+          "exit_code": null,
+          "results": [],
+          "command": [
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+            "--arch",
+            "aarch64",
+            "--elf",
+            ".build/object-proofs/fixed/kernels.elf",
+            "--sve-vl",
+            "16",
+            "--func",
+            "kl_strspn_neon_adaptive",
+            "--spec",
+            "strspn",
+            "--classes",
+            "1",
+            "--workers",
+            "2",
+            "--verbose",
+            "--induct"
+          ]
+        },
+        "kl_strcspn_neon_adaptive": {
+          "spec": "strcspn",
+          "status": "timeout",
+          "exit_code": null,
+          "results": [],
+          "command": [
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+            "--arch",
+            "aarch64",
+            "--elf",
+            ".build/object-proofs/fixed/kernels.elf",
+            "--sve-vl",
+            "16",
+            "--func",
+            "kl_strcspn_neon_adaptive",
+            "--spec",
+            "strcspn",
+            "--classes",
+            "1",
+            "--workers",
+            "2",
+            "--verbose",
+            "--induct"
+          ]
+        }
+      }
+    },
+    "revised-original-refutation": {
+      "elf_sha256": "f862adead47d4dd594ef4d290764da46af5cdb39ee2e4e6de88e4a4c90dbd9f7",
+      "benchmark_sha256": "d1f6d106394191a6d29811559131734d850d22d9ef1537a2260ca66c5681aa7b",
+      "model_sha256": {
+        "aarch64_machine.py": "8a8b62b48904640debcc1c912bb54b8b79f92d5a6d48feda7cecc880060d64a8",
+        "aarch64_vectors.py": "b7f993fbfa1f709051b1290e143f868f7b1c34cf107a9c531b3661cffbadfc59",
+        "machine.py": "9315f960c77094789f10b9b3755a168863e8414787913b0bae687d76099d9777",
+        "prove.py": "ef7a700b273ac0330b1f1e23eb36d92c368cda3be7214c26f40cec67c653a7e5",
+        "smt.py": "4cab6c1277099fdb91986fd50cf1b41ad15c890b1b9475529c1ec5ee5d31ba5b"
+      },
+      "proof_mode": "unbounded_induction",
+      "max": null,
+      "sve_vl_bytes": 16,
+      "assumptions": "untagged lower-47-bit addresses,4096-byte pages,standard AAPCS64,explicit VL16; model validation separate",
+      "full_library_certified": false,
+      "manifest_sha256": "c9be1fd144b9fc706b9d61d2c46f9b28d06c34e10482323c79820c8ff5fb7b8e",
+      "functions": {
+        "kl_memchr_sve_pred1": {
+          "spec": "memchr",
+          "status": "counterexample_or_failed_invariant",
+          "exit_code": 1,
+          "results": [
+            {
+              "func": "kl_memchr_sve_pred1",
+              "spec": "memchr",
+              "max": "induct",
+              "classes": 1,
+              "align": 0,
+              "result": "fail",
+              "paths": 0,
+              "obligations": 0,
+              "queries": 4,
+              "seconds": 0.1,
+              "detail": "the load at 0x211794 reaches past what the object allows; branches at ; ((s_hi #x000032e71835cfff) (z #x0000000000000000) (n #x0000000000000003))"
+            }
+          ],
+          "command": [
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+            "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+            "--arch",
+            "aarch64",
+            "--elf",
+            ".build/object-proofs/build/kernels.elf",
+            "--sve-vl",
+            "16",
+            "--func",
+            "kl_memchr_sve_pred1",
+            "--spec",
+            "memchr",
+            "--classes",
+            "1",
+            "--workers",
+            "1",
+            "--verbose",
+            "--induct"
+          ]
+        }
+      }
+    },
+    "copy_mutation_gates": [
+      {
+        "name": "original",
+        "sha256": "8ece707433500ccef2ab628ea4aa88a3eef36a558c1aaa23eb835a38749e83be",
+        "patch_offset": null,
+        "replacement": null,
+        "passed_gate": true,
+        "status": "proved_in_model",
+        "records": [
+          {
+            "func": "kl_memcpy_sve_bulk128",
+            "spec": "memcpy",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 7,
+            "obligations": 48,
+            "queries": 183,
+            "seconds": 47.9,
+            "detail": ""
+          }
+        ]
+      },
+      {
+        "name": "omit-first-store",
+        "sha256": "9950edf7cd89156939476ebdfe7ec248d0eb1b09e021eb3e28d20e38e2de67a4",
+        "patch_offset": 5704,
+        "replacement": 3573751839,
+        "passed_gate": true,
+        "status": "counterexample_or_failed_invariant",
+        "records": [
+          {
+            "func": "kl_memcpy_sve_bulk128",
+            "spec": "memcpy",
+            "max": 4,
+            "classes": 1,
+            "align": 0,
+            "result": "fail",
+            "paths": 1,
+            "obligations": 2,
+            "queries": 23,
+            "seconds": 0.2,
+            "detail": "every byte of the object written; branches at 0x21161c; ((d_hi #x00007ffdffffffff) (s_hi #x00000000ffffffff) (n #x0000000000000001) (i #x0000000000000000))"
+          }
+        ]
+      },
+      {
+        "name": "read-destination",
+        "sha256": "c6a88a3ec5a1090277cc26eca0f50884b125de259f9dd9944b39fe4fcd9a16d0",
+        "patch_offset": 5684,
+        "replacement": 2751504384,
+        "passed_gate": true,
+        "status": "counterexample_or_failed_invariant",
+        "records": [
+          {
+            "func": "kl_memcpy_sve_bulk128",
+            "spec": "memcpy",
+            "max": 4,
+            "classes": 1,
+            "align": 0,
+            "result": "fail",
+            "paths": 0,
+            "obligations": 0,
+            "queries": 5,
+            "seconds": 0.0,
+            "detail": "the load at 0x211634 reaches past what the object allows; branches at 0x21161c; ((d_hi #x00002011fffffffe) (s_hi #x00002011fffff00c) (n #x0000000000000004) (i #x0000000000000000))"
+          }
+        ]
+      },
+      {
+        "name": "write-source",
+        "sha256": "ee957cf104d98f357858d24998ed6f653aa12ae725751a86093c7a8bbaf7cbf2",
+        "patch_offset": 5704,
+        "replacement": 3825262624,
+        "passed_gate": true,
+        "status": "counterexample_or_failed_invariant",
+        "records": [
+          {
+            "func": "kl_memcpy_sve_bulk128",
+            "spec": "memcpy",
+            "max": 4,
+            "classes": 1,
+            "align": 0,
+            "result": "fail",
+            "paths": 0,
+            "obligations": 0,
+            "queries": 18,
+            "seconds": 0.1,
+            "detail": "the store at 0x211648 lands outside the object; branches at 0x21161c; ((d_hi #x00000fc7fffffffc) (s_hi #x00000ffffffffffc) (n #x0000000000000004) (i #x0000000000000000))"
+          }
+        ]
+      },
+      {
+        "name": "empty-first-predicate",
+        "sha256": "4e7290ffe6f37aec8e499fa42ed624d87d53bb82fcb6e5f4200843ccf637681d",
+        "patch_offset": 5672,
+        "replacement": 622992448,
+        "passed_gate": true,
+        "status": "counterexample_or_failed_invariant",
+        "records": [
+          {
+            "func": "kl_memcpy_sve_bulk128",
+            "spec": "memcpy",
+            "max": 4,
+            "classes": 1,
+            "align": 0,
+            "result": "fail",
+            "paths": 1,
+            "obligations": 2,
+            "queries": 26,
+            "seconds": 0.1,
+            "detail": "every byte of the object written; branches at 0x21161c; ((d_hi #x00007ffdffffffff) (s_hi #x00000000ffffffff) (n #x0000000000000001) (i #x0000000000000000))"
+          }
+        ]
+      }
+    ],
+    "additional_model_checks": {
+      "zero_length_masking": [
+        "inactive load at n=0: unsat PASS",
+        "active load at n=0: sat PASS"
+      ],
+      "symbolic_return_and_unsupported_offset": [
+        "solver-constrained return resolved: PASS",
+        "unconstrained return rejected: PASS",
+        "unmodeled vector-scaled memory offset rejected: PASS"
+      ],
+      "original_arm_regression": [
+        "s % 1 ==  0: 5 paths, 1 loops by induction, 23 obligations, 31 queries (0.4 s)",
+        "RESULT {\"func\": \"memcpy_scalar\", \"spec\": \"memcpy\", \"max\": \"induct\", \"classes\": 1, \"align\": 0, \"result\": \"proved\", \"paths\": 5, \"obligations\": 23, \"queries\": 31, \"seconds\": 0.3, \"detail\": \"\"}",
+        "memcpy_scalar: memcpy proved for every length (loops by induction), 1 alignment classes: 5 paths, 23 obligations, 31 solver queries, 0.4 s"
+      ]
+    }
+  }
 }

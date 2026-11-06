@@ -324,7 +324,7 @@ class Scan:
         unsafe = [S.and_(c, S.or_(S.ult(page(a), page(s)), S.ult(page(S.add(s, last)), page(S.add(a, const(64, n - 1)))))) for a, n, _, c in st.loads]
         if unsafe:
             if self.bounded:
-                unsafe.append(S.is_zero(self.n))
+                unsafe.append(S.and_(S.is_zero(self.n), S.or_(*(c for _, _, _, c in st.loads))))
             out.append(('every load in the pages of the object', [S.or_(*unsafe)]))
         mis = [S.not_(S.is_zero(S.band(a, const(64, n - 1)))) for a, n, _ in st.aligned]
         if mis:
@@ -1972,6 +1972,25 @@ class Prover:
                         moved[r] = 1
                 for r in [r for r in moved if r not in deltas or deltas[r] is not deltas[r0]]:
                     del moved[r]  # the constant movers: their counts unknown
+                    havoc.append(r)
+            elif not front and not [d for d in moved.values() if d > 0] and deltas:
+                # A fixed base with an index advanced by a variable prefix
+                # count. Use the lowest accessed address as frontier, and the
+                # index as its mover. Base and step obligations still prove
+                # that this candidate is an invariant; failure is not assumed.
+                acc = [e[0] for e in s2.loads[len(s1.loads):] + s2.stores[len(s1.stores):] if inside(e[0])]
+                low = [x for x in acc if all(S.is_const(S.sub(y, x)) and S.signed(S.sub(y, x)) >= 0 for y in acc)]
+                cand = [r for r in deltas if low and S.is_const(S.sub(S.sub(low[0], base), s1.gpr[r]))]
+                if not cand:
+                    raise Failure('loop at %#x: no variable index frontier' % s1.rip)
+                r0 = cand[0]
+                front, step, a1, variable = [r0], 1, low[0], True
+                for r in list(havoc):
+                    if deltas.get(r) is deltas[r0]:
+                        havoc.remove(r)
+                        moved[r] = 1
+                for r in [r for r in moved if r not in deltas or deltas[r] is not deltas[r0]]:
+                    del moved[r]
                     havoc.append(r)
             else:
                 # no register points into the object (a base and an index): the

@@ -61,7 +61,11 @@ Original and repaired inputs are retained separately.
 
 ## Completed verification and gaps
 
-Five selected kernels pass unbounded induction in the experimental model:
+Five selected kernels pass unbounded induction in the experimental model.
+
+The eleven-kernel audit uses the model pinned at commit
+`be66a492bb995ecb5b0482b0ed23a62c7c82d0e6`. Later model checks are recorded
+separately with their own hashes, preserving the original proof evidence.
 
 | Function | Paths | Obligations | Solver queries |
 | --- | ---: | ---: | ---: |
@@ -82,6 +86,22 @@ missing frontier/invariant support, or proof timeouts. The manifest lists
 each result; none is counted as proved. A failed induction obligation is not
 automatically a concrete implementation bug. The original `memchr` failure
 was additionally reproduced on hardware, unlike the remaining proof gaps.
+
+A subsequent model revision fixes an overly conservative zero-length check:
+an SVE load with no active lanes performs no memory access. The repaired
+`kl_memchr_sve_pred1` then passes a **bounded check for lengths 0–4**, with
+symbolic addresses, 4 paths, 20 obligations, and 59 solver queries. Unbounded
+coverage remains five kernels. The revised model still refutes the original
+page-boundary bug and all four copy mutants. Separate SMT checks confirm
+that an active load at length zero is rejected while an inactive load is
+permitted. Symbolic returns are resolved only when the solver proves their
+target; unconstrained returns and unmodeled vector-scaled SVE memory offsets
+are rejected. Variable-index frontier candidates still require base and
+step proofs.
+
+With this revision, the unbounded `memchr` attempt reaches the 240-second
+limit; `strspn` and `strcspn` each reach the 180-second limit. Neither a
+timeout nor discharged intermediate obligations count as a completed proof.
 
 [The recorded object audit](dev/proof/results/aarch64-objects-2026-11-06.json)
 contains exact input identities, per-function proof status, replay and mutation

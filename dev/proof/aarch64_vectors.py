@@ -82,6 +82,8 @@ def execute(machine, st, j):
                 raise B.Unsupported('SVE load/store layout in ' + j['gas'])
             active = predicate(ops[1])
             mem = ops[2]
+            if 'mul vl' in j['gas']:
+                raise B.Unsupported('SVE vector-scaled memory offset in ' + j['gas'])
             address = S.add(M.get(st, mem['mem']['base']), const(64, mem['mem']['disp']))
             if mem['mem']['index']:
                 address = S.add(address, M.operand(st, dict(mem, kind='Register', reg=mem['mem']['index']), 64))

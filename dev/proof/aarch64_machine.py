@@ -262,6 +262,12 @@ class Machine:
             pass
         elif mn == 'ret':
             target = get(st, ops[0]['reg']) if ops else st.gpr['a30']
+            if not S.is_const(target) and self.decide is not None:
+                candidates = {RET_MARK} | {at + j['len'] for at, j in self.image.cache.items() if j['a64'] in ('bl', 'blr')}
+                for candidate in sorted(candidates):
+                    if self.decide(st, S.not_(S.eq(target, const(64, candidate)))):
+                        target = const(64, candidate)
+                        break
             if not S.is_const(target):
                 raise Unsupported('AArch64 ret to a symbolic address')
             st.done = target.val == RET_MARK
