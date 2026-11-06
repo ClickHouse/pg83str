@@ -56,7 +56,7 @@ def main():
             lines = [x for x in out.splitlines() if x.startswith(('RESULT', 'FAIL'))]
             if not any(x.startswith('RESULT') for x in lines):
                 arg = dict(zip(job, job[1:]))
-                lines.append('RESULT ' + json.dumps({'job': job, 'func': arg.get('--func'), 'spec': arg.get('--spec'), 'align': arg.get('--align'),
+                lines.append('RESULT ' + json.dumps({'job': job, 'func': arg.get('--func'), 'spec': arg.get('--spec'), 'classes': arg.get('--classes'), 'align': arg.get('--align'),
                                                      'result': 'error', 'detail': out[-2000:]}))
             with lock:
                 print('\n'.join(lines), flush=True)

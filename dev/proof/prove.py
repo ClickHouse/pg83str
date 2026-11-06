@@ -1480,7 +1480,8 @@ def moved_by(v, d, step, k):
 
 def result(args, a, what, paths, obligations, queries, seconds, detail):
     """One line per alignment class for dev/proof/run.py."""
-    print('RESULT ' + json.dumps({'func': args.func, 'spec': args.spec, 'max': 'induct' if args.induct else args.max, 'align': a, 'result': what,
+    print('RESULT ' + json.dumps({'func': args.func, 'spec': args.spec, 'max': 'induct' if args.induct else args.max, 'classes': args.classes,
+                                  'align': a, 'result': what,
                                   'paths': paths, 'obligations': obligations, 'queries': queries, 'seconds': round(seconds, 1),
                                   'detail': detail}), flush=True)
 

@@ -13,12 +13,13 @@ status is 1 when any failed. A function whose code is another's (a
 configuration's copy: the same instructions, branch targets, callees'
 names and constants read, the same tzcnt) is proved once for both.
 
-Every function is tried first in one class (every pointer in one proof:
-strlen sse2 in 8 s, strcpy sse2 in 46 s, memset sse2 in 284 s), for
---one-timeout seconds; when that does not prove it, in its classes
-(prove.align_of: 64 or what its code rounds to, 64 for code that rounds
-none). The classes are a case split: any number of them covers every
-pointer.
+Every function is tried in one class (every pointer in one proof: strlen
+sse2 in 8 s, strcpy sse2 in 46 s, memset sse2 in 284 s), for --one-timeout
+seconds, and in its classes (prove.align_of: 64 or what its code rounds
+to, 64 for code that rounds none), queued behind every one-class try: the
+slots that try leaves free go to the classes, and the classes still
+queued when it proves are dropped. The classes are a case split: any
+number of them covers every pointer.
 """
 import argparse
 import hashlib
@@ -123,7 +124,7 @@ def main():
         return (['--job-timeout', str(timeout)] if timeout else []) + ['--elf', 'libstr.elf', '--func', f, '--spec', spec, *mode] + \
             (['--classes', str(classes)] if classes else []) + ['--align', str(a)]
 
-    jobs, same, rep, fallback = [], {}, {}, {}
+    jobs, same, rep, split = [], {}, {}, {}
     for item in args.func.split(','):
         spec, f = item.split(':') if ':' in item else (args.spec, item)
         key = (spec, not f.startswith(('sse2.', 'sse42.')), fingerprint(img, img.symbols[f]))  # the prover's tzcnt is bsf for those
@@ -140,7 +141,7 @@ def main():
             jobs += classes
         else:
             jobs.append(job(spec, f, 0, classes=1, timeout=None if n == 1 else args.one_timeout))
-            fallback[(f, spec)] = classes
+            split[(f, spec)] = classes
     for (spec, f), r in sorted(same.items()):
         print('%s %s: the code of %s, proved with it' % (spec, f, r), flush=True)
 
@@ -148,6 +149,7 @@ def main():
         spec = j[j.index('--spec') + 1]
         return WEIGHT.index(spec) if spec in WEIGHT else len(WEIGHT)
     jobs.sort(key=weight)
+    jobs += sorted((j for c in split.values() for j in c), key=weight)
     hosts = args.hosts.split(',')
     data, digest = bundle(args.elf, args.z3, args.bitwuzla)
     threads = {}
@@ -160,8 +162,8 @@ def main():
             input=data, check=True)
         cpus, mem = ssh(h, 'nproc; awk \'/MemTotal/ {print $2}\' /proc/meminfo', capture_output=True, text=True, check=True).stdout.split()
         threads[h] = min(int(cpus), int(int(mem) / (1 << 20) / args.job_memory))  # a job's solvers may take up to PROVE_MEMORY each
-    results, lock, t0 = [], threading.Lock(), time.time()
-    todo, out, fell = list(jobs), [0], [0]  # out: jobs handed out without a result yet; fell: one-class tries the classes replaced
+    results, tries, lock, t0 = [], {}, threading.Lock(), time.time()
+    todo = list(jobs)
 
     def run(h):
         if not threads[h]:
@@ -180,11 +182,10 @@ def main():
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         for line in p.stdout:
             line = line.rstrip()
-            if line == 'NEXT':  # a slot free: the next job; WAIT while others may still queue more (a one-class try's); else none
+            if line == 'NEXT':  # a slot free: the next job, or none
                 with lock:
                     j = todo.pop(0) if todo else None
-                    out[0] += j is not None
-                    word = json.dumps(j) if j else 'WAIT' if out[0] else ''
+                    word = json.dumps(j) if j else ''
                 if j is not None and h == 'local':
                     word = json.dumps([str(Path(args.elf).resolve()) if x == 'libstr.elf' else x for x in j])
                 p.stdin.write(word + '\n')
@@ -192,26 +193,22 @@ def main():
             elif line.startswith('RESULT '):
                 r = json.loads(line[7:])
                 r['host'] = h
-                with lock:
-                    out[0] -= 1
-                    more = fallback.pop((r.get('func'), r.get('spec')), None)
-                    if r['result'] == 'proved' or more is None:
-                        more = None
-                    else:  # the one-class try did not do: the classes
-                        todo[:0] = more
-                        jobs.extend(more)
-                        fell[0] += 1
-                if more is not None:
-                    print('%-5s %s %s: one class did not do (%s, %.0f s: %s), %d classes queued' % (
-                        h, r['func'], r['spec'], r['result'], r.get('seconds', 0), r.get('detail', '')[-120:].replace('\n', ' '), len(more)), flush=True)
-                    continue
+                key = (r.get('func'), r.get('spec'))
                 detail = r.get('detail', '')
                 if r['result'] == 'error' and detail.strip():  # a traceback: its last line says what broke
                     detail = detail.strip().splitlines()[-1]
                 with lock:
+                    if key in split and str(r.get('classes')) == '1':  # the one-class try
+                        tries[key] = r
+                        if r['result'] == 'proved':  # the classes need not run
+                            todo[:] = [j for j in todo if j not in split[key]]
+                        print('%-5s %s %s: one class %s, %.0f s %s' % (h, r['func'], r['spec'], r['result'], r.get('seconds', 0), detail[:200]), flush=True)
+                        continue
+                    if tries.get(key, {}).get('result') == 'proved':  # a class run before its one-class try proved
+                        continue
                     results.append(r)
-                    print('%-5s %4d/%d %-28s class %-3s %-6s %5s paths %6.1f s  %s' % (
-                        h, len(results), len(jobs), r.get('func', '?'), r.get('align', '?'), r['result'], r.get('paths', ''), r.get('seconds', 0),
+                    print('%-5s %4d %-28s class %-3s %-6s %5s paths %6.1f s  %s' % (
+                        h, len(results), r.get('func', '?'), r.get('align', '?'), r['result'], r.get('paths', ''), r.get('seconds', 0),
                         detail[:200]), flush=True)
             elif line.startswith('FAIL'):
                 with lock:
@@ -223,11 +220,24 @@ def main():
         t.start()
     for t in ts:
         t.join()
+    want = {}  # the functions' jobs: each class, or for one proved in one class nothing more
+    for j in jobs:
+        key = (j[j.index('--func') + 1], j[j.index('--spec') + 1])
+        if key in split and '--classes' in j and j[j.index('--classes') + 1] == '1':
+            continue
+        want.setdefault(key, []).append(j[j.index('--align') + 1])
+    done = {}
+    for r in results:
+        if r['result'] == 'proved':
+            done.setdefault((r['func'], r['spec']), set()).add(str(r['align']))
+    proved = [k for k in want if tries.get(k, {}).get('result') == 'proved' or set(want[k]) <= done.get(k, set())]
+    for k in sorted(set(want) - set(proved)):
+        print('not proved: %s %s (%d of %d classes)' % (k[0], k[1], len(done.get(k, ())), len(want[k])), flush=True)
     bad = [r for r in results if r['result'] != 'proved']
-    total = len(jobs) - fell[0]
-    print('%d of %d jobs proved, %d failed or broke, %d missing; %.0f s wall, %.0f s of proving' % (
-        len(results) - len(bad), total, len(bad), total - len(results), time.time() - t0, sum(r.get('seconds', 0) for r in results)))
-    sys.exit(1 if bad or len(results) != total else 0)
+    print('%d of %d functions proved (%d in one class); %d jobs failed or broke; %.0f s wall, %.0f s of proving' % (
+        len(proved), len(want), sum(1 for k in proved if tries.get(k, {}).get('result') == 'proved'), len(bad), time.time() - t0,
+        sum(r.get('seconds', 0) for r in results + list(tries.values()))))
+    sys.exit(0 if len(proved) == len(want) else 1)
 
 
 if __name__ == '__main__':
