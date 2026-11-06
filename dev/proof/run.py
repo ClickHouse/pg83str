@@ -134,10 +134,11 @@ def main():
             continue
         rep[key] = f
         n = prove.align_of(img, img.symbols[f])
-        if args.align != 'all':
-            jobs += [job(spec, f, a) for a in args.align.split(',')]
+        k = 64 if n == 1 else n  # the classes it splits into
+        if args.align != 'all':  # those classes of the split (a probe of a class's time)
+            jobs += [job(spec, f, a, classes=k) for a in args.align.split(',')]
             continue
-        classes = [job(spec, f, a, classes=64 if n == 1 else n) for a in range(64 if n == 1 else n)]
+        classes = [job(spec, f, a, classes=k) for a in range(k)]
         if args.no_one:
             jobs += classes
         elif args.one_only:
