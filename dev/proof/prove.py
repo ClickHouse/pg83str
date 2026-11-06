@@ -356,7 +356,7 @@ class Scan:
 
     def frontier_checks(self, st, f, lo):
         s = self.s
-        out = [('the frontier past s', [S.ule(f, s)])]
+        out = [('the frontier at or past s', [S.ult(f, s)])]
         if lo is not None:
             out.append(('the frontier at or past the previous loop\'s', [S.ult(f, lo)]))
         if self.bounded:
@@ -1108,7 +1108,7 @@ class StrCat(Writer):
 
     def c_strlen(self, prover, st):
         """strlen(d): R, d[R] NUL, none before (a fact), R <= z0."""
-        prover.prove(st, [('strlen is called on d', [S.not_(S.eq(st.gpr['rdi'], self.d))])], self.show())
+        prover.prove(st, [('strlen is called on d', [S.not_(S.eq(st.gpr[X.ARG_REGS[0]], self.d))])], self.show())
         if st.stores:
             raise Failure('strlen of d after stores')
         self.calls += 1
@@ -1121,7 +1121,7 @@ class StrCat(Writer):
     def copy_call(self, prover, st, what):
         """The copy of s to dst = d + d's length: L, s[L] NUL, none before,
         L <= z; d's array the copy over it, one store of L + 1 bytes."""
-        dst, src = st.gpr['rdi'], st.gpr['rsi']
+        dst, src = st.gpr[X.ARG_REGS[0]], st.gpr['rsi']
         front = getattr(st, 'dfront', None)
         q = S.sub(dst, self.d)
         if front is None:  # d's length found in line: dst at a NUL of d, none before it
@@ -1650,10 +1650,23 @@ def check_abi(st, solver):
     query that they can not differ."""
     for r in X.CALLEE_SAVED:
         v, v0 = st.gpr[r], var('init_' + r, 64)
-        if v is not v0 and solver.check(*st.pc, S.not_(S.eq(v, v0))) != 'unsat':
-            raise Failure('%s not preserved' % r)
-    if st.gpr['rsp'] is not S.add(X.RSP0, const(64, 8)):
+        if v is not v0:
+            answer = solver.check(*st.pc, S.not_(S.eq(v, v0)), keep=True)
+            if answer == 'sat':
+                raise Failure('%s not preserved; counterexample: %s' % (r, solver.values([v, v0])))
+            if answer != 'unsat':
+                raise Failure('%s preservation unproved: %s' % (r, answer))
+    if st.gpr['rsp'] is not S.add(X.RSP0, const(64, X.RETURN_SP_DELTA)):
         raise Failure('rsp at the return: %r' % st.gpr['rsp'])
+    for n, width in X.VEC_CALLEE_SAVED:
+        for i, value in enumerate(X.read_vec(st, 'zmm%d' % n)[:width]):
+            initial = var('init_zmm%d_%d' % (n, i), 8)
+            if value is not initial:
+                answer = solver.check(*st.pc, S.not_(S.eq(value, initial)), keep=True)
+                if answer == 'sat':
+                    raise Failure('vector register %d byte %d not preserved; counterexample: %s' % (n, i, solver.values([value, initial])))
+                if answer != 'unsat':
+                    raise Failure('vector register %d byte %d preservation unproved: %s' % (n, i, answer))
 
 
 class Pool:
@@ -2404,7 +2417,9 @@ class Prover:
 
 
 def main():
+    global X
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--arch', choices=['x86_64', 'aarch64'], default='x86_64')
     ap.add_argument('--elf', required=True)
     ap.add_argument('--func', required=True)
     ap.add_argument('--spec', required=True, choices=sorted(SPECS))
@@ -2418,6 +2433,8 @@ def main():
     ap.add_argument('--workers', type=int, default=int(os.environ.get('PROVE_WORKERS', '1')),
                     help='checking threads, each with its own solvers (1: the walk checks as it goes)')
     args = ap.parse_args()
+    if args.arch == "aarch64":
+        import aarch64_machine as X
     img = X.Image(args.elf)
     mach = X.Machine(img, bmi=not args.func.startswith(('sse2.', 'sse42.')))
     mach.targets = X.branch_targets(img) if args.induct else set()

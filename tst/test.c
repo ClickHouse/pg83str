@@ -15,13 +15,18 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "common.h"
+#include "str.h"
 
 /* Every call goes through junk(): the unused argument registers hold garbage, so
    a function that reads an argument it was not given (a tail call's second
    argument prepared on the wrong path, say) cannot pass by luck. */
 static inline int junk(void) {
+#if defined(__aarch64__)
+    __asm__ volatile("mov x1, #-1\n\tmov x2, #-1\n\tmov x3, #-1\n\tmov x4, #-1\n\tmov x5, #-1\n\tmov x6, #-1\n\tmov x7, #-1"
+                     ::: "x1", "x2", "x3", "x4", "x5", "x6", "x7");
+#else
     __asm__ volatile("movq $0x5a5a5a5a5a5a5a5a, %%rsi\n\tmovq $0x5a5a5a5a5a5a5a5a, %%rdx\n\tmovq $0x5a5a5a5a5a5a5a5a, %%rcx" ::: "rsi", "rdx", "rcx");
+#endif
     return 0;
 }
 #define T (junk(), Table)
@@ -671,6 +676,7 @@ static void entries(void) {
     printf("entry points: PASS %zu checks\n", checks);
 }
 
+#if defined(__x86_64__)
 static void hosts(void) {
     const struct {
         const char *name;
@@ -746,8 +752,21 @@ static void hosts(void) {
 /* The bits of a configuration's needs that say what it executes; the others
    (ERMS, ZMM, FSRS) say where it is fast, and the test runs it anyway. */
 #define EXECUTES (STR_SSE42 | STR_AVX2 | STR_AVX512)
+#else
+#define EXECUTES STR_NEON
+#endif
 
-int main(void) {
+int main(int argc, char **argv) {
+    int full = 1;
+
+    if (argc == 2 && !strcmp(argv[1], "--quick")) {
+        full = 0;
+    } else if (argc != 1) {
+        fprintf(stderr, "usage: %s [--quick]\n", argv[0]);
+        return 2;
+    }
+
+    setbuf(stdout, NULL);
     /* every configuration the host can execute, then the host's own choice */
     unsigned host = str_host();
 
@@ -760,14 +779,23 @@ int main(void) {
         Table = &str_table;
         printf("%s: ", str_configs[i].name);
         checks = 0;
-        suite(1);
+        suite(full);
+
+        if (!full) {
+            printf("PASS %zu quick checks\n", checks);
+        }
     }
 
     str_dispatch();
     Table = &str_table;
     printf("dispatched (%s): ", str_choose()->name);
     checks = 0;
-    suite(1);
+    suite(full);
+
+        if (!full) {
+            printf("PASS %zu quick checks\n", checks);
+        }
+
     /* every slot of the first and of the best configuration replaced by every
        other implementation the host can run, one at a time: the quick suite */
     const struct str_config *bases[2] = {&str_configs[0], str_choose()};
@@ -815,7 +843,9 @@ int main(void) {
     mix[0] = 0;
     printf("mixes: PASS %zu checks in %zu one-slot mixes of %s and %s\n", checks, mixes, bases[0]->name, bases[1]->name);
     checks = 0;
+    #if defined(__x86_64__)
     hosts();
+    #endif
     checks = 0;
     entries();
     return 0;

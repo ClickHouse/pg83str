@@ -31,7 +31,17 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "common.h"
+#include "str.h"
+#include <sys/syscall.h>
+#if defined(__aarch64__)
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#endif
+
+/* The guard-page fixtures below use the Linux minimum page size. */
+static size_t page_left(const void *p) {
+    return 4096 - ((uintptr_t)p & 4095);
+}
 #include "dev/lab/kl.h"
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "kbench: %s:%d: %s\n", __FILE__, __LINE__, #x); exit(2); } } while (0)
@@ -60,11 +70,18 @@ static char brand[49];
    headers, which Debian's libc6-dev does not carry */
 static int pin(int cpu) {
     unsigned long mask[16] = {0};
-    long r;
+    CHECK(cpu >= 0 && cpu < (int)(sizeof(mask) * 8));
     mask[cpu / 64] |= 1ul << (cpu % 64);
-    __asm__ volatile("syscall" : "=a"(r) : "a"(203), "D"(0), "S"(sizeof mask), "d"(mask) : "rcx", "r11", "memory");
-    return (int)r;
+    return (int)syscall(SYS_sched_setaffinity, 0, sizeof mask, mask);
 }
+
+#if defined(__aarch64__)
+static unsigned detect(void) {
+    unsigned long hwcap = getauxval(AT_HWCAP);
+    snprintf(brand, sizeof brand, "AArch64 HWCAP=%#lx", hwcap);
+    return hwcap & HWCAP_ASIMD ? F_NEON : 0;
+}
+#else
 
 static void cpuid(unsigned leaf, unsigned sub, unsigned r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
@@ -139,6 +156,8 @@ static unsigned detect(void) {
     brand[48] = 0;
     return f;
 }
+
+#endif
 
 /* ---------------------------------------------------------------- kernels */
 
@@ -249,6 +268,11 @@ static unsigned table_needs(const struct str_table *t, int p) {
     return needs;
 }
 
+static unsigned config_needs(unsigned n) {
+    return (n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0)
+        | (n & STR_AVX512 ? F_AVX512 : 0) | (n & STR_NEON ? F_NEON : 0);
+}
+
 static void build_kernels(void) {
     CHECK(NSLOTS == (int)(sizeof SLOTN / sizeof *SLOTN));
 
@@ -316,7 +340,7 @@ static void build_kernels(void) {
             k->table = *t;
             k->fn = ((void *const *)t)[p];
             unsigned n = str_configs[c].needs;
-            k->needs = (n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0);
+            k->needs = config_needs(n);
         }
 
         /* the base revision's configurations whole (lab.py --base) */
@@ -330,7 +354,7 @@ static void build_kernels(void) {
             k->tgt = kl_base_table;
             k->fn = ((void *const *)&k->table)[p];
             unsigned n = kl_base_configs[c].needs;
-            k->needs = (n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0);
+            k->needs = config_needs(n);
         }
 
         if (!have_ours(p, &plain)) {
@@ -1112,6 +1136,9 @@ static double measure(Kernel *k, const Cell *c, size_t iters, int lat) {
 
 /* The core clock: a chain of dependent adds retires one add per cycle. */
 static double clock_ghz(void) {
+#if defined(__aarch64__)
+    return 0; /* No core-frequency measurement is implemented for ARM yet. */
+#else
     uint64_t x = 0, t0 = now();
 
     for (long i = 0; i < 50000000; i++) {
@@ -1119,6 +1146,7 @@ static double clock_ghz(void) {
     }
 
     return 2e8 / (double)(now() - t0);
+#endif
 }
 
 static double ghz_start, ghz_end;
@@ -1130,6 +1158,16 @@ static double ghz_start, ghz_end;
 static int msr_fd = -1;
 static double tsc_ghz;
 
+#if defined(__aarch64__)
+static uint64_t rdmsr(unsigned reg) {
+    (void)reg;
+    abort(); /* ARM must never enter an x86 MSR measurement path. */
+}
+
+static void msr_open(int cpu) {
+    (void)cpu;
+}
+#else
 static uint64_t rdmsr(unsigned reg) {
     uint64_t v = 0;
     return pread(msr_fd, &v, 8, reg) == 8 ? v : 0;
@@ -1162,6 +1200,8 @@ static void msr_open(int cpu) {
 
     tsc_ghz = (double)(rdtsc() - c0) / (double)((t1.tv_sec - t0.tv_sec) * 1000000000l + (t1.tv_nsec - t0.tv_nsec));
 }
+
+#endif
 
 /* --pmu EV,...: the core's counters over one more pass of each trace per
    kernel or table, after the timed passes, per call in the column pmu
@@ -1196,7 +1236,7 @@ static void pmu_open(char *spec) {
         }
 
         CHECK(at.config != ~0ull && pmu_n < 8);
-        long fd = syscall(298, &at, 0, -1, -1, 0);
+        long fd = syscall(SYS_perf_event_open, &at, 0, -1, -1, 0);
 
         if (fd < 0) {
             fprintf(stderr, "kbench: --pmu %s: perf_event_open failed\n", e);
@@ -1210,11 +1250,11 @@ static void pmu_open(char *spec) {
 
 static void pmu_start(void) {
     for (int i = 0; i < pmu_n; i++) {
-        syscall(16, pmu_fd[i], 0x2403, 0); /* PERF_EVENT_IOC_RESET */
+        syscall(SYS_ioctl, pmu_fd[i], 0x2403, 0); /* PERF_EVENT_IOC_RESET */
     }
 
     for (int i = 0; i < pmu_n; i++) {
-        syscall(16, pmu_fd[i], 0x2400, 0); /* PERF_EVENT_IOC_ENABLE */
+        syscall(SYS_ioctl, pmu_fd[i], 0x2400, 0); /* PERF_EVENT_IOC_ENABLE */
     }
 }
 
@@ -1223,7 +1263,7 @@ static void pmu_stop(char *out, size_t cap, double calls) {
     out[0] = 0;
 
     for (int i = 0; i < pmu_n; i++) {
-        syscall(16, pmu_fd[i], 0x2401, 0); /* PERF_EVENT_IOC_DISABLE */
+        syscall(SYS_ioctl, pmu_fd[i], 0x2401, 0); /* PERF_EVENT_IOC_DISABLE */
     }
 
     for (int i = 0; i < pmu_n && w < cap; i++) {
@@ -1703,7 +1743,7 @@ static void library(const char *name, const char *prefix, int noop) {
 static void build_tables(void) {
     for (unsigned c = 0; c < str_nconfigs; c++) {
         unsigned n = str_configs[c].needs;
-        unsigned needs = (n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0);
+        unsigned needs = config_needs(n);
 
         if (needs & ~host) {
             continue;
@@ -1718,7 +1758,7 @@ static void build_tables(void) {
     for (unsigned c = 0; c < kl_base_nconfigs; c++) {
         unsigned n = kl_base_configs[c].needs;
 
-        if (((n & STR_SSE42 ? F_SSE42 : 0) | (n & STR_AVX2 ? F_AVX2 : 0) | (n & STR_AVX512 ? F_AVX512 : 0)) & ~host) {
+        if ((config_needs(n)) & ~host) {
             continue;
         }
 
@@ -1861,14 +1901,20 @@ static inline __attribute__((always_inline)) uint64_t mixed_body(const struct st
    are cut by a 32-byte boundary or not (Skylake's JCC erratum: such a branch
    is not kept in the decoded-uop cache), and its uops share the frontend with
    the function's. */
+#if defined(__aarch64__)
+#define STAND_PAD(K) __asm__ volatile(".rept " #K " * 4\n\tnop\n\t.endr")
+#else
+#define STAND_PAD(K) __asm__ volatile(".skip " #K " * 16, 0x90")
+#endif
+
 #define STAND(K)                                                                                                                                    \
     __attribute__((noinline, aligned(64))) static uint64_t trace_run_##K(const Kernel *k, const Rec *recs, uint64_t count, u8x *src, u8x *dst) {  \
-        __asm__ volatile(".skip " #K " * 16, 0x90");                                                                                            \
+        STAND_PAD(K);                                                                                            \
         return trace_body(k, recs, count, src, dst);                                                                                            \
     }                                                                                                                                           \
     __attribute__((noinline, aligned(64))) static uint64_t mixed_run_##K(const struct str_table *t, const Rec *recs, uint64_t count, u8x *src,      \
                                                                        u8x *dst) {                                                               \
-        __asm__ volatile(".skip " #K " * 16, 0x90");                                                                                            \
+        STAND_PAD(K);                                                                                            \
         return mixed_body(t, recs, count, src, dst);                                                                                            \
     }
 
@@ -2424,7 +2470,11 @@ int main(int argc, char **argv) {
 
     msr_open(cpu >= 0 ? cpu : 0);
     ghz_start = clock_ghz();
+    #if defined(__aarch64__)
+    fprintf(stderr, "clock: unavailable on ARM; timing uses thread CPU time\n");
+#else
     fprintf(stderr, "clock: %.3f GHz%s\n", ghz_start, msr_fd >= 0 ? "; APERF/MPERF readable: traces report the clock of each pass" : "");
+#endif
     parse_sizes(sizespec);
     parse_aligns(a2, al2, &nal2, 1);
     parse_aligns(a1, al1, &nal1, 0);

@@ -27,6 +27,10 @@ for _i, _n in enumerate(('ah', 'ch', 'dh', 'bh')):
 RET_MARK = 0xdead0000beef0000
 RSP0 = S.concat(var('rsp0_hi', 60), const(4, 8))  # the entry's rsp: 8 past a 16-byte boundary (SysV)
 CALLEE_SAVED = ('rbx', 'rbp', 'r12', 'r13', 'r14', 'r15')
+ARG_REGS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
+RETURN_SP_DELTA = 8
+VEC_CALLEE_SAVED = ()
+CONCRETE_KEEP = ('rsp',)
 
 
 class Unsupported(Exception):
@@ -40,6 +44,7 @@ class Fault(Exception):
 class State:
     def __init__(self):
         self.rip = 0
+        self.stack_base = RSP0
         self.gpr = {}
         self.vec = {}
         self.k = {}
@@ -68,6 +73,7 @@ class State:
     def copy(self):
         s = State.__new__(State)
         s.rip, s.mem, s.steps, s.done = self.rip, self.mem, self.steps, self.done
+        s.stack_base = self.stack_base
         s.gpr, s.vec, s.k, s.flags, s.stack = dict(self.gpr), dict(self.vec), dict(self.k), dict(self.flags), dict(self.stack)
         s.regions = list(self.regions)
         s.cmem = None if self.cmem is None else (self.cmem[0], bytearray(self.cmem[1]))
@@ -103,7 +109,7 @@ def fresh_state(entry, args, regions=(), aliases=()):
 
 def on_stack(st, addr):
     """Whether addr is in the stack's region (the last one)."""
-    if not st.regions or st.regions[-1][0] is not RSP0:
+    if not st.regions or st.regions[-1][0] is not st.stack_base:
         return False
     r = region_of(st, addr)
     return r is not None and r[0] == len(st.regions) - 1
@@ -218,9 +224,9 @@ def bits(bools):
 class Image:
     """The linked library: its sections by address, its symbols."""
 
-    def __init__(self, path):
+    def __init__(self, path, machine=62):
         import elf
-        e = elf.read(path, executable=True)
+        e = elf.read(path, executable=True, machine=machine)
         self.sections = [s for s in e.sections if s.addr and s.type in ('SHT_PROGBITS', 'SHT_NOBITS')]
         self.symbols = {s.name: s.value for s in e.symbols if s.name and s.type in ('STT_FUNC', 'STT_OBJECT', 'STT_NOTYPE')}
         self.sizes = {s.name: s.size for s in e.symbols if s.name and s.type == 'STT_FUNC'}
@@ -366,7 +372,7 @@ def slot_guess(st, addr):
 
 def stack_offset(st, addr):
     """addr as rsp0 + offset, or None (the replay's stack)."""
-    off = offset_from(addr, RSP0)
+    off = offset_from(addr, st.stack_base)
     return S.signed(off) if off is not None and S.is_const(off) else None
 
 

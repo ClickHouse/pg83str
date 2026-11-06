@@ -8,7 +8,7 @@ enum { P_MEMCPY, P_MEMMOVE, P_MEMSET, P_MEMCMP, P_STRLEN, P_STRCPY, P_STRCAT, P_
 
 /* What a kernel needs from the host. F_AVX2 stands for x86-64-v3 (AVX2, BMI1/2,
    LZCNT, MOVBE, FMA), F_AVX512 for x86-64-v4 (AVX-512 F/BW/VL/CD/DQ). */
-enum { F_SSSE3 = 1, F_SSE42 = 2, F_AVX = 4, F_AVX2 = 8, F_AVX512 = 16, F_ERMS = 32, F_FSRM = 64, F_MOVBE = 128, F_RTM = 256 };
+enum { F_SSSE3 = 1, F_SSE42 = 2, F_AVX = 4, F_AVX2 = 8, F_AVX512 = 16, F_ERMS = 32, F_FSRM = 64, F_MOVBE = 128, F_RTM = 256, F_NEON = 512 };
 
 typedef struct {
     const char *origin; /* glibc, asmlib, freebsd, musl, llvm, kl */

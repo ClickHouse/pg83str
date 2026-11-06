@@ -9,6 +9,7 @@ on the paths the inputs take.
 """
 import argparse
 import random
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -104,7 +105,35 @@ def gen_span(rng):
     return ['p%d' % s, 'p%d' % t], buf
 
 
-GENS = {'strlen': gen_strlen, 'memchr': gen_memchr, 'memset': gen_memset, 'memcpy': gen_memcpy, 'strspn': gen_span}
+def gen_compare(rng):
+    args, buf = gen_memcpy(rng)
+    d, s = int(args[0][1:]), int(args[1][1:])
+    n = min(int(args[2][1:]), PAGES - 1 - max(d, s))
+    for i in range(n):
+        buf[d + i] = buf[s + i] = nonzero(rng)
+    buf[d + n] = buf[s + n] = 0
+    if n and rng.random() < 0.7:
+        at = rng.randrange(n)
+        buf[d + at] = rng.randrange(256)
+    return ['p%d' % d, 'p%d' % s, 'i%d' % n], buf
+
+
+def gen_memmove(rng):
+    buf = bytearray(rng.randrange(256) for _ in range(PAGES))
+    n = length(rng, PAGES // 3)
+    s = rng.randrange(n, PAGES - 2 * n + 1)
+    delta = rng.randrange(-n, n + 1)
+    return ['p%d' % (s + delta), 'p%d' % s, 'i%d' % n], buf
+
+
+def gen_strcpy(rng):
+    args, buf = gen_compare(rng)
+    return args[:2], buf
+
+
+GENS = {'strlen': gen_strlen, 'memchr': gen_memchr, 'memset': gen_memset,
+        'memcpy': gen_memcpy, 'memmove': gen_memmove, 'memcmp': gen_compare,
+        'strcmp': gen_compare, 'strcpy': gen_strcpy, 'strspn': gen_span}
 
 
 def emulate(img, mach, func, args, base, buf):
@@ -113,7 +142,7 @@ def emulate(img, mach, func, args, base, buf):
         regs.append(const(64, base + int(a[1:]) if a[0] == 'p' else int(a[1:], 0)))
     st = X.fresh_state(img.symbols[func], regs)
     for r in st.gpr:
-        if r not in ('rsp',) and not any(r == x for x in ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')[:len(regs)]):
+        if r not in X.CONCRETE_KEEP and r not in X.ARG_REGS[:len(regs)]:
             st.gpr[r] = const(64, 0x5a5a5a5a5a5a5a5a)
     st.cmem = (base, bytearray(buf))
     while not st.done:
@@ -128,7 +157,10 @@ def emulate(img, mach, func, args, base, buf):
 
 
 def main():
+    global X
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--arch', choices=['x86_64', 'aarch64'], default='x86_64')
+    ap.add_argument('--runner', default='', help='command prefix for the native oracle, e.g. a container runner')
     ap.add_argument('--elf', default=str(ROOT / '.build/proof/libstr.elf'))
     ap.add_argument('--oracle', default=str(ROOT / '.build/proof/oracle'))
     ap.add_argument('--func', required=True, help='comma list')
@@ -136,8 +168,10 @@ def main():
     ap.add_argument('--n', type=int, default=1000)
     ap.add_argument('--seed', type=int, default=1)
     args = ap.parse_args()
+    if args.arch == 'aarch64':
+        import aarch64_machine as X
     img = X.Image(args.elf)
-    o = subprocess.Popen([args.oracle], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+    o = subprocess.Popen([*shlex.split(args.runner), args.oracle], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
     base = int(o.stdout.readline().split()[1], 16)
     rng = random.Random(args.seed)
     bad = 0

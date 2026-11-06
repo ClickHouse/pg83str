@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/ARM-software/optimized-routines",
+  "commit": "20859d3fd9e797dde592c489c8ef7d383f778620",
+  "sha256": {
+    "string/aarch64/memcpy.S": "b79242d0829ac31b502b5c15d3843a5c0bdceb8016a383765cb5bdc04584dd36",
+    "string/aarch64/memcpy-advsimd.S": "5e39aaddfc7e3e4f2e4f26169597ff0c86ce0d91e1830ca99b93778f4c974b3c",
+    "string/aarch64/memset.S": "b1f98d9fe76987757ac4640e2df52c158f9a64041caa7136fec48f2c2d47cd30",
+    "string/aarch64/memset-scalar.S": "0293a6efa218bb7ab8779523ad653bb8087418b54d29e96e7aa68bcda1c7e3e9",
+    "string/aarch64/memcmp.S": "31e726a8f9002353e4b42b5f0bb2b9ce0a10d65bc0e4af3cd996ba55db279059",
+    "string/aarch64/strlen.S": "49ada8b95569d0501539de234d33a879dd79eb1beb87156714488f998b30bff6",
+    "string/aarch64/strlen-mte.S": "acfc367827cf030f5d93587a73daff5428e6fe68ca202f191810d1bba11b4f51",
+    "string/aarch64/memchr.S": "c73139a81e16172db0ac807162ecfeff3e7c711babcbeb5e7ff9bbdb0435f3c3",
+    "string/aarch64/memchr-scalar.S": "2ce06767b787c8d343d28173d3466afa623d66dcb7a7506884302560d4855192",
+    "string/aarch64/memchr-mte.S": "a455b5bb352c8b21ff790773f535b1c5ab59087cf7417f77e314d02f65f25f98",
+    "string/aarch64/strcmp.S": "11acc3dc966fd98411d46b07abeaea8c53b37c1d6eae2c4792265d9dd574431b",
+    "string/aarch64/strcpy.S": "b6e4de34dc77cb2af14d36a9e15298a46c1405408e1a4e6c2551fef472e38505",
+    "string/aarch64/asmdefs.h": "1a4c0fe4a0a20fe1f2de1b9ad4e5b1463594175e436f9e183db39eb02c9dd62a"
+  }
+}

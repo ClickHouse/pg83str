@@ -1,5 +1,9 @@
 # str
 
+An experimental Linux AArch64 workbench is described in
+[README.aarch64.md](README.aarch64.md). Its scalar/NEON candidates are not yet
+tuned or fully proved; the x86-64 library and results below retain their scope.
+
 [![CI](https://github.com/pg83/str/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pg83/str/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
