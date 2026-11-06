@@ -112,6 +112,7 @@ def main():
     ap.add_argument('--one-timeout', type=int, default=3 * 3600, help='seconds the one-class try may take (memchr sse2: 3863 s)')
     ap.add_argument('--job-timeout', type=int, default=12 * 3600, help='seconds any other job may take')
     ap.add_argument('--no-one', action='store_true', help='straight to the classes (a run whose one-class tries an earlier run made)')
+    ap.add_argument('--one-only', action='store_true', help='the one-class tries alone (beside a run of the classes, for longer than its tries)')
     ap.add_argument('--job-memory', type=float, default=7, help='GB a job is given: the jobs a host runs at once (PROVE_MEMORY its solvers\' limit)')
     args = ap.parse_args()
     sys.path.insert(0, str(HERE))
@@ -139,6 +140,8 @@ def main():
         classes = [job(spec, f, a, classes=64 if n == 1 else n) for a in range(64 if n == 1 else n)]
         if args.no_one:
             jobs += classes
+        elif args.one_only:
+            jobs.append(job(spec, f, 0, classes=1, timeout=args.one_timeout))
         else:
             jobs.append(job(spec, f, 0, classes=1, timeout=None if n == 1 else args.one_timeout))
             split[(f, spec)] = classes

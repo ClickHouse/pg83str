@@ -85,7 +85,9 @@ there); a way that did not do in 130 s gets the full timeout after it.
 A load whose bound needs the bytes compared before (a byte at a mask's
 first set bit past strcmp evex's loops: 870 s, unknown under load) has
 first a lemma proved the same ways: no stop below the page of its last
-byte; the bound then follows from the addresses.
+byte; the bound then follows from the addresses. strcpy's last store, its
+end at the NUL a mask found, likewise: no NUL below its last byte. Both
+when the full path has not settled the bound in 60 s.
 
 ## The specs
 

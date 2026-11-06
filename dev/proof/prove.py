@@ -915,6 +915,16 @@ class StrCopy(Scan, Writer):
         nb = nb if isinstance(nb, S.T) else const(64, nb)
         return S.and_(c, S.not_(S.is_zero(nb)), S.not_(S.and_(S.ule(self.d, a), S.ule(S.add(a, nb), S.add(S.add(self.d, self.z), const(64, 1))))))
 
+    def store_stop_end(self, e):
+        """For a store: E, so that only a NUL of s below E puts its end past
+        d + z (early_store; the copy's last store, its end at the NUL a mask
+        found); None for a count not a number."""
+        a, nb, rip, c, lanes = e
+        if not isinstance(nb, int):
+            return None
+        last = S.add(a, const(64, nb - 1))
+        return S.ite(S.ult(self.d, last), S.sub(last, self.d), const(64, 0))
+
     def extent(self, st, ivs):
         """The end of the copy: the largest end of a store that ran (a masked
         store's lanes each their own), as a term."""
@@ -1572,7 +1582,8 @@ class Prover:
     def no_stop_below(self, st, end):
         """z (any stop) not in [lo, end), lo the frontier's offset: proved by
         the span's ways, the path's loads first; as a condition, None when
-        not proved."""
+        not proved. For a load's bound or a store's (strcpy's last, its end
+        at the NUL a mask found)."""
         spec, t0 = self.spec, time.time()
         lo = S.sub(st.front_lo, spec.s) if st.front_lo is not None else const(64, 0)
         sp = span(spec, st, lo, end, spec.at)
@@ -1584,7 +1595,7 @@ class Prover:
                 if rs[-1] != 'unsat':
                     break
             if self.args.verbose:
-                print('   no stop below the page of the load at %#x: %s (way %d of %d) %.1f s' % (st.rip, '/'.join(rs), k + 1, len(ways), time.time() - t0),
+                print('   no stop below the access before %#x: %s (way %d of %d) %.1f s' % (st.rip, '/'.join(rs), k + 1, len(ways), time.time() - t0),
                       flush=True)
             if len(rs) == len(way) and all(r == 'unsat' for r in rs):
                 return S.not_(S.and_(S.ule(lo, spec.z), S.ult(spec.z, end)))
@@ -1611,7 +1622,7 @@ class Prover:
         if len(plain) < len(self.solver.assumed) + len(st.pc) and self.solver.check(*plain, *flat, bare=True, timeout=AUX) == 'unsat':
             return
         each = next((c for c in flat if c.op == 'or_b'), None) if lanes else None
-        r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None or end is not None else None)
+        r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else 3 * AUX if end is not None else None)
         if r == 'unknown' and end is not None:  # a load past a stop the bytes compared before rule out (strcmp evex
             # past its loops: a byte at a mask's first set bit, 870 s): the stop not below its page first, by the loads
             lemma = self.no_stop_below(st, end)
@@ -2172,7 +2183,9 @@ class Prover:
                         self.never(st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])], what)
                 bads = [b for b in (self.spec.early_store(e) for e in st.stores[seen_st:]) if b is not S.FALSE]
                 if bads:  # a masked store's lanes: one query for them all
-                    self.never(st, [S.or_(*bads)], 'the store at %#x lands outside the object' % st.stores[seen_st][2])
+                    one = st.stores[seen_st] if len(st.stores) == seen_st + 1 else None
+                    self.never(st, [S.or_(*bads)], 'the store at %#x lands outside the object' % st.stores[seen_st][2],
+                               end=getattr(self.spec, 'store_stop_end', lambda e: None)(one) if one is not None else None)
                 if len(succ) == 1:
                     st = succ[0][0]
                     continue
