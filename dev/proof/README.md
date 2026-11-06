@@ -65,9 +65,11 @@ the hosts' slots free up, the longest specs first.
 A load's or a store's bounds are asked first on what the path says of the
 addresses alone, its conditions that read memory (the bytes compared
 before) left out: fewer hypotheses, so unsat holds for the whole path; the
-whole path only when that is not unsat (strcmp avx2 2603 s to 1102 s;
-strcmp evex's loads past three loops: queries of 10 to 30 minutes, none
-over 100 s now).
+whole path only when that is not unsat (strcmp avx2 1213 s to 1102 s). A
+masked load whose lanes all lie in lane 0's page (a mask up to the page's
+end) has lane 0's bounds, one address; else its lanes go all at once, one
+at a time when that does not settle in 20 s (strcmp evex past three loops:
+a query of 431 s, of 30 minutes on a loaded host, is 0.8 and 1.1 s so).
 
 At a return the spec's obligations are proved for every input the path
 admits, quantifier-free: the stop of a scan is a free variable z ("any

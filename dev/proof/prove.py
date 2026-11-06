@@ -1516,11 +1516,16 @@ class Prover:
         result(self.args, self.a, 'fail', self.paths, self.proved, self.solver.queries, time.time() - self.t0, detail)
         sys.exit(1)
 
-    def never(self, st, conds, what):
+    def plain(self, st):
+        """The assumptions and the path's conditions that read no memory."""
+        return [c for c in self.solver.assumed + st.pc if not S.has_array(c)]
+
+    def never(self, st, conds, what, lanes=True):
         """conds can not hold on the path: a counterexample when they can,
         a failure when z3 can not tell. A disjunction among them goes one
         disjunct at a time (a load's page bounds, below and above: two
-        queries of 6 and 17 s where the one took 72)."""
+        queries of 6 and 17 s where the one took 72); a masked access's
+        lanes all at once, one at a time when that does not settle soon."""
         flat = []
         for c in conds:
             flat.extend(c.args if c.op == 'and_b' else [c])
@@ -1528,14 +1533,20 @@ class Prover:
         if ors:
             rest = [c for c in flat if c is not ors[0]]
             for x in ors[0].args:
-                self.never(st, rest + [x], what)
+                self.never(st, rest + [x], what, lanes)
             return
         # first on what the path says of the addresses alone (fewer hypotheses: unsat holds for the whole): the
         # bytes compared before, reads at the stop's offset among them, can take the solver half an hour
-        plain = [c for c in self.solver.assumed + st.pc if not S.has_array(c)]
+        plain = self.plain(st)
         if len(plain) < len(self.solver.assumed) + len(st.pc) and self.solver.check(*plain, *flat, bare=True, timeout=AUX) == 'unsat':
             return
-        r = self.solver.check(*st.pc, *flat, keep=True)
+        each = next((c for c in flat if c.op == 'or_b'), None) if lanes else None
+        r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else None)
+        if r == 'unknown' and each is not None:  # strcmp evex past three loops: 431 s, a lane alone 1 or 2 s
+            rest = [c for c in flat if c is not each]
+            for x in each.args:
+                self.never(st, rest + [x], what, False)
+            return
         if r == 'sat':
             self.fail(what, st, self.spec.show())
         if r != 'unsat':
@@ -2069,9 +2080,16 @@ class Prover:
                 if len(new) == 1:
                     la, ln, lrip, lc = new[0]
                     self.never(st, [lc, self.spec.early(la, ln)], 'the load at %#x reaches past what the object allows' % lrip)
-                elif new:  # a masked load's lanes: one query for them all
-                    self.never(st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])],
-                               'the load at %#x reaches past what the object allows' % new[0][2])
+                elif new:  # a masked load's lanes
+                    what = 'the load at %#x reaches past what the object allows' % new[0][2]
+                    la0, p0 = new[0][0], page(new[0][0])
+                    off = S.or_(*[S.and_(lc, S.not_(S.and_(S.eq(page(la), p0), S.eq(page(last_of(la, ln)), p0)))) for la, ln, _, lc in new])
+                    if self.solver.check(*self.plain(st), off, bare=True, timeout=AUX) == 'unsat':
+                        # every lane it may load in lane 0's page (a mask up to the page's end): lane 0's bounds are
+                        # theirs (strcmp evex: 0.8 and 1.1 s where the lanes took 431)
+                        self.never(st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what)
+                    else:
+                        self.never(st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])], what)
                 bads = [b for b in (self.spec.early_store(e) for e in st.stores[seen_st:]) if b is not S.FALSE]
                 if bads:  # a masked store's lanes: one query for them all
                     self.never(st, [S.or_(*bads)], 'the store at %#x lands outside the object' % st.stores[seen_st][2])
