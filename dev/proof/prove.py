@@ -1588,10 +1588,10 @@ class Prover:
         lo = S.sub(st.front_lo, spec.s) if st.front_lo is not None else const(64, 0)
         sp = span(spec, st, lo, end, spec.at)
         ways = sp.alts if isinstance(sp, Alt) else [[sp]]
-        for k, way in enumerate(reversed(ways)):
-            rs = []
+        for k, way in enumerate(reversed(ways)):  # the loads' way first, with the full timeout: on a loaded host it
+            rs = []                                 # took more than 120 s where the bound without it took 1800
             for part in way:
-                rs.append(self.solver.check(*st.pc, *part, timeout=6 * AUX))
+                rs.append(self.solver.check(*st.pc, *part, timeout=None if k == 0 else 6 * AUX))
                 if rs[-1] != 'unsat':
                     break
             if self.args.verbose:
