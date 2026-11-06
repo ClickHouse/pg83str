@@ -1270,8 +1270,13 @@ static void pmu_stop(char *out, size_t cap, double calls) {
     for (int i = 0; i < pmu_n && w < cap; i++) {
         uint64_t v[3] = {0};
         CHECK(read(pmu_fd[i], v, sizeof v) == sizeof v);
-        double n = v[2] ? (double)v[0] * (double)v[1] / (double)v[2] : 0; /* the count over the time it ran, scaled to the time enabled */
-        w += (size_t)snprintf(out + w, cap - w, "%s%s=%.3f", i ? ";" : "", pmu_ev[i], n / calls);
+
+        if (!v[2]) {
+            w += (size_t)snprintf(out + w, cap - w, "%s%s=unavailable", i ? ";" : "", pmu_ev[i]);
+        } else {
+            double n = (double)v[0] * (double)v[1] / (double)v[2]; /* scaled to the time enabled */
+            w += (size_t)snprintf(out + w, cap - w, "%s%s=%.3f", i ? ";" : "", pmu_ev[i], n / calls);
+        }
     }
 }
 
@@ -1488,7 +1493,7 @@ static void setup(Cell *c, const Align *al) {
 }
 
 static int want_prim[P_N];
-static int want_mixed, want_libs, no_trace, want_hybrid, strict_validation;
+static int want_mixed, want_libs, want_noop, no_trace, want_hybrid, strict_validation;
 static const char *kfilter, *kexclude;
 
 static int kernel_wanted(const Kernel *k) {
@@ -1808,6 +1813,10 @@ static void build_tables(void) {
         library("musl", "musl_", 0);
         library("llvm", host & F_AVX512 ? "llvm_v4_" : host & F_AVX2 ? "llvm_v3_" : "llvm_v2_", 0);
         library("asmlib", "asm_A_", 0);
+        library("noop", 0, 1);
+    }
+
+    if (want_noop && !want_libs) {
         library("noop", 0, 1);
     }
 
@@ -2345,7 +2354,7 @@ static void meta(const char *path) {
 static void usage(void) {
     fprintf(stderr, "kbench [--cpu N] [--samples S] [--target-us T] [--prims list] [--kernels substrings] [--exclude substrings]\n"
                     "       [--sizes quick|full|list] [--aligns2 list] [--aligns1 list] [--regimes thr,lat] [--trace FILE] [--passes P]\n"
-                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--strict-validation] [--no-matrix] [--no-trace] [--mixed|--libs [--table NAME=CONFIG:SLOT=FN,...]]\n"
+                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--strict-validation] [--no-matrix] [--no-trace] [--mixed|--libs [--table NAME=CONFIG:SLOT=FN,...]] [--noop]\n"
                     "       [--pmu cycles,instructions,branches,branch-misses,rHEX] [--stand 0..3]\n"
                     "       [--hybrid: ours with each public function glibc's, and the base revision's if linked]\n");
     exit(2);
@@ -2397,6 +2406,8 @@ int main(int argc, char **argv) {
             want_hybrid = 1;
         } else if (!strcmp(a, "--libs")) {
             want_libs = 1;
+        } else if (!strcmp(a, "--noop")) {
+            want_noop = 1;
         } else if (OPT("--passes")) {
             passes = atoi(v);
         } else if (OPT("--jobs")) {

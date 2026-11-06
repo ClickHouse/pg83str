@@ -35,6 +35,7 @@ def main():
     p.add_argument('--passes', type=int, default=9)
     p.add_argument('--repeats', type=int, default=3)
     p.add_argument('--omit-frames', action='store_true')
+    p.add_argument('--noop', action='store_true', help='also measure the empty harness for upstream net comparisons')
     p.add_argument('--table', action='append', required=True, help='kbench NAME=CONFIG:SLOT=FN,...')
     a = p.parse_args()
     if not (1 <= a.passes <= 64 and a.repeats >= 1):
@@ -78,6 +79,8 @@ def main():
                        '--stand', stand, '--meta', work / (label + '_meta.json')]
                 for table in a.table:
                     cmd.extend(('--table', table))
+                if a.noop:
+                    cmd.append('--noop')
                 run(cmd, work / ('perf_' + label + '.log'), work / ('test_' + label + '.log'))
         print('phase%d complete' % phase, flush=True)
 

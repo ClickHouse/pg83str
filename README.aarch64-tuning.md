@@ -1,5 +1,10 @@
 # AArch64 tuning investigation, 2026-11-06
 
+The [continued glibc comparison](README.aarch64-target.md) supersedes this
+initial five-slot performance verdict with tuning of all eleven public slots,
+upstream-compatible net metrics, and longer-tail repairs. The measurements
+below retain the initial experiment's identities and conclusions.
+
 This investigation extends `pg83/str` itself. It follows the author's own
 experimental variants, including unsuccessful ones, and tests the corresponding
 ARM hypotheses. The starting ARM workbench is commit `9cc10e2`; upstream is

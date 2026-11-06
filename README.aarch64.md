@@ -8,6 +8,9 @@ It is not a tuned replacement for glibc or ClickHouse's existing ARM routines.
 The [AArch64 tuning investigation](README.aarch64-tuning.md) follows pg83's
 experimental variants, adds 34 lab candidates, and records native comparisons,
 generated-code checks, rejected alternatives, and remaining proof work.
+The [continued comparison with glibc](README.aarch64-target.md) tunes all
+eleven public entries and separates gross time from the upstream summary's
+empty-harness-subtracted metric.
 
 The public table and its twenty slot contracts live in `str.h`, shared with
 x86-64. `aarch64/scalar.c` supplies all eleven public primitives and their
