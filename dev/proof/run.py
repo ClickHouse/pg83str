@@ -205,11 +205,14 @@ def main():
                     print('%-5s %s %s: one class did not do (%s, %.0f s: %s), %d classes queued' % (
                         h, r['func'], r['spec'], r['result'], r.get('seconds', 0), r.get('detail', '')[-120:].replace('\n', ' '), len(more)), flush=True)
                     continue
+                detail = r.get('detail', '')
+                if r['result'] == 'error' and detail.strip():  # a traceback: its last line says what broke
+                    detail = detail.strip().splitlines()[-1]
                 with lock:
                     results.append(r)
                     print('%-5s %4d/%d %-28s class %-3s %-6s %5s paths %6.1f s  %s' % (
                         h, len(results), len(jobs), r.get('func', '?'), r.get('align', '?'), r['result'], r.get('paths', ''), r.get('seconds', 0),
-                        r.get('detail', '')[:200]), flush=True)
+                        detail[:200]), flush=True)
             elif line.startswith('FAIL'):
                 with lock:
                     print(h, line, flush=True)

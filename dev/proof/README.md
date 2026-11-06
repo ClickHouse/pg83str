@@ -26,8 +26,8 @@ what the code rounds to) plus its low bits, one alignment class per run:
 the page position is then symbolic, every place in a page at once. The
 classes are a case split, any number of them covers every pointer; one
 class, the low bits symbolic too, is every pointer in one proof: `run.py`
-tries that first (strlen sse2 in 8 s, strcmp avx2 in 2369 s where 64
-classes take 1041 s each, strspn avx2's long sets in 1079 s) and splits
+tries that first (strlen sse2 in 8 s, strcmp avx2 in 1102 s, strspn
+avx2's long sets in 1079 s) and splits
 into the classes only when it does not prove in three hours. At each
 branch z3 decides which ways are feasible; every feasible path is followed.
 
@@ -61,6 +61,13 @@ facts without a quantifier: the scan's queries go to bitwuzla.
 instructions, branch targets, callees' names and constants read (and the
 same tzcnt) are the same machine to the prover. It hands the jobs out as
 the hosts' slots free up, the longest specs first.
+
+A load's or a store's bounds are asked first on what the path says of the
+addresses alone, its conditions that read memory (the bytes compared
+before) left out: fewer hypotheses, so unsat holds for the whole path; the
+whole path only when that is not unsat (strcmp avx2 2603 s to 1102 s;
+strcmp evex's loads past three loops: queries of 10 to 30 minutes, none
+over 100 s now).
 
 At a return the spec's obligations are proved for every input the path
 admits, quantifier-free: the stop of a scan is a free variable z ("any

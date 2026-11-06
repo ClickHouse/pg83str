@@ -788,6 +788,18 @@ def has_quantifier(t):
     return r
 
 
+_arr = {}
+
+
+def has_array(t):
+    """Whether t reads memory."""
+    r = _arr.get(t.id)
+    if r is None:
+        r = t.w == MEM or any(isinstance(x, T) and has_array(x) for x in t.args)
+        _arr[t.id] = r
+    return r
+
+
 class Solver:
     """bitwuzla, and z3 for what bitwuzla does not read (lambdas): each query
     in a context of its own (PROVE_INCREMENTAL=1: one z3 session, the

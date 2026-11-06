@@ -1530,6 +1530,11 @@ class Prover:
             for x in ors[0].args:
                 self.never(st, rest + [x], what)
             return
+        # first on what the path says of the addresses alone (fewer hypotheses: unsat holds for the whole): the
+        # bytes compared before, reads at the stop's offset among them, can take the solver half an hour
+        plain = [c for c in self.solver.assumed + st.pc if not S.has_array(c)]
+        if len(plain) < len(self.solver.assumed) + len(st.pc) and self.solver.check(*plain, *flat, bare=True, timeout=AUX) == 'unsat':
+            return
         r = self.solver.check(*st.pc, *flat, keep=True)
         if r == 'sat':
             self.fail(what, st, self.spec.show())
