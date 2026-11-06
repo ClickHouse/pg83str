@@ -74,7 +74,14 @@ a query of 431 s, of 30 minutes on a loaded host, is 0.8 and 1.1 s so).
 
 At a return the spec's obligations are proved for every input the path
 admits, quantifier-free: the stop of a scan is a free variable z ("any
-stop"), so a property for all stops is one query.
+stop"), so a property for all stops is one query. "No match in [lo, hi)"
+is written out over offsets from lo when the path bounds the span; past a
+loop whose blocks start at an address rounded down those are not the
+terms of the bytes it loaded, and the solver matched 960 of them against
+the path's (strcmp evex: 554 s, unknown under load). Its last way is by
+the loads: a match at one of the path's loaded bytes, as their own terms,
+or at an offset outside them all (two queries, together the span; 20 s
+there); a way that did not do in 130 s gets the full timeout after it.
 
 ## The specs
 

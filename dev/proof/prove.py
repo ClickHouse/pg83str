@@ -129,16 +129,22 @@ class Alt:
         return Alt([[list(prefix) + part for part in alt] for alt in self.alts])
 
 
-def span(spec, st, lo, hi, pred, given=(), down=False, anchor=None):
+def span(spec, st, lo, hi, pred, given=(), down=False, anchor=None, by_loads=True):
     """pred at an offset in [lo, hi), as conditions for a query: the offsets
     one by one when the span is a known number, or when the path bounds it
     (a span up to an index from a mask's trailing zeros: offsets past lo by
     constants, the very terms of the bytes the path loaded, so the solver
     need not match a free offset against each of them), else through a
-    free offset."""
+    free offset; and when the path loaded bytes, by them (loaded), the way
+    the prover tries last (strcpy sse2's copy end: 0.8 s from lo, 44 by
+    the loads; strcmp evex past its loops the other way round)."""
     n = S.sub(hi, lo)
     if S.is_const(n) and n.val <= 4096:
         return [S.or_(*[pred(S.add(lo, const(64, j))) for j in range(n.val)])]
+    way = loaded(spec, st, lo, hi, pred) if st is not None and by_loads else None
+    if way is not None:
+        rest = span(spec, st, lo, hi, pred, given, down, anchor, False)
+        return Alt((rest.alts if isinstance(rest, Alt) else [[rest]]) + [way])  # the last: tried with the full timeout
     if st is not None:
         for b in SPANS:
             if spec.solver.check(*st.pc, *given, S.ult(const(64, b), n), timeout=AUX) == 'unsat':
@@ -162,6 +168,36 @@ def span(spec, st, lo, hi, pred, given=(), down=False, anchor=None):
                         alts.append([[upc], [dnc]])
                 return Alt(alts + [[[up]]])
     return [S.ule(lo, spec.i), S.ult(spec.i, hi), pred(spec.i)]
+
+
+def loaded(spec, st, lo, hi, pred):
+    """The span's offsets the path loaded, each byte of each load as the
+    path's own term (its address less its object's pointer), and any other
+    offset in it through a free one outside them all: two queries, together
+    the whole span. A loop's blocks from an address rounded down are then
+    matched term for term, not against offsets from the frontier (strcmp
+    evex past its entry loop: 960 of the 1088 bytes, 554 s)."""
+    own, i = getattr(spec, 'owner', lambda a: spec.s), getattr(spec, 'i', None)
+    if i is None:
+        return None
+    offs, ranges = {}, []
+    for a, nb, _, c in st.loads:
+        if not isinstance(nb, int):
+            return None
+        try:
+            o = S.sub(a, own(a))
+        except Failure:  # not the objects' (the stack): the free offset's
+            continue
+        ranges.append((o, nb))
+        for j in range(nb):
+            x = S.add(o, const(64, j))
+            offs[x.id] = x
+    if not ranges or len(offs) > 2048:
+        return None
+    inside = lambda x: S.and_(S.ule(lo, x), S.ult(x, hi))  # noqa: E731
+    hit = S.or_(*[S.and_(inside(x), pred(x)) for x in offs.values()])
+    gap = [inside(i)] + [S.not_(S.ult(S.sub(i, o), const(64, nb))) for o, nb in ranges] + [pred(i)]
+    return [[hit], gap]
 
 
 def pinned(spec, st, idx, pred, ends, given=()):
@@ -1570,9 +1606,10 @@ class Prover:
 
     def prove_alt(self, st, what, alt, show):
         """The ways in rounds: each but the last for 10 s, again for 120,
-        then the last with the full timeout."""
+        then the last with the full timeout, then the others with it."""
         ways = alt.alts
-        rounds = [(k, AUX // 2) for k in range(len(ways) - 1)] + [(k, 6 * AUX) for k in range(len(ways) - 1)] + [(len(ways) - 1, None)]
+        rounds = [(k, AUX // 2) for k in range(len(ways) - 1)] + [(k, 6 * AUX) for k in range(len(ways) - 1)] + [(len(ways) - 1, None)] + \
+            [(k, None) for k in range(len(ways) - 1)]
         best = self.best_way.get((what, len(ways)))
         if best is not None:  # the way that did it last time first
             rounds.insert(0, (best, 6 * AUX))
