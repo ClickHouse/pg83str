@@ -298,7 +298,8 @@ class Scan:
         p = self.owner(a) if hasattr(self, 'owner') else self.s
         if p is not self.s and p is not getattr(self, 'b', None):
             return None
-        return S.sub(S.shl(page(last_of(a, n)), const(64, 12)), p)
+        start = S.shl(page(last_of(a, n)), const(64, 12))
+        return S.ite(S.ult(p, start), S.sub(start, p), const(64, 0))  # a load in p's page: past no stop at all
 
     def early(self, a, n):
         """A load past the last page the stop allows, or before s's page, is
@@ -1572,11 +1573,20 @@ class Prover:
         """z (any stop) not in [lo, end), lo the frontier's offset: proved by
         the span's ways, the path's loads first; as a condition, None when
         not proved."""
-        spec = self.spec
+        spec, t0 = self.spec, time.time()
         lo = S.sub(st.front_lo, spec.s) if st.front_lo is not None else const(64, 0)
         sp = span(spec, st, lo, end, spec.at)
-        for way in reversed(sp.alts if isinstance(sp, Alt) else [[sp]]):
-            if all(self.solver.check(*st.pc, *part, timeout=6 * AUX) == 'unsat' for part in way):
+        ways = sp.alts if isinstance(sp, Alt) else [[sp]]
+        for k, way in enumerate(reversed(ways)):
+            rs = []
+            for part in way:
+                rs.append(self.solver.check(*st.pc, *part, timeout=6 * AUX))
+                if rs[-1] != 'unsat':
+                    break
+            if self.args.verbose:
+                print('   no stop below the page of the load at %#x: %s (way %d of %d) %.1f s' % (st.rip, '/'.join(rs), k + 1, len(ways), time.time() - t0),
+                      flush=True)
+            if len(rs) == len(way) and all(r == 'unsat' for r in rs):
                 return S.not_(S.and_(S.ule(lo, spec.z), S.ult(spec.z, end)))
         return None
 
