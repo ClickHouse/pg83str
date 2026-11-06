@@ -289,6 +289,17 @@ class Scan:
         """The last offset the scan may need, given the stop z."""
         return S.ite(S.eq(self.z, self.n), S.sub(self.n, const(64, 1)), self.z) if self.bounded else self.z
 
+    def stop_end(self, a, n):
+        """For a load of the scanned bytes: E, the offset of the page of its
+        last byte, so that only a stop below E puts the load past the stop's
+        page (early); None for a load whose bound is not the stop's."""
+        if self.bounded:
+            return None
+        p = self.owner(a) if hasattr(self, 'owner') else self.s
+        if p is not self.s and p is not getattr(self, 'b', None):
+            return None
+        return S.sub(S.shl(page(last_of(a, n)), const(64, 12)), p)
+
     def early(self, a, n):
         """A load past the last page the stop allows, or before s's page, is
         wrong whatever the answer."""
@@ -1557,7 +1568,19 @@ class Prover:
         """The assumptions and the path's conditions that read no memory."""
         return [c for c in self.solver.assumed + st.pc if not S.has_array(c)]
 
-    def never(self, st, conds, what, lanes=True):
+    def no_stop_below(self, st, end):
+        """z (any stop) not in [lo, end), lo the frontier's offset: proved by
+        the span's ways, the path's loads first; as a condition, None when
+        not proved."""
+        spec = self.spec
+        lo = S.sub(st.front_lo, spec.s) if st.front_lo is not None else const(64, 0)
+        sp = span(spec, st, lo, end, spec.at)
+        for way in reversed(sp.alts if isinstance(sp, Alt) else [[sp]]):
+            if all(self.solver.check(*st.pc, *part, timeout=6 * AUX) == 'unsat' for part in way):
+                return S.not_(S.and_(S.ule(lo, spec.z), S.ult(spec.z, end)))
+        return None
+
+    def never(self, st, conds, what, lanes=True, end=None):
         """conds can not hold on the path: a counterexample when they can,
         a failure when z3 can not tell. A disjunction among them goes one
         disjunct at a time (a load's page bounds, below and above: two
@@ -1570,7 +1593,7 @@ class Prover:
         if ors:
             rest = [c for c in flat if c is not ors[0]]
             for x in ors[0].args:
-                self.never(st, rest + [x], what, lanes)
+                self.never(st, rest + [x], what, lanes, end)
             return
         # first on what the path says of the addresses alone (fewer hypotheses: unsat holds for the whole): the
         # bytes compared before, reads at the stop's offset among them, can take the solver half an hour
@@ -1578,7 +1601,13 @@ class Prover:
         if len(plain) < len(self.solver.assumed) + len(st.pc) and self.solver.check(*plain, *flat, bare=True, timeout=AUX) == 'unsat':
             return
         each = next((c for c in flat if c.op == 'or_b'), None) if lanes else None
-        r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else None)
+        r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None or end is not None else None)
+        if r == 'unknown' and end is not None:  # a load past a stop the bytes compared before rule out (strcmp evex
+            # past its loops: a byte at a mask's first set bit, 870 s): the stop not below its page first, by the loads
+            lemma = self.no_stop_below(st, end)
+            if lemma is not None and self.solver.check(*plain, lemma, *flat, bare=True, timeout=AUX) == 'unsat':
+                return
+            r = self.solver.check(*st.pc, *([lemma] if lemma is not None else []), *flat, keep=True)
         if r == 'unknown' and each is not None:  # strcmp evex past three loops: 431 s, a lane alone 1 or 2 s
             rest = [c for c in flat if c is not each]
             for x in each.args:
@@ -2115,9 +2144,11 @@ class Prover:
                 new = st.loads[seen:]
                 if new and hasattr(self.spec, 'settle'):
                     self.spec.settle(self, st, new)
+                stop_end = getattr(self.spec, 'stop_end', lambda a, n: None)
                 if len(new) == 1:
                     la, ln, lrip, lc = new[0]
-                    self.never(st, [lc, self.spec.early(la, ln)], 'the load at %#x reaches past what the object allows' % lrip)
+                    self.never(st, [lc, self.spec.early(la, ln)], 'the load at %#x reaches past what the object allows' % lrip,
+                               end=stop_end(la, ln))
                 elif new:  # a masked load's lanes
                     what = 'the load at %#x reaches past what the object allows' % new[0][2]
                     la0, p0 = new[0][0], page(new[0][0])
@@ -2126,7 +2157,7 @@ class Prover:
                         # every lane it may load in lane 0's page (a mask up to the page's end): lane 0's bounds are
                         # theirs (strcmp evex: 0.8 and 1.1 s where the lanes took 431); one query whatever the
                         # lanes (one at a time, each would be as long: past a loop, the bytes compared before)
-                        self.never(st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what, False)
+                        self.never(st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what, False, stop_end(la0, 1))
                     else:
                         self.never(st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])], what)
                 bads = [b for b in (self.spec.early_store(e) for e in st.stores[seen_st:]) if b is not S.FALSE]

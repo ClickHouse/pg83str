@@ -82,6 +82,10 @@ the path's (strcmp evex: 554 s, unknown under load). Its last way is by
 the loads: a match at one of the path's loaded bytes, as their own terms,
 or at an offset outside them all (two queries, together the span; 20 s
 there); a way that did not do in 130 s gets the full timeout after it.
+A load whose bound needs the bytes compared before (a byte at a mask's
+first set bit past strcmp evex's loops: 870 s, unknown under load) has
+first a lemma proved the same ways: no stop below the page of its last
+byte; the bound then follows from the addresses.
 
 ## The specs
 
