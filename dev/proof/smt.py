@@ -32,17 +32,21 @@ class T:
 
 _table = {}
 _next = [0]
+_made = threading.Lock()  # the prover's checking threads build terms too: one term per key, whoever asks
 
 
 def _mk(op, w, args=(), val=None):
     key = (op, w, args, val)
     t = _table.get(key)
     if t is None:
-        t = T()
-        t.op, t.w, t.args, t.val = op, w, args, val
-        t.id = _next[0]
-        _next[0] += 1
-        _table[key] = t
+        with _made:
+            t = _table.get(key)
+            if t is None:
+                t = T()
+                t.op, t.w, t.args, t.val = op, w, args, val
+                t.id = _next[0]
+                _next[0] += 1
+                _table[key] = t
     return t
 
 

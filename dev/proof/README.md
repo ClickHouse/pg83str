@@ -58,6 +58,15 @@ is a bit of M, 256 bits defined by one axiom; past the loop (the first load
 of s) the invariant, its count L, is the table holding M, written out as 256
 facts without a quantifier: the scan's queries go to bitwuzla.
 
+The prover's Python is under 1% of a proof's time, the solvers the rest,
+and about 80% of it goes to checks that do not steer the walk: a return's
+obligations, an access's bounds, a loop's base and step cases. With
+`--workers N` (PROVE_WORKERS) those go to N threads, each with solver
+processes of its own, on a copy of the path's state, while the walk goes
+on with its branch queries; the first failure stops the proof as before.
+8 workers: strcmp sse2 21 to 9.5 s, strlen avx2 355 to 116 s, strcmp avx2
+859 to 316 s, strcpy_long sse2 84 to 48 s.
+
 `run.py` proves a configuration's copy of a function once: the same
 instructions, branch targets, callees' names and constants read (and the
 same tzcnt) are the same machine to the prover. It hands the jobs out as

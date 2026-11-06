@@ -26,7 +26,9 @@ Two modes for the loops:
 import argparse
 import json
 import os
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -57,6 +59,10 @@ def nonempty(n):
 
 class Failure(Exception):
     pass
+
+
+class Counterexample(Exception):
+    """A check's sat, found in a checking thread: its detail for the main one to report."""
 
 
 class Restart(Exception):
@@ -1544,6 +1550,16 @@ def result(args, a, what, paths, obligations, queries, seconds, detail):
                                   'detail': detail}), flush=True)
 
 
+class Current:
+    """The solver of the thread that asks (a spec's span() and pinned())."""
+
+    def __init__(self, prover):
+        self.prover = prover
+
+    def __getattr__(self, name):
+        return getattr(self.prover.solver, name)
+
+
 def check_abi(st, solver):
     """The callee-saved registers and rsp as at the entry: the same term, or
     (read back past stores at computed places: a frame aligned down) a
@@ -1556,9 +1572,71 @@ def check_abi(st, solver):
         raise Failure('rsp at the return: %r' % st.gpr['rsp'])
 
 
+class Pool:
+    """Checking threads, each with its own solver processes (the work is
+    theirs: the prover's Python is a percent of a proof's time): the checks
+    that do not steer the walk go to them, the walk goes on; a queue of a
+    few per thread holds it back when they fall behind. The first failure
+    stops the proof, reported as the walk would have."""
+
+    def __init__(self, prover, n):
+        self.prover, self.jobs, self.error, self.solvers = prover, queue.Queue(maxsize=2 * n), None, []
+        for _ in range(n):  # started here: a fork from a thread with preexec_fn may hang
+            solver = S.Solver()
+            for c in prover.main_solver.assumed:
+                solver.assume(c)
+            self.solvers.append(solver)
+        self.threads = [threading.Thread(target=self.work, args=(x,), daemon=True) for x in self.solvers]
+        for t in self.threads:
+            t.start()
+
+    def work(self, solver):
+        self.prover.tls.solver = solver
+        while True:
+            job = self.jobs.get()
+            if job is None:
+                break
+            check, st, args, kw = job
+            try:
+                if self.error is None:
+                    check(st, *args, **kw)
+            except Counterexample as e:
+                self.error = self.error or ('fail', str(e))
+            except Failure as e:  # unknown
+                self.error = self.error or ('error', str(e))
+            except Exception as e:  # a bug: the proof stops too
+                self.error = self.error or ('error', '%s in a checking thread: %s' % (type(e).__name__, e))
+            finally:
+                self.jobs.task_done()
+
+    def submit(self, check, st, args, kw):
+        self.raise_error()
+        self.jobs.put((check, st, args, kw))
+
+    def raise_error(self):
+        if self.error is None:
+            return
+        kind, detail = self.error
+        if kind == 'fail':
+            self.prover.report(detail)
+        raise Failure(detail)
+
+    def finish(self):
+        self.jobs.join()
+        for _ in self.threads:
+            self.jobs.put(None)
+        for t in self.threads:
+            t.join()
+        self.prover.queries = sum(x.queries for x in self.solvers)
+        for x in self.solvers:
+            x.close()
+        self.raise_error()
+
+
 class Prover:
     def __init__(self, args, mach, spec, solver, a):
-        self.args, self.mach, self.spec, self.solver, self.a = args, mach, spec, solver, a
+        self.args, self.mach, self.spec, self.main_solver, self.a = args, mach, spec, solver, a
+        self.tls, self.pool = threading.local(), None
         self.paths = self.proved = self.loops = 0
         self.dropped = {}  # loop head -> the invariant candidates a step did not keep
         self.lost = {}     # this run's: dropped at its end
@@ -1567,13 +1645,31 @@ class Prover:
         self.covered = {}  # id -> a first arrival at a loop's head whose general state's subtree is explored
         self.t0 = time.time()
 
+    @property
+    def solver(self):
+        """The main thread's solver, or a checking thread's own."""
+        return getattr(self.tls, 'solver', None) or self.main_solver
+
     def fail(self, what, st, show):
         if st.gen is not None:  # in a loop's general state: its distance and frontier too
             show = list(show) + [st.gen['k'], st.gen['front']]
         detail = '%s; branches at %s; %s' % (what, ' '.join('%#x' % x for x in st.trace), ' '.join(self.solver.values(show).split()))
+        if threading.current_thread() is not threading.main_thread():
+            raise Counterexample(detail)
+        self.report(detail)
+
+    def report(self, detail):
         print('FAIL %s, s %% %d == %d: %s' % (self.args.func, self.align, self.a, detail))
         result(self.args, self.a, 'fail', self.paths, self.proved, self.solver.queries, time.time() - self.t0, detail)
         sys.exit(1)
+
+    def later(self, check, st, *args, **kw):
+        """A check that does not steer the walk (a return's obligations, an
+        access's bounds, a loop's base and step cases): with checking
+        threads, on a copy of the state in one of them, the walk going on."""
+        if self.pool is None:
+            return check(st, *args, **kw)
+        self.pool.submit(check, st.copy(), args, kw)
 
     def plain(self, st):
         """The assumptions and the path's conditions that read no memory."""
@@ -1799,9 +1895,9 @@ class Prover:
             raise Failure('loop at %#x: the frontier\'s step %d, not a power of two' % (s1.rip, step))
         mode = 'B' if variable or side else self.spec.mode(self.solver, s1, a1, step)
         if side:
-            self.prove(s1, self.spec.side_base_case(s1, a1, step), self.spec.show())
+            self.later(self.prove, s1, self.spec.side_base_case(s1, a1, step), self.spec.show())
         else:
-            self.prove(s1, self.spec.base_case(s1, a1, mode, step, down) if down else self.spec.base_case(s1, a1, mode, step), self.spec.show())
+            self.later(self.prove, s1, self.spec.base_case(s1, a1, mode, step, down) if down else self.spec.base_case(s1, a1, mode, step), self.spec.show())
         kept = [(n, f) for n, f in self.candidates(s1, moved, havoc, step, a1, side, s2) if n not in dropped and self.holds(s1, n, f, a1)]  # true at the first arrival
         self.proved += len(kept)
         self.loops += 1
@@ -2086,13 +2182,13 @@ class Prover:
                     bad.append(S.and_(c, S.ult(xo, nb if isinstance(nb, S.T) else const(64, nb)), S.not_(S.and_(S.ule(lo, x), S.ult(x, hi)))))
             if bad:
                 out.append(('the iteration writes only inside the window grown by it', [S.or_(*bad)]))
-        self.prove(st, out, self.spec.show())
+        self.later(self.prove, st, out, self.spec.show())
         w = gen['w']
         cov = None if w is None else (w, S.add(w, const(64, step)) if gen['down'] else S.add(w, D))  # the stores' part of this iteration
         if gen['side']:
-            self.prove(st, self.spec.side_step_case(st, a, a2, step), self.spec.show())
+            self.later(self.prove, st, self.spec.side_step_case(st, a, a2, step), self.spec.show())
             return
-        self.prove(st, self.spec.step_case(st, a, S.add(a, const(64, step)) if gen['down'] else a2, gen['mode'], step, cov), self.spec.show())
+        self.later(self.prove, st, self.spec.step_case(st, a, S.add(a, const(64, step)) if gen['down'] else a2, gen['mode'], step, cov), self.spec.show())
 
     def run(self, entry, params):
         self.lost = {}
@@ -2100,7 +2196,11 @@ class Prover:
         self.contracts = self.spec.contracts(self.mach.image, entry) if hasattr(self.spec, 'contracts') else {}
         st = X.fresh_state(entry, params, self.spec.regions, getattr(self.spec, 'aliases', ()))
         st.front_lo = getattr(self.spec, 'front0', None)  # a precondition's: no stop before it
+        if self.args.workers > 1:
+            self.pool = Pool(self, self.args.workers)
         self.explore(st)
+        if self.pool is not None:
+            self.pool.finish()
 
     def explore_loop(self, s1, s2):
         """A loop met the second time on a path: generalized, its subtree (the
@@ -2159,16 +2259,16 @@ class Prover:
                 seen, seen_st, seen_al, seen_rq = len(st.loads), len(st.stores), len(st.aligned), len(st.requires)
                 succ = self.mach.step(st)
                 for bad, what, rrip in st.requires[seen_rq:]:
-                    self.never(st, [bad], '%s at %#x' % (what, rrip))
+                    self.later(self.never, st, [bad], '%s at %#x' % (what, rrip))
                 for aa, an, arip in st.aligned[seen_al:]:  # a misaligned movaps, movdqa or legacy SSE operand faults, its mask whatever
-                    self.never(st, [S.not_(S.is_zero(S.band(aa, const(64, an - 1))))], 'the access at %#x needs %d-byte alignment and may not have it' % (arip, an))
+                    self.later(self.never, st, [S.not_(S.is_zero(S.band(aa, const(64, an - 1))))], 'the access at %#x needs %d-byte alignment and may not have it' % (arip, an))
                 new = st.loads[seen:]
                 if new and hasattr(self.spec, 'settle'):
                     self.spec.settle(self, st, new)
                 stop_end = getattr(self.spec, 'stop_end', lambda a, n: None)
                 if len(new) == 1:
                     la, ln, lrip, lc = new[0]
-                    self.never(st, [lc, self.spec.early(la, ln)], 'the load at %#x reaches past what the object allows' % lrip,
+                    self.later(self.never, st, [lc, self.spec.early(la, ln)], 'the load at %#x reaches past what the object allows' % lrip,
                                end=stop_end(la, ln))
                 elif new:  # a masked load's lanes
                     what = 'the load at %#x reaches past what the object allows' % new[0][2]
@@ -2178,13 +2278,13 @@ class Prover:
                         # every lane it may load in lane 0's page (a mask up to the page's end): lane 0's bounds are
                         # theirs (strcmp evex: 0.8 and 1.1 s where the lanes took 431); one query whatever the
                         # lanes (one at a time, each would be as long: past a loop, the bytes compared before)
-                        self.never(st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what, False, stop_end(la0, 1))
+                        self.later(self.never, st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what, False, stop_end(la0, 1))
                     else:
-                        self.never(st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])], what)
+                        self.later(self.never, st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])], what)
                 bads = [b for b in (self.spec.early_store(e) for e in st.stores[seen_st:]) if b is not S.FALSE]
                 if bads:  # a masked store's lanes: one query for them all
                     one = st.stores[seen_st] if len(st.stores) == seen_st + 1 else None
-                    self.never(st, [S.or_(*bads)], 'the store at %#x lands outside the object' % st.stores[seen_st][2],
+                    self.later(self.never, st, [S.or_(*bads)], 'the store at %#x lands outside the object' % st.stores[seen_st][2],
                                end=getattr(self.spec, 'store_stop_end', lambda e: None)(one) if one is not None else None)
                 if len(succ) == 1:
                     st = succ[0][0]
@@ -2212,7 +2312,7 @@ class Prover:
                 continue
             check_abi(st, self.solver)
             obligations, show = self.spec.obligations(st)
-            self.prove(st, obligations, show)
+            self.later(self.prove, st, obligations, show)
 
 
 def main():
@@ -2227,6 +2327,8 @@ def main():
     ap.add_argument('--verbose', action='store_true', help='each obligation and its time')
     ap.add_argument('--align', default='all', help="the pointer's low bits to prove for: all, or a list")
     ap.add_argument('--classes', type=int, help='the number of alignment classes (a power of two), not align_of\'s')
+    ap.add_argument('--workers', type=int, default=int(os.environ.get('PROVE_WORKERS', '1')),
+                    help='checking threads, each with its own solvers (1: the walk checks as it goes)')
     args = ap.parse_args()
     img = X.Image(args.elf)
     mach = X.Machine(img, bmi=not args.func.startswith(('sse2.', 'sse42.')))
@@ -2247,15 +2349,16 @@ def main():
             raise Failure('the assumptions contradict each other: the proof would be empty')
         p = Prover(args, mach, spec, solver, a)
         p.align = align
-        spec.solver = solver
+        spec.solver = Current(p)  # span() and pinned() ask the solver of the thread they run in
         mach.decide = lambda st, bad, solver=solver: solver.check(*st.pc, bad, keep=True) == 'unsat'
         p.run(entry, params)
+        queries = solver.queries + getattr(p, 'queries', 0)
         print('s %% %d == %2d: %d paths, %d loops by induction, %d obligations, %d queries (%.1f s)' % (
-            align, a, p.paths, p.loops, p.proved, solver.queries, time.time() - t0), flush=True)
-        result(args, a, 'proved', p.paths, p.proved, solver.queries, time.time() - p.t0, '')
+            align, a, p.paths, p.loops, p.proved, queries, time.time() - t0), flush=True)
+        result(args, a, 'proved', p.paths, p.proved, queries, time.time() - p.t0, '')
         total[0] += p.paths
         total[1] += p.proved
-        total[2] += solver.queries
+        total[2] += queries
         solver.close()
     print('%s: %s proved %s, %d alignment classes: %d paths, %d obligations, %d solver queries, %.1f s' % (
         args.func, args.spec, 'for every length (loops by induction)' if args.induct else 'for lengths up to %d' % args.max, len(classes),
