@@ -973,6 +973,24 @@ static int validate_kernel(Kernel *k) {
         }
     }
 
+    if (k->prim == P_MEMCHR) {
+        /* `memchr` stops at a match even when the count extends beyond the
+           readable array. Later pages must not be accessed after that match. */
+
+        for (size_t room = 1; room <= 128; ++room) {
+            u8x *s = A.hi - room;
+            fill_pattern(s, room, 19);
+            s[room - 1] = 0xfe;
+            size_t counts[] = {room + 1, room + 64, SIZE_MAX};
+
+            for (unsigned i = 0; i < sizeof counts / sizeof *counts; ++i) {
+                if (((f_chr)k->fn)(s, 0x1fe, counts[i]) != s + room - 1) {
+                    VFAIL("match before an inaccessible page with oversized count");
+                }
+            }
+        }
+    }
+
     /* strcat: the appended string's NUL at the end of its page; the result at the end of its */
     if (k->prim == P_STRCAT) {
         for (size_t n = 0; n <= 300; n++) {

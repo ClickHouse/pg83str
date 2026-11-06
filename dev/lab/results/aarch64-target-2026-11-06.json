@@ -5278,5 +5278,13 @@
     ],
     "full_manifest_path": ".build/target30/accepted/commands.json",
     "full_manifest_sha256": "5d381f3a9e17ddceebc95a284d9eee08ae01d54c1df2a44a141e5cc4094f59c7"
+  },
+  "correctness_status": {
+    "status": "refuted",
+    "function": "kl_memchr_sve_pred1",
+    "case": "s at last readable page byte, first byte matches, n=3; next page inaccessible",
+    "native_result": "old object SIGSEGV11, glibc succeeds",
+    "coverage_gap": "original guard suite did not cover an early match with a count beyond the readable array",
+    "reproduction": ".build/object-proofs/build/test_repro.log"
   }
 }

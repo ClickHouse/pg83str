@@ -10,6 +10,7 @@ from capstone import arm64 as A
 import machine as B
 from machine import State, Unsupported, Fault, byte, region_of, rounded, offset_from, read_vec
 import smt as S
+import aarch64_vectors
 from smt import const, var
 
 ARG_REGS = ('rax', 'rsi', 'rdx', 'rcx', 'r8', 'r9', 'r10', 'r11')
@@ -46,7 +47,10 @@ def fresh_state(entry, args, regions=(), aliases=()):
 
 
 class Image(B.Image):
-    def __init__(self, path):
+    def __init__(self, path, sve_vl=None):
+        if sve_vl not in (None, 16):
+            raise Unsupported('the experimental SVE model currently requires VL=16 bytes')
+        self.sve_vl = sve_vl
         super().__init__(path, machine=183)
         self.decoder = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_LITTLE_ENDIAN)
         self.decoder.detail = True
@@ -105,7 +109,21 @@ class Image(B.Image):
         return j
 
 
-def branch_targets(image):
+def branch_targets(image, entry=None):
+    if entry is not None:
+        targets, seen, todo = set(), set(), [entry]
+        while todo:
+            address = todo.pop()
+            while address not in seen:
+                seen.add(address)
+                j = image.decode(address)
+                if 'branch_target' in j:
+                    targets.add(j['branch_target'])
+                    todo.append(j['branch_target'])
+                if j['a64'] in ('ret', 'b', 'br'):
+                    break
+                address += 4
+        return targets
     targets = set()
     for name, start in image.symbols.items():
         size = image.sizes.get(name, 0)
@@ -223,6 +241,7 @@ def call_return(st, result, prefix):
         new = [var('%szmm%d_%d' % (prefix, n, i), 8) for i in range(64)]
         st.vec[n] = old[:8] + new[8:] if 8 <= n < 16 else new
     st.flags = {}
+    st.k = {}
     st.gpr['rax'] = result
     st.gpr['a30'] = var(prefix + 'a30', 64)
     st.rip = target.val
@@ -237,7 +256,9 @@ class Machine:
         st.steps += 1
         mn, ops = j['a64'], j['ops']
         nxt = st.rip + 4
-        if mn in ('nop', 'bti'):
+        if aarch64_vectors.execute(self, st, j):
+            pass
+        elif mn in ('nop', 'bti'):
             pass
         elif mn == 'ret':
             target = get(st, ops[0]['reg']) if ops else st.gpr['a30']
@@ -358,6 +379,33 @@ class Machine:
                 st.flags = {'N': S.eq(S.extract(result, result.w - 1, result.w - 1), const(1, 1)),
                             'Z': S.is_zero(result), 'C': S.FALSE, 'V': S.FALSE}
             if not compare: put(st, ops[0]['reg'], result)
+        elif mn in ('rev', 'rbit', 'clz'):
+            value = get(st, ops[1]['reg'])
+            if mn == 'rev':
+                result = S.concat(*[S.extract(value, i + 7, i) for i in range(0, value.w, 8)])
+            elif mn == 'rbit':
+                result = S.concat(*[S.extract(value, i, i) for i in range(value.w)])
+            else:
+                result = const(value.w, value.w)
+                for i in range(value.w):
+                    result = S.ite(S.eq(S.extract(value, i, i), const(1, 1)), const(value.w, value.w - 1 - i), result)
+            put(st, ops[0]['reg'], result)
+        elif mn in ('ubfiz', 'bfi'):
+            value = get(st, ops[1]['reg'])
+            low, bits = ops[2]['imm'], ops[3]['imm']
+            if not 0 <= low < value.w or not 1 <= bits <= value.w - low:
+                raise Unsupported('AArch64 bitfield in ' + j['gas'])
+            mask = ((1 << bits) - 1) << low
+            result = S.shl(S.zext(S.extract(value, bits - 1, 0), value.w), const(value.w, low))
+            if mn == 'bfi':
+                result = S.bor(S.band(get(st, ops[0]['reg']), const(value.w, ~mask)), result)
+            put(st, ops[0]['reg'], result)
+        elif mn == 'mul':
+            a = get(st, ops[1]['reg'])
+            put(st, ops[0]['reg'], S.mul(a, operand(st, ops[2], a.w)))
+        elif mn == 'mvn':
+            value = get(st, ops[1]['reg'])
+            put(st, ops[0]['reg'], S.bnot(operand(st, ops[1], value.w)))
         elif mn in ('lsl', 'lsr', 'asr'):
             value = get(st, ops[1]['reg'])
             amount = S.band(operand(st, ops[2], value.w), const(value.w, value.w - 1))

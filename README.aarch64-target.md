@@ -1,5 +1,16 @@
 # AArch64 comparison with glibc, 2026-11-06
 
+Object-code verification subsequently found a real page-boundary bug in the
+measured `memchr` candidate: an early match can precede an inaccessible page
+even when the count extends into that page. The original object faults on
+dev while glibc succeeds. The timing figures below remain historical
+measurements; they do not qualify that binary as a correct replacement.
+The corrected objects must pass the strengthened guard test, proof work,
+and a new performance comparison before acceptance.
+The [object-code verification report](README.aarch64-proofs.md) records the
+repair, partial proofs, native replay and mutation gates, and corrected
+performance of approximately 31% less net time than glibc.
+
 This continues the [initial tuning investigation](README.aarch64-tuning.md)
 with a target of 30% less time than glibc. The initial comparison tuned only
 five public slots; this round tunes all eleven and repairs the observed

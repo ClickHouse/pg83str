@@ -53,10 +53,12 @@ int kl_memcmp_sve_pred4(const void *x, const void *y, size_t n) {
 
 void *kl_memchr_sve_pred1(const void *src, int c, size_t n) {
     const u8 *s = src;
-    size_t i = 0, vl = svcntb();
+    size_t i = 0;
 
     for (;;) {
-        svbool_t p = svwhilelt_b8_u64(i, n);
+        size_t page = 4096 - (((uintptr_t)s + i) & 4095);
+        size_t left = n - i;
+        svbool_t p = svwhilelt_b8_u64(0, left < page ? left : page);
         svuint8_t v = svld1_u8(p, (const u8 *)((uintptr_t)s + i));
         svbool_t hit = svcmpeq_n_u8(p, v, (u8)c);
 
@@ -64,11 +66,13 @@ void *kl_memchr_sve_pred1(const void *src, int c, size_t n) {
             return (void *)(s + i + first_true(hit));
         }
 
-        if (n - i <= vl) {
+        size_t count = svcntp_b8(svptrue_b8(), p);
+
+        if (left <= count) {
             return 0;
         }
 
-        i += vl;
+        i += count;
     }
 }
 
@@ -78,8 +82,10 @@ void *kl_memchr_sve_pred4(const void *src, int c, size_t n) {
     svbool_t all = svptrue_b8();
 
     for (;;) {
-        svbool_t p0 = svwhilelt_b8_u64(i, n), p1 = svwhilelt_b8_u64(i + vl, n);
-        svbool_t p2 = svwhilelt_b8_u64(i + 2 * vl, n), p3 = svwhilelt_b8_u64(i + 3 * vl, n);
+        size_t page = 4096 - (((uintptr_t)s + i) & 4095);
+        size_t left = n - i, limit = left < page ? left : page;
+        svbool_t p0 = svwhilelt_b8_u64(0, limit), p1 = svwhilelt_b8_u64(vl, limit);
+        svbool_t p2 = svwhilelt_b8_u64(2 * vl, limit), p3 = svwhilelt_b8_u64(3 * vl, limit);
         svbool_t h0 = svcmpeq_n_u8(p0, svld1_u8(p0, (const u8 *)((uintptr_t)s + i)), (u8)c);
         svbool_t h1 = svcmpeq_n_u8(p1, svld1_u8(p1, (const u8 *)((uintptr_t)s + i + vl)), (u8)c);
         svbool_t h2 = svcmpeq_n_u8(p2, svld1_u8(p2, (const u8 *)((uintptr_t)s + i + 2 * vl)), (u8)c);
@@ -93,11 +99,13 @@ void *kl_memchr_sve_pred4(const void *src, int c, size_t n) {
             return (void *)(s + i + j);
         }
 
-        if (n - i <= 4 * vl) {
+        size_t count = limit < 4 * vl ? limit : 4 * vl;
+
+        if (left <= count) {
             return 0;
         }
 
-        i += 4 * vl;
+        i += count;
     }
 }
 

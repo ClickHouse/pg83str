@@ -827,6 +827,26 @@ class Compare:
     def obligations(self, st):
         lo = S.sub(st.front_lo, self.a) if st.front_lo is not None else const(64, 0)
         r = S.extract(st.gpr['rax'], 31, 0)
+        source_bytes = {x.args[1].id: x for x in selects(r) if x.args[0] is self.A}
+        if len(source_bytes) > 1:
+            # Word comparisons may return only a sign. Construct the earliest
+            # differing candidate byte, then prove both its firstness and the
+            # returned sign. No correctness fact is inferred from code shape.
+            idx = self.n
+            for byte in source_bytes.values():
+                off = S.sub(byte.args[1], S.sub(self.a, self.base))
+                idx = S.ite(S.and_(S.ult(off, idx), self.differ(off)), off, idx)
+            av = self.at(self.A, self.base, self.a, idx)
+            bv = self.at(self.B, self.bbase, self.b, idx)
+            live = S.ult(idx, self.n)
+            out = [('the word comparison index within n or at its end', [S.not_(S.ule(idx, self.n))]),
+                   ('no difference before the word comparison index', self.some_diff(lo, idx, st, down=True, anchor=self.n)),
+                   ('word comparison zero iff no differing byte', [S.not_(S.eq(S.is_zero(r), S.not_(live)))]),
+                   ('negative word result has the first byte ordering',
+                    [S.and_(live, S.not_(S.eq(S.slt(r, const(32, 0)), S.ult(av, bv))))]),
+                   ('positive word result has the first byte ordering',
+                    [S.and_(live, S.not_(S.eq(S.slt(const(32, 0), r), S.ult(bv, av))))])]
+            return out, self.show()
         idx = self.answer_index(r)
         if idx is None:
             out = [('a constant answer is 0', [S.not_(S.is_zero(r))]),
@@ -2134,6 +2154,8 @@ class Prover:
         pairs, consts = set(), {}
         a = s1.rip
         for _ in range(400):  # the body: from the head to the jump back to it; its comparisons
+            if self.mach.image.section_at(a) is not self.mach.image.text:
+                break
             j = self.mach.image.decode(a)
             if j['mnemonic'] in ('cmp', 'test'):
                 regs = [X.GPR[o['reg']][0] for o in j['ops'] if o['kind'] == 'Register' and o['reg'] in X.GPR]
@@ -2421,6 +2443,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--arch', choices=['x86_64', 'aarch64'], default='x86_64')
     ap.add_argument('--elf', required=True)
+    ap.add_argument('--sve-vl', type=int, choices=[16], help='explicit SVE vector length in bytes for the experimental ARM model')
     ap.add_argument('--func', required=True)
     ap.add_argument('--spec', required=True, choices=sorted(SPECS))
     ap.add_argument('--max', type=int, default=256, help='bounded: the bound on the length or size')
@@ -2435,10 +2458,12 @@ def main():
     args = ap.parse_args()
     if args.arch == "aarch64":
         import aarch64_machine as X
-    img = X.Image(args.elf)
+    if args.sve_vl is not None and args.arch != 'aarch64':
+        ap.error('--sve-vl requires --arch aarch64')
+    img = X.Image(args.elf, sve_vl=args.sve_vl) if args.arch == 'aarch64' else X.Image(args.elf)
     mach = X.Machine(img, bmi=not args.func.startswith(('sse2.', 'sse42.')))
-    mach.targets = X.branch_targets(img) if args.induct else set()
     entry = img.symbols[args.func]
+    mach.targets = (X.branch_targets(img, entry) if args.arch == 'aarch64' else X.branch_targets(img)) if args.induct else set()
     align = args.classes or align_of(img, entry)
     classes = range(align) if args.align == 'all' else [int(x) for x in args.align.split(',')]
     log = open(args.log, 'w') if args.log else None

@@ -82,13 +82,14 @@ def gen_memcpy(rng):
     return ['p%d' % d, 'p%d' % s, 'i%d' % n], buf
 
 
-def gen_span(rng):
+def gen_span(rng, accept=True):
     """strspn/strcspn: a set of 0..48 bytes (more often short), the text
     mostly of the set's bytes with others among them, either near a page's
     end."""
     buf = bytearray(rng.randrange(0, 256) for _ in range(PAGES))
     m = rng.choice([rng.randrange(0, 4), rng.randrange(0, 17), rng.randrange(0, 33), rng.randrange(0, 49)])
     alphabet = rng.sample(range(1, 256), m) if m else []
+    outside = [c for c in range(1, 256) if c not in alphabet]
     t = offset(rng, m + 1)
     for i in range(m):
         buf[t + i] = alphabet[i]
@@ -99,7 +100,8 @@ def gen_span(rng):
     for i in range(n):
         if s + i in taken:
             continue
-        buf[s + i] = rng.choice(alphabet) if alphabet and rng.random() < 0.9 else nonzero(rng)
+        preferred = alphabet if accept else outside
+        buf[s + i] = rng.choice(preferred) if preferred and rng.random() < 0.9 else nonzero(rng)
     if s + n not in taken:
         buf[s + n] = 0
     return ['p%d' % s, 'p%d' % t], buf
@@ -131,9 +133,22 @@ def gen_strcpy(rng):
     return args[:2], buf
 
 
+def gen_strcat(rng):
+    buf = bytearray(rng.randrange(256) for _ in range(PAGES))
+    n, m = length(rng, 1024), length(rng, 256)
+    d = rng.randrange(0, 4096 - n - m)
+    s = rng.randrange(4096, PAGES - n)
+    for start, count in ((d, m), (s, n)):
+        for i in range(count):
+            buf[start + i] = nonzero(rng)
+        buf[start + count] = 0
+    return ['p%d' % d, 'p%d' % s], buf
+
+
 GENS = {'strlen': gen_strlen, 'memchr': gen_memchr, 'memset': gen_memset,
         'memcpy': gen_memcpy, 'memmove': gen_memmove, 'memcmp': gen_compare,
-        'strcmp': gen_compare, 'strcpy': gen_strcpy, 'strspn': gen_span}
+        'strcmp': gen_compare, 'strcpy': gen_strcpy, 'strcat': gen_strcat,
+        'strspn': gen_span, 'strcspn': lambda rng: gen_span(rng, accept=False)}
 
 
 def emulate(img, mach, func, args, base, buf):
@@ -160,6 +175,7 @@ def main():
     global X
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--arch', choices=['x86_64', 'aarch64'], default='x86_64')
+    ap.add_argument('--sve-vl', type=int, choices=[16], help='explicit vector length; checked against the native oracle')
     ap.add_argument('--runner', default='', help='command prefix for the native oracle, e.g. a container runner')
     ap.add_argument('--elf', default=str(ROOT / '.build/proof/libstr.elf'))
     ap.add_argument('--oracle', default=str(ROOT / '.build/proof/oracle'))
@@ -170,9 +186,16 @@ def main():
     args = ap.parse_args()
     if args.arch == 'aarch64':
         import aarch64_machine as X
-    img = X.Image(args.elf)
+    if args.sve_vl is not None and args.arch != 'aarch64':
+        ap.error('--sve-vl requires --arch aarch64')
+    img = X.Image(args.elf, sve_vl=args.sve_vl) if args.arch == 'aarch64' else X.Image(args.elf)
     o = subprocess.Popen([*shlex.split(args.runner), args.oracle], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-    base = int(o.stdout.readline().split()[1], 16)
+    handshake = o.stdout.readline().split()
+    if len(handshake) < 2 or handshake[0] != 'base':
+        raise RuntimeError('native oracle did not report its memory base')
+    base = int(handshake[1], 16)
+    if args.sve_vl is not None and handshake[2:] != ['sve_vl', str(args.sve_vl)]:
+        raise RuntimeError('native oracle SVE vector length does not match the model')
     rng = random.Random(args.seed)
     bad = 0
     for func in args.func.split(','):

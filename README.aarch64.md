@@ -11,6 +11,9 @@ generated-code checks, rejected alternatives, and remaining proof work.
 The [continued comparison with glibc](README.aarch64-target.md) tunes all
 eleven public entries and separates gross time from the upstream summary's
 empty-harness-subtracted metric.
+The [object-code verification report](README.aarch64-proofs.md) records the
+exact-object proof workflow and the page-boundary bug it subsequently found
+and repaired in the measured `memchr` candidate.
 
 The public table and its twenty slot contracts live in `str.h`, shared with
 x86-64. `aarch64/scalar.c` supplies all eleven public primitives and their

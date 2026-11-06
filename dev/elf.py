@@ -10,6 +10,13 @@ SYMBOL_TYPES = {0: 'STT_NOTYPE', 1: 'STT_OBJECT', 2: 'STT_FUNC', 3: 'STT_SECTION
 SYMBOL_BINDS = {0: 'STB_LOCAL', 1: 'STB_GLOBAL', 2: 'STB_WEAK'}
 RELOC_TYPES = {1: 'R_X86_64_64', 2: 'R_X86_64_PC32', 4: 'R_X86_64_PLT32', 10: 'R_X86_64_32', 11: 'R_X86_64_32S',
                41: 'R_X86_64_GOTPCRELX', 42: 'R_X86_64_REX_GOTPCRELX'}
+AARCH64_RELOC_TYPES = {257: 'R_AARCH64_ABS64', 258: 'R_AARCH64_ABS32', 259: 'R_AARCH64_ABS16',
+                       260: 'R_AARCH64_PREL64', 261: 'R_AARCH64_PREL32', 262: 'R_AARCH64_PREL16',
+                       275: 'R_AARCH64_ADR_PREL_PG_HI21', 277: 'R_AARCH64_ADD_ABS_LO12_NC',
+                       278: 'R_AARCH64_LDST8_ABS_LO12_NC', 279: 'R_AARCH64_TSTBR14', 280: 'R_AARCH64_CONDBR19',
+                       282: 'R_AARCH64_JUMP26', 283: 'R_AARCH64_CALL26', 284: 'R_AARCH64_LDST16_ABS_LO12_NC',
+                       285: 'R_AARCH64_LDST32_ABS_LO12_NC', 286: 'R_AARCH64_LDST64_ABS_LO12_NC',
+                       299: 'R_AARCH64_LDST128_ABS_LO12_NC'}
 
 
 @dataclass
@@ -75,7 +82,7 @@ def read(path, executable=False, machine=62):
     if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
         raise ValueError('%s: not a little-endian ELF64 file' % path)
     e_type, e_machine = struct.unpack_from('<HH', data, 16)
-    if e_type not in ((1, 2) if executable else (1,)) or e_machine != machine:
+    if e_type not in ((1, 2, 3) if executable else (1,)) or e_machine != machine:
         raise ValueError('%s: not a matching-architecture %s' % (path, 'ELF file' if executable else 'relocatable object'))
     e_shoff = struct.unpack_from('<Q', data, 0x28)[0]
     e_shentsize, e_shnum, e_shstrndx = struct.unpack_from('<HHH', data, 0x3a)
@@ -100,5 +107,7 @@ def read(path, executable=False, machine=62):
             out = elf.relocs.setdefault(s.info, [])
             for k in range(0, len(s.data), 24):
                 r_offset, r_info, r_addend = struct.unpack_from('<QQq', s.data, k)
-                out.append(ElfReloc(r_offset, RELOC_TYPES.get(r_info & 0xffffffff, 'R_X86_64_%d' % (r_info & 0xffffffff)), r_info >> 32, r_addend))
+                types = AARCH64_RELOC_TYPES if machine == 183 else RELOC_TYPES
+                prefix = 'R_AARCH64_' if machine == 183 else 'R_X86_64_'
+                out.append(ElfReloc(r_offset, types.get(r_info & 0xffffffff, prefix + str(r_info & 0xffffffff)), r_info >> 32, r_addend))
     return elf

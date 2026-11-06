@@ -96,29 +96,23 @@ void *kl_memchr_neon_blocks(const void *src, int c, size_t n) {
     uint8x16_t v = vdupq_n_u8((u8)c);
     size_t i = 0;
 
-    while (n - i >= 16) {
-        uint8x16_t eq = vceqq_u8(vld1q_u8(s + i), v);
-        uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(eq), 4)), 0);
-
-        if (mask) {
-            return (void *)(s + i + kl_first(mask));
-        }
-
-        i += 16;
-    }
-
-    if (n >= 16) {
-        uint8x16_t eq = vceqq_u8(vld1q_u8(s + n - 16), v);
-        uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(eq), 4)), 0);
-        return mask ? (void *)(s + n - 16 + kl_first(mask)) : 0;
-    }
-
     while (i < n) {
-        if (s[i] == (u8)c) {
-            return (void *)(s + i);
-        }
+        if (n - i >= 16 && (((uintptr_t)s + i) & 4095) <= 4080) {
+            uint8x16_t eq = vceqq_u8(vld1q_u8(s + i), v);
+            uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(eq), 4)), 0);
 
-        ++i;
+            if (mask) {
+                return (void *)(s + i + kl_first(mask));
+            }
+
+            i += 16;
+        } else {
+            if (s[i] == (u8)c) {
+                return (void *)(s + i);
+            }
+
+            ++i;
+        }
     }
 
     return 0;

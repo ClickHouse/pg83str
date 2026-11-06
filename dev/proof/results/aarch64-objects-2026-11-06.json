@@ -1,0 +1,2457 @@
+{
+  "date": "2026-11-06",
+  "scope": "Object-derived machine-code proofs in an experimental AArch64 model; incomplete coverage, VL16 only.",
+  "original_benchmark_sha256": "d1f6d106394191a6d29811559131734d850d22d9ef1537a2260ca66c5681aa7b",
+  "original_proof_elf_sha256": "f862adead47d4dd594ef4d290764da46af5cdb39ee2e4e6de88e4a4c90dbd9f7",
+  "original_audit": {
+    "architecture": "aarch64",
+    "elf_sha256": "f862adead47d4dd594ef4d290764da46af5cdb39ee2e4e6de88e4a4c90dbd9f7",
+    "link_command": null,
+    "benchmark_sha256": "d1f6d106394191a6d29811559131734d850d22d9ef1537a2260ca66c5681aa7b",
+    "provenance_scope": "exact nonrelocation instruction bits; relocation application and data layout trust the linker",
+    "objects": [
+      {
+        "path": ".build/object-proofs/inputs/aarch64_neon_bulk.o",
+        "sha256": "5fa1d906d874b7298ffc201b9fa7f4ba024dd7494f029e7d2d094e5683e8dfef",
+        "functions": {
+          "kl_memcpy_neon_bulk128": {
+            "input_bytes_sha256": "cba1d33b62b4b81f69594ee0c0e79c2a27034d66f0d45ffd8da4658160fcfb5a",
+            "size": 420,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2164160,
+                "bytes_sha256": "cba1d33b62b4b81f69594ee0c0e79c2a27034d66f0d45ffd8da4658160fcfb5a"
+              },
+              "benchmark": {
+                "address": 22784,
+                "bytes_sha256": "cba1d33b62b4b81f69594ee0c0e79c2a27034d66f0d45ffd8da4658160fcfb5a"
+              }
+            }
+          },
+          "kl_memmove_neon_bulk64": {
+            "input_bytes_sha256": "cfa8553fb2febbc9cc1939ef09bac6e8b865cba65b13e6f8734a32ff918eb977",
+            "size": 688,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2164608,
+                "bytes_sha256": "cfa8553fb2febbc9cc1939ef09bac6e8b865cba65b13e6f8734a32ff918eb977"
+              },
+              "benchmark": {
+                "address": 23232,
+                "bytes_sha256": "cfa8553fb2febbc9cc1939ef09bac6e8b865cba65b13e6f8734a32ff918eb977"
+              }
+            }
+          },
+          "kl_memset_neon_bulk128": {
+            "input_bytes_sha256": "1f9860ad9d304bf7b3b912c5b33498f72345b2fe5cc45b72e684e46d662a4ab2",
+            "size": 272,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2165312,
+                "bytes_sha256": "1f9860ad9d304bf7b3b912c5b33498f72345b2fe5cc45b72e684e46d662a4ab2"
+              },
+              "benchmark": {
+                "address": 24256,
+                "bytes_sha256": "1f9860ad9d304bf7b3b912c5b33498f72345b2fe5cc45b72e684e46d662a4ab2"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_neon_extra.o",
+        "sha256": "9c4ba21a2afd91756e3e8f934fc5339750e6a6ca49b43eaace101c94836c3961",
+        "functions": {
+          "kl_memcmp_neon_words": {
+            "input_bytes_sha256": "a0b9492cc60e99472feafcc109f953f90bb4e462e38b55e65fd5ee00268e4ee5",
+            "size": 416,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2165632,
+                "bytes_sha256": "a0b9492cc60e99472feafcc109f953f90bb4e462e38b55e65fd5ee00268e4ee5"
+              },
+              "benchmark": {
+                "address": 24576,
+                "bytes_sha256": "a0b9492cc60e99472feafcc109f953f90bb4e462e38b55e65fd5ee00268e4ee5"
+              }
+            }
+          },
+          "kl_strspn_neon_adaptive": {
+            "input_bytes_sha256": "767f5a59764c9d68676ce884358be653ea72b2bcbc5ea9f80d2abf75b8c03467",
+            "size": 256,
+            "relocations": [
+              {
+                "offset": 44,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_strspn_neon_table",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166080,
+                "bytes_sha256": "399fd9422a8c030cb227a3c731b187504415fbc9b837522a33aaf72d9381dee1"
+              },
+              "benchmark": {
+                "address": 27456,
+                "bytes_sha256": "294347afadd27515b64f1d47717b5ba8abb90f40fddbf86deb4de30a0fcb2214"
+              }
+            }
+          },
+          "kl_strcspn_neon_adaptive": {
+            "input_bytes_sha256": "8e56bd49a4bec81da8c129add48420b6abcf15dbdcceb9415612b4c9153ebb59",
+            "size": 228,
+            "relocations": [
+              {
+                "offset": 44,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_strcspn_neon_table",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166336,
+                "bytes_sha256": "0b658099523020428cf2c10d154943f0438dafaa3e2eafabb12e0a67360d8039"
+              },
+              "benchmark": {
+                "address": 27712,
+                "bytes_sha256": "b679027ce5ec39e18246246797edb177bdd90de3ac332bd429839ac231ae372e"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_neon_length.o",
+        "sha256": "e6994319b88c083b42e002627403e8c1ff01c0c8b03181c65d3e6c27fdf1d669",
+        "functions": {
+          "tail128": {
+            "input_bytes_sha256": "b0be62a0a3a22ed1754f139c35724693ea5502b97b2d861c7671ea8596a0a488",
+            "size": 184,
+            "relocations": [
+              {
+                "offset": 8,
+                "type": "R_AARCH64_ADR_PREL_PG_HI21",
+                "symbol": "",
+                "addend": 48
+              },
+              {
+                "offset": 12,
+                "type": "R_AARCH64_LDST128_ABS_LO12_NC",
+                "symbol": "",
+                "addend": 48
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166784,
+                "bytes_sha256": "85c0ba7fe46388309c1baa9893d4d97e5b04caf4e648f10998a85af51698b89d"
+              },
+              "benchmark": {
+                "address": 29120,
+                "bytes_sha256": "d81ba1592ac51ee3d8bc2672737f20eed839b457500378c4bba1631f7408503f"
+              }
+            }
+          },
+          "kl_strlen_neon_prefix32_tail128": {
+            "input_bytes_sha256": "3b0e8b89e0e919af2fa3c1180b5c32f8ef377a197b69717dd5e0358441d553e8",
+            "size": 160,
+            "relocations": [
+              {
+                "offset": 28,
+                "type": "R_AARCH64_ADR_PREL_PG_HI21",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 32,
+                "type": "R_AARCH64_LDST128_ABS_LO12_NC",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 96,
+                "type": "R_AARCH64_ADR_PREL_PG_HI21",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 100,
+                "type": "R_AARCH64_LDST128_ABS_LO12_NC",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 156,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166592,
+                "bytes_sha256": "3f7578870558cd209165d8e6d5f814533c08a5c4c0c133bb22c549e69cfed6ae"
+              },
+              "benchmark": {
+                "address": 28928,
+                "bytes_sha256": "90ab93ddef3f215701aeb991ad4b2658b4808f52be1c4378facde296b5817177"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_neon_membership.o",
+        "sha256": "a65958a6d66e77c650e99ac5f66c5276e35383b97b4ea9f26a43d58f61d1953a",
+        "functions": {
+          "kl_strspn_neon_table": {
+            "input_bytes_sha256": "1c95ce521b8ac6cac59819501eb3770fca119587a16e54c7a5c39cb0a5a72a17",
+            "size": 260,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2166976,
+                "bytes_sha256": "1c95ce521b8ac6cac59819501eb3770fca119587a16e54c7a5c39cb0a5a72a17"
+              },
+              "benchmark": {
+                "address": 29312,
+                "bytes_sha256": "1c95ce521b8ac6cac59819501eb3770fca119587a16e54c7a5c39cb0a5a72a17"
+              }
+            }
+          },
+          "kl_strcspn_neon_table": {
+            "input_bytes_sha256": "2fa2eb2a250e292688ac31bd23313b1fdbe11f62e36e92be1eedf7ef204e23f3",
+            "size": 268,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2167296,
+                "bytes_sha256": "2fa2eb2a250e292688ac31bd23313b1fdbe11f62e36e92be1eedf7ef204e23f3"
+              },
+              "benchmark": {
+                "address": 29632,
+                "bytes_sha256": "2fa2eb2a250e292688ac31bd23313b1fdbe11f62e36e92be1eedf7ef204e23f3"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_neon_memory.o",
+        "sha256": "dbc3c21f3f496433477f6c15928cc1bc68f72ef56ddfe938c3839cbf0c334905",
+        "functions": {}
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_neon_strings.o",
+        "sha256": "5418d9565c2c23e01662cf700ded85b4bd4f73a0329b8ddb5de84fc34cd824a3",
+        "functions": {
+          "compare_tail": {
+            "input_bytes_sha256": "74b8e93b1968aa4328e72e3b584d3c2123cb96fd452479c9886758f3c4405a31",
+            "size": 416,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2167872,
+                "bytes_sha256": "74b8e93b1968aa4328e72e3b584d3c2123cb96fd452479c9886758f3c4405a31"
+              },
+              "benchmark": {
+                "address": 36288,
+                "bytes_sha256": "74b8e93b1968aa4328e72e3b584d3c2123cb96fd452479c9886758f3c4405a31"
+              }
+            }
+          },
+          "kl_strcmp_neon_first16_tail64": {
+            "input_bytes_sha256": "1264ade49a05c2cc6691ae1a46d419ef0c7562ec9270406930996b18f6572664",
+            "size": 244,
+            "relocations": [
+              {
+                "offset": 240,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2167616,
+                "bytes_sha256": "78bc7fd815b252e6f9388ef7c37886efcfb46a9044632f1c534e9302f3aa3227"
+              },
+              "benchmark": {
+                "address": 36032,
+                "bytes_sha256": "78bc7fd815b252e6f9388ef7c37886efcfb46a9044632f1c534e9302f3aa3227"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_sve_bulk.o",
+        "sha256": "cbe8c4676b0ac027659c0b0b64fa51141cd8044b67ee6c3c31169bcbbb353356",
+        "functions": {
+          "kl_memcpy_sve_bulk128": {
+            "input_bytes_sha256": "d4aaf44ca85349d0bcc8e213052fc33954dd3cc02e9b0e2defd4fbf25d65f37a",
+            "size": 96,
+            "relocations": [
+              {
+                "offset": 24,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_memcpy_neon_bulk128",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168320,
+                "bytes_sha256": "10ba942e33cc02df4e996d1d92c5574cf8776239cc316405dc3d92d5158d60aa"
+              },
+              "benchmark": {
+                "address": 37440,
+                "bytes_sha256": "a3585863981c9d6c20bff6b45ac75c53ae4a86a6a7d079f4a39e5f7a6633d58f"
+              }
+            }
+          },
+          "kl_memmove_sve_bulk64": {
+            "input_bytes_sha256": "d4aaf44ca85349d0bcc8e213052fc33954dd3cc02e9b0e2defd4fbf25d65f37a",
+            "size": 96,
+            "relocations": [
+              {
+                "offset": 24,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_memmove_neon_bulk64",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168448,
+                "bytes_sha256": "ed8ff356b422b56f5077378c2f45c694231ccaf627eefaa88916b8c0aa0a8663"
+              },
+              "benchmark": {
+                "address": 37760,
+                "bytes_sha256": "28a56c364a9999d03a56dd7d92ab9b66e548ae6f6213c907a1fd7b5ec10179f3"
+              }
+            }
+          },
+          "kl_memset_sve_bulk128": {
+            "input_bytes_sha256": "494517458b02fe556a2666195f4c5336827d1fe36acde9eaf9922c6ad2c0498f",
+            "size": 84,
+            "relocations": [
+              {
+                "offset": 24,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_memset_neon_bulk128",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168576,
+                "bytes_sha256": "061b4c156586d30250ffe445ca68660113546299e34902c87f6f91ad0f13d320"
+              },
+              "benchmark": {
+                "address": 38208,
+                "bytes_sha256": "08593f83a986a9a0cbff239a720b0dbe545f88e20a5955db1dc7e981831e0b7d"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_sve_extra.o",
+        "sha256": "c5bb4f97f510ad06a0ef9a8baad9f563a67bebf9bcf12abe507a307372a8e016",
+        "functions": {
+          "copy_tail64": {
+            "input_bytes_sha256": "0def018d75ba479c65d10d7a0c54ed44cb9599a3e67f115a3215144ebc97bf0f",
+            "size": 304,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2169216,
+                "bytes_sha256": "0def018d75ba479c65d10d7a0c54ed44cb9599a3e67f115a3215144ebc97bf0f"
+              },
+              "benchmark": {
+                "address": 40256,
+                "bytes_sha256": "0def018d75ba479c65d10d7a0c54ed44cb9599a3e67f115a3215144ebc97bf0f"
+              }
+            }
+          },
+          "kl_memchr_sve_pred1": {
+            "input_bytes_sha256": "4dcb69886e8f6b87c8ec9b7c623ac30bc8c4bf8111ffc254630985dc3ee90889",
+            "size": 124,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2168704,
+                "bytes_sha256": "4dcb69886e8f6b87c8ec9b7c623ac30bc8c4bf8111ffc254630985dc3ee90889"
+              },
+              "benchmark": {
+                "address": 38912,
+                "bytes_sha256": "4dcb69886e8f6b87c8ec9b7c623ac30bc8c4bf8111ffc254630985dc3ee90889"
+              }
+            }
+          },
+          "kl_strcpy_sve_split64": {
+            "input_bytes_sha256": "bd4b29c2b3dbbd4942e2fab88dc98d5cce94171c4188114a03dc38e340ff1f14",
+            "size": 152,
+            "relocations": [
+              {
+                "offset": 132,
+                "type": "R_AARCH64_CALL26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168832,
+                "bytes_sha256": "7b5100a755fb5a5ed4ac8796bbd1a074dcde749c87cfafca99eb3564f2ebc347"
+              },
+              "benchmark": {
+                "address": 39872,
+                "bytes_sha256": "7b5100a755fb5a5ed4ac8796bbd1a074dcde749c87cfafca99eb3564f2ebc347"
+              }
+            }
+          },
+          "kl_strcat_sve_split64": {
+            "input_bytes_sha256": "67b93374bb88faacaeaadb9b6d79d8bbb14859dcdf6814d2f44e4cebf6bff55e",
+            "size": 160,
+            "relocations": [
+              {
+                "offset": 20,
+                "type": "R_AARCH64_CALL26",
+                "symbol": "kl_strlen_neon_prefix32_tail128",
+                "addend": 0
+              },
+              {
+                "offset": 140,
+                "type": "R_AARCH64_CALL26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2169024,
+                "bytes_sha256": "340e6723e0ceacc9c5ad04e411cd0789cf7dceb697750bb236833465fd68c0c5"
+              },
+              "benchmark": {
+                "address": 40064,
+                "bytes_sha256": "1f33ca48d8ea3191a8eca14dc2e6f709b771233149e545405eeec609a9eb836f"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/inputs/aarch64_sve_predicate.o",
+        "sha256": "6bd0306274875eafc4163c1c22678a1553a7de5e1a650b22d8eacc10df28c9eb",
+        "functions": {}
+      }
+    ],
+    "sve_vl_bytes": 16,
+    "decoder": "capstone 5.0.6",
+    "solver": "Z3 version 4.15.4 - 64 bit",
+    "model_sha256": {
+      "aarch64_machine.py": "12b922ab7b39213bd67e0370a1668b0218a0199fd7980c6118e5546a14514afa",
+      "aarch64_vectors.py": "1872b6364bcbfff95d99572a301597bdb1dfaf559f9331bdd6a347a7c1162375",
+      "machine.py": "9315f960c77094789f10b9b3755a168863e8414787913b0bae687d76099d9777",
+      "prove.py": "84fd59f64a6eae937bf1a07d70be898905cba2546e2b1e7cfe9990d22d5abc60",
+      "smt.py": "4cab6c1277099fdb91986fd50cf1b41ad15c890b1b9475529c1ec5ee5d31ba5b"
+    },
+    "assumptions": "untagged lower-47-bit addresses,4096-byte pages,standard AAPCS64,explicit VL16; model validation separate",
+    "proof_mode": "unbounded_induction",
+    "max": null,
+    "functions": {
+      "kl_memcpy_sve_bulk128": {
+        "spec": "memcpy",
+        "status": "proved_in_model",
+        "exit_code": 0,
+        "results": [
+          {
+            "func": "kl_memcpy_sve_bulk128",
+            "spec": "memcpy",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 7,
+            "obligations": 48,
+            "queries": 183,
+            "seconds": 21.9,
+            "detail": ""
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/build/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memcpy_sve_bulk128",
+          "--spec",
+          "memcpy",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_memmove_sve_bulk64": {
+        "spec": "memmove",
+        "status": "not_run"
+      },
+      "kl_memset_sve_bulk128": {
+        "spec": "memset",
+        "status": "proved_in_model",
+        "exit_code": 0,
+        "results": [
+          {
+            "func": "kl_memset_sve_bulk128",
+            "spec": "memset",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 7,
+            "obligations": 45,
+            "queries": 117,
+            "seconds": 8.8,
+            "detail": ""
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/build/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memset_sve_bulk128",
+          "--spec",
+          "memset",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_memcmp_neon_words": {
+        "spec": "memcmp",
+        "status": "not_run"
+      },
+      "kl_strlen_neon_prefix32_tail128": {
+        "spec": "strlen",
+        "status": "not_run"
+      },
+      "kl_strcpy_sve_split64": {
+        "spec": "strcpy",
+        "status": "not_run"
+      },
+      "kl_strcat_sve_split64": {
+        "spec": "strcat",
+        "status": "not_run"
+      },
+      "kl_strcmp_neon_first16_tail64": {
+        "spec": "strcmp",
+        "status": "not_run"
+      },
+      "kl_strspn_neon_adaptive": {
+        "spec": "strspn",
+        "status": "not_run"
+      },
+      "kl_strcspn_neon_adaptive": {
+        "spec": "strcspn",
+        "status": "not_run"
+      },
+      "kl_memchr_sve_pred1": {
+        "spec": "memchr",
+        "status": "counterexample_or_failed_invariant",
+        "exit_code": 1,
+        "results": [
+          {
+            "func": "kl_memchr_sve_pred1",
+            "spec": "memchr",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "fail",
+            "paths": 1,
+            "obligations": 0,
+            "queries": 11,
+            "seconds": 0.4,
+            "detail": "the load at 0x211794 reaches past what the object allows; branches at ; ((s_hi #x000032e71835cfff) (z #x0000000000000000) (n #x0000000000000003))"
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/build/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memchr_sve_pred1",
+          "--spec",
+          "memchr",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      }
+    },
+    "complete_selected_kernel_coverage": false,
+    "full_library_certified": false
+  },
+  "fixed_audit": {
+    "architecture": "aarch64",
+    "elf_sha256": "8ece707433500ccef2ab628ea4aa88a3eef36a558c1aaa23eb835a38749e83be",
+    "link_command": null,
+    "benchmark_sha256": "f75c302facfc5005d6386765893d8e55aad3a887aae2001e5f241fd5e85f55e7",
+    "provenance_scope": "exact nonrelocation instruction bits; relocation application and data layout trust the linker",
+    "objects": [
+      {
+        "path": ".build/object-proofs/fixed/aarch64_neon_bulk.o",
+        "sha256": "5fa1d906d874b7298ffc201b9fa7f4ba024dd7494f029e7d2d094e5683e8dfef",
+        "functions": {
+          "kl_memcpy_neon_bulk128": {
+            "input_bytes_sha256": "cba1d33b62b4b81f69594ee0c0e79c2a27034d66f0d45ffd8da4658160fcfb5a",
+            "size": 420,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2164160,
+                "bytes_sha256": "cba1d33b62b4b81f69594ee0c0e79c2a27034d66f0d45ffd8da4658160fcfb5a"
+              },
+              "benchmark": {
+                "address": 22784,
+                "bytes_sha256": "cba1d33b62b4b81f69594ee0c0e79c2a27034d66f0d45ffd8da4658160fcfb5a"
+              }
+            }
+          },
+          "kl_memmove_neon_bulk64": {
+            "input_bytes_sha256": "cfa8553fb2febbc9cc1939ef09bac6e8b865cba65b13e6f8734a32ff918eb977",
+            "size": 688,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2164608,
+                "bytes_sha256": "cfa8553fb2febbc9cc1939ef09bac6e8b865cba65b13e6f8734a32ff918eb977"
+              },
+              "benchmark": {
+                "address": 23232,
+                "bytes_sha256": "cfa8553fb2febbc9cc1939ef09bac6e8b865cba65b13e6f8734a32ff918eb977"
+              }
+            }
+          },
+          "kl_memset_neon_bulk128": {
+            "input_bytes_sha256": "1f9860ad9d304bf7b3b912c5b33498f72345b2fe5cc45b72e684e46d662a4ab2",
+            "size": 272,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2165312,
+                "bytes_sha256": "1f9860ad9d304bf7b3b912c5b33498f72345b2fe5cc45b72e684e46d662a4ab2"
+              },
+              "benchmark": {
+                "address": 24256,
+                "bytes_sha256": "1f9860ad9d304bf7b3b912c5b33498f72345b2fe5cc45b72e684e46d662a4ab2"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_neon_extra.o",
+        "sha256": "203e27cc53d0aaf304b30c045c1bba9dd698856f311cfd663e8f85f751c83c84",
+        "functions": {
+          "kl_memcmp_neon_words": {
+            "input_bytes_sha256": "a0b9492cc60e99472feafcc109f953f90bb4e462e38b55e65fd5ee00268e4ee5",
+            "size": 416,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2165632,
+                "bytes_sha256": "a0b9492cc60e99472feafcc109f953f90bb4e462e38b55e65fd5ee00268e4ee5"
+              },
+              "benchmark": {
+                "address": 24576,
+                "bytes_sha256": "a0b9492cc60e99472feafcc109f953f90bb4e462e38b55e65fd5ee00268e4ee5"
+              }
+            }
+          },
+          "kl_strspn_neon_adaptive": {
+            "input_bytes_sha256": "767f5a59764c9d68676ce884358be653ea72b2bcbc5ea9f80d2abf75b8c03467",
+            "size": 256,
+            "relocations": [
+              {
+                "offset": 44,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_strspn_neon_table",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166080,
+                "bytes_sha256": "399fd9422a8c030cb227a3c731b187504415fbc9b837522a33aaf72d9381dee1"
+              },
+              "benchmark": {
+                "address": 27456,
+                "bytes_sha256": "294347afadd27515b64f1d47717b5ba8abb90f40fddbf86deb4de30a0fcb2214"
+              }
+            }
+          },
+          "kl_strcspn_neon_adaptive": {
+            "input_bytes_sha256": "8e56bd49a4bec81da8c129add48420b6abcf15dbdcceb9415612b4c9153ebb59",
+            "size": 228,
+            "relocations": [
+              {
+                "offset": 44,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_strcspn_neon_table",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166336,
+                "bytes_sha256": "0b658099523020428cf2c10d154943f0438dafaa3e2eafabb12e0a67360d8039"
+              },
+              "benchmark": {
+                "address": 27712,
+                "bytes_sha256": "b679027ce5ec39e18246246797edb177bdd90de3ac332bd429839ac231ae372e"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_neon_length.o",
+        "sha256": "e6994319b88c083b42e002627403e8c1ff01c0c8b03181c65d3e6c27fdf1d669",
+        "functions": {
+          "tail128": {
+            "input_bytes_sha256": "b0be62a0a3a22ed1754f139c35724693ea5502b97b2d861c7671ea8596a0a488",
+            "size": 184,
+            "relocations": [
+              {
+                "offset": 8,
+                "type": "R_AARCH64_ADR_PREL_PG_HI21",
+                "symbol": "",
+                "addend": 48
+              },
+              {
+                "offset": 12,
+                "type": "R_AARCH64_LDST128_ABS_LO12_NC",
+                "symbol": "",
+                "addend": 48
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166784,
+                "bytes_sha256": "85c0ba7fe46388309c1baa9893d4d97e5b04caf4e648f10998a85af51698b89d"
+              },
+              "benchmark": {
+                "address": 29120,
+                "bytes_sha256": "b659125e4877b59a909ec48b7338cc72eb28c277416dfd1b9075ced7ff8fc0df"
+              }
+            }
+          },
+          "kl_strlen_neon_prefix32_tail128": {
+            "input_bytes_sha256": "3b0e8b89e0e919af2fa3c1180b5c32f8ef377a197b69717dd5e0358441d553e8",
+            "size": 160,
+            "relocations": [
+              {
+                "offset": 28,
+                "type": "R_AARCH64_ADR_PREL_PG_HI21",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 32,
+                "type": "R_AARCH64_LDST128_ABS_LO12_NC",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 96,
+                "type": "R_AARCH64_ADR_PREL_PG_HI21",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 100,
+                "type": "R_AARCH64_LDST128_ABS_LO12_NC",
+                "symbol": "",
+                "addend": 32
+              },
+              {
+                "offset": 156,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2166592,
+                "bytes_sha256": "3f7578870558cd209165d8e6d5f814533c08a5c4c0c133bb22c549e69cfed6ae"
+              },
+              "benchmark": {
+                "address": 28928,
+                "bytes_sha256": "dfa297a32108ea2111df86da77b30722c645c496e382d897e42f236817fdf47c"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_neon_membership.o",
+        "sha256": "a65958a6d66e77c650e99ac5f66c5276e35383b97b4ea9f26a43d58f61d1953a",
+        "functions": {
+          "kl_strspn_neon_table": {
+            "input_bytes_sha256": "1c95ce521b8ac6cac59819501eb3770fca119587a16e54c7a5c39cb0a5a72a17",
+            "size": 260,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2166976,
+                "bytes_sha256": "1c95ce521b8ac6cac59819501eb3770fca119587a16e54c7a5c39cb0a5a72a17"
+              },
+              "benchmark": {
+                "address": 29312,
+                "bytes_sha256": "1c95ce521b8ac6cac59819501eb3770fca119587a16e54c7a5c39cb0a5a72a17"
+              }
+            }
+          },
+          "kl_strcspn_neon_table": {
+            "input_bytes_sha256": "2fa2eb2a250e292688ac31bd23313b1fdbe11f62e36e92be1eedf7ef204e23f3",
+            "size": 268,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2167296,
+                "bytes_sha256": "2fa2eb2a250e292688ac31bd23313b1fdbe11f62e36e92be1eedf7ef204e23f3"
+              },
+              "benchmark": {
+                "address": 29632,
+                "bytes_sha256": "2fa2eb2a250e292688ac31bd23313b1fdbe11f62e36e92be1eedf7ef204e23f3"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_neon_memory.o",
+        "sha256": "dbc3c21f3f496433477f6c15928cc1bc68f72ef56ddfe938c3839cbf0c334905",
+        "functions": {}
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_neon_strings.o",
+        "sha256": "5418d9565c2c23e01662cf700ded85b4bd4f73a0329b8ddb5de84fc34cd824a3",
+        "functions": {
+          "compare_tail": {
+            "input_bytes_sha256": "74b8e93b1968aa4328e72e3b584d3c2123cb96fd452479c9886758f3c4405a31",
+            "size": 416,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2167872,
+                "bytes_sha256": "74b8e93b1968aa4328e72e3b584d3c2123cb96fd452479c9886758f3c4405a31"
+              },
+              "benchmark": {
+                "address": 36288,
+                "bytes_sha256": "74b8e93b1968aa4328e72e3b584d3c2123cb96fd452479c9886758f3c4405a31"
+              }
+            }
+          },
+          "kl_strcmp_neon_first16_tail64": {
+            "input_bytes_sha256": "1264ade49a05c2cc6691ae1a46d419ef0c7562ec9270406930996b18f6572664",
+            "size": 244,
+            "relocations": [
+              {
+                "offset": 240,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2167616,
+                "bytes_sha256": "78bc7fd815b252e6f9388ef7c37886efcfb46a9044632f1c534e9302f3aa3227"
+              },
+              "benchmark": {
+                "address": 36032,
+                "bytes_sha256": "78bc7fd815b252e6f9388ef7c37886efcfb46a9044632f1c534e9302f3aa3227"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_sve_bulk.o",
+        "sha256": "cbe8c4676b0ac027659c0b0b64fa51141cd8044b67ee6c3c31169bcbbb353356",
+        "functions": {
+          "kl_memcpy_sve_bulk128": {
+            "input_bytes_sha256": "d4aaf44ca85349d0bcc8e213052fc33954dd3cc02e9b0e2defd4fbf25d65f37a",
+            "size": 96,
+            "relocations": [
+              {
+                "offset": 24,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_memcpy_neon_bulk128",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168320,
+                "bytes_sha256": "10ba942e33cc02df4e996d1d92c5574cf8776239cc316405dc3d92d5158d60aa"
+              },
+              "benchmark": {
+                "address": 37440,
+                "bytes_sha256": "a3585863981c9d6c20bff6b45ac75c53ae4a86a6a7d079f4a39e5f7a6633d58f"
+              }
+            }
+          },
+          "kl_memmove_sve_bulk64": {
+            "input_bytes_sha256": "d4aaf44ca85349d0bcc8e213052fc33954dd3cc02e9b0e2defd4fbf25d65f37a",
+            "size": 96,
+            "relocations": [
+              {
+                "offset": 24,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_memmove_neon_bulk64",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168448,
+                "bytes_sha256": "ed8ff356b422b56f5077378c2f45c694231ccaf627eefaa88916b8c0aa0a8663"
+              },
+              "benchmark": {
+                "address": 37760,
+                "bytes_sha256": "28a56c364a9999d03a56dd7d92ab9b66e548ae6f6213c907a1fd7b5ec10179f3"
+              }
+            }
+          },
+          "kl_memset_sve_bulk128": {
+            "input_bytes_sha256": "494517458b02fe556a2666195f4c5336827d1fe36acde9eaf9922c6ad2c0498f",
+            "size": 84,
+            "relocations": [
+              {
+                "offset": 24,
+                "type": "R_AARCH64_JUMP26",
+                "symbol": "kl_memset_neon_bulk128",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168576,
+                "bytes_sha256": "061b4c156586d30250ffe445ca68660113546299e34902c87f6f91ad0f13d320"
+              },
+              "benchmark": {
+                "address": 38208,
+                "bytes_sha256": "08593f83a986a9a0cbff239a720b0dbe545f88e20a5955db1dc7e981831e0b7d"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_sve_extra.o",
+        "sha256": "5482cf95c2f7a026de159a3a0bc0a3f59758adcc92bb848e86dc773f50dba670",
+        "functions": {
+          "copy_tail64": {
+            "input_bytes_sha256": "0def018d75ba479c65d10d7a0c54ed44cb9599a3e67f115a3215144ebc97bf0f",
+            "size": 304,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2169216,
+                "bytes_sha256": "0def018d75ba479c65d10d7a0c54ed44cb9599a3e67f115a3215144ebc97bf0f"
+              },
+              "benchmark": {
+                "address": 40192,
+                "bytes_sha256": "0def018d75ba479c65d10d7a0c54ed44cb9599a3e67f115a3215144ebc97bf0f"
+              }
+            }
+          },
+          "kl_memchr_sve_pred1": {
+            "input_bytes_sha256": "9bb1f2eeb9a9140470fd3be8b4de9918bae7aea3839e35eb1267b61e39accbdd",
+            "size": 112,
+            "relocations": [],
+            "linked": {
+              "proof": {
+                "address": 2168704,
+                "bytes_sha256": "9bb1f2eeb9a9140470fd3be8b4de9918bae7aea3839e35eb1267b61e39accbdd"
+              },
+              "benchmark": {
+                "address": 38912,
+                "bytes_sha256": "9bb1f2eeb9a9140470fd3be8b4de9918bae7aea3839e35eb1267b61e39accbdd"
+              }
+            }
+          },
+          "kl_strcpy_sve_split64": {
+            "input_bytes_sha256": "bd4b29c2b3dbbd4942e2fab88dc98d5cce94171c4188114a03dc38e340ff1f14",
+            "size": 152,
+            "relocations": [
+              {
+                "offset": 132,
+                "type": "R_AARCH64_CALL26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2168832,
+                "bytes_sha256": "7b5100a755fb5a5ed4ac8796bbd1a074dcde749c87cfafca99eb3564f2ebc347"
+              },
+              "benchmark": {
+                "address": 39808,
+                "bytes_sha256": "7b5100a755fb5a5ed4ac8796bbd1a074dcde749c87cfafca99eb3564f2ebc347"
+              }
+            }
+          },
+          "kl_strcat_sve_split64": {
+            "input_bytes_sha256": "67b93374bb88faacaeaadb9b6d79d8bbb14859dcdf6814d2f44e4cebf6bff55e",
+            "size": 160,
+            "relocations": [
+              {
+                "offset": 20,
+                "type": "R_AARCH64_CALL26",
+                "symbol": "kl_strlen_neon_prefix32_tail128",
+                "addend": 0
+              },
+              {
+                "offset": 140,
+                "type": "R_AARCH64_CALL26",
+                "symbol": "",
+                "addend": 0
+              }
+            ],
+            "linked": {
+              "proof": {
+                "address": 2169024,
+                "bytes_sha256": "340e6723e0ceacc9c5ad04e411cd0789cf7dceb697750bb236833465fd68c0c5"
+              },
+              "benchmark": {
+                "address": 40000,
+                "bytes_sha256": "c3b83ce43850645237d9a9018a1f7f5de419ff5585b5b604f1cbd10fb51cd9c8"
+              }
+            }
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/aarch64_sve_predicate.o",
+        "sha256": "6bd0306274875eafc4163c1c22678a1553a7de5e1a650b22d8eacc10df28c9eb",
+        "functions": {}
+      }
+    ],
+    "sve_vl_bytes": 16,
+    "decoder": "capstone 5.0.6",
+    "solver": "Z3 version 4.15.4 - 64 bit",
+    "model_sha256": {
+      "aarch64_machine.py": "12b922ab7b39213bd67e0370a1668b0218a0199fd7980c6118e5546a14514afa",
+      "aarch64_vectors.py": "1872b6364bcbfff95d99572a301597bdb1dfaf559f9331bdd6a347a7c1162375",
+      "machine.py": "9315f960c77094789f10b9b3755a168863e8414787913b0bae687d76099d9777",
+      "prove.py": "84fd59f64a6eae937bf1a07d70be898905cba2546e2b1e7cfe9990d22d5abc60",
+      "smt.py": "4cab6c1277099fdb91986fd50cf1b41ad15c890b1b9475529c1ec5ee5d31ba5b"
+    },
+    "assumptions": "untagged lower-47-bit addresses,4096-byte pages,standard AAPCS64,explicit VL16; model validation separate",
+    "proof_mode": "unbounded_induction",
+    "max": null,
+    "functions": {
+      "kl_memcpy_sve_bulk128": {
+        "spec": "memcpy",
+        "status": "proved_in_model",
+        "exit_code": 0,
+        "results": [
+          {
+            "func": "kl_memcpy_sve_bulk128",
+            "spec": "memcpy",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 7,
+            "obligations": 48,
+            "queries": 183,
+            "seconds": 23.9,
+            "detail": ""
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memcpy_sve_bulk128",
+          "--spec",
+          "memcpy",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_memmove_sve_bulk64": {
+        "spec": "memmove",
+        "status": "proved_in_model",
+        "exit_code": 0,
+        "results": [
+          {
+            "func": "kl_memmove_sve_bulk64",
+            "spec": "memmove",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 44,
+            "obligations": 234,
+            "queries": 853,
+            "seconds": 152.7,
+            "detail": ""
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memmove_sve_bulk64",
+          "--spec",
+          "memmove",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_memset_sve_bulk128": {
+        "spec": "memset",
+        "status": "proved_in_model",
+        "exit_code": 0,
+        "results": [
+          {
+            "func": "kl_memset_sve_bulk128",
+            "spec": "memset",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 7,
+            "obligations": 45,
+            "queries": 117,
+            "seconds": 8.4,
+            "detail": ""
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memset_sve_bulk128",
+          "--spec",
+          "memset",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_memcmp_neon_words": {
+        "spec": "memcmp",
+        "status": "proved_in_model",
+        "exit_code": 0,
+        "results": [
+          {
+            "func": "kl_memcmp_neon_words",
+            "spec": "memcmp",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 13,
+            "obligations": 77,
+            "queries": 250,
+            "seconds": 93.0,
+            "detail": ""
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memcmp_neon_words",
+          "--spec",
+          "memcmp",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_strlen_neon_prefix32_tail128": {
+        "spec": "strlen",
+        "status": "counterexample_or_failed_invariant",
+        "exit_code": 1,
+        "results": [
+          {
+            "func": "kl_strlen_neon_prefix32_tail128",
+            "spec": "strlen",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "fail",
+            "paths": 3,
+            "obligations": 7,
+            "queries": 52,
+            "seconds": 4.1,
+            "detail": "no match before the loop; branches at 0x210f98 0x210fd0 0x211020 0x211068; ((s_hi #x0000600004cb7fe2) (z #x00000ffefffe800f))"
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_strlen_neon_prefix32_tail128",
+          "--spec",
+          "strlen",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_strcpy_sve_split64": {
+        "spec": "strcpy",
+        "status": "timeout",
+        "exit_code": null,
+        "results": [],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_strcpy_sve_split64",
+          "--spec",
+          "strcpy",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_strcat_sve_split64": {
+        "spec": "strcat",
+        "status": "timeout",
+        "exit_code": null,
+        "results": [],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_strcat_sve_split64",
+          "--spec",
+          "strcat",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_strcmp_neon_first16_tail64": {
+        "spec": "strcmp",
+        "status": "proved_in_model",
+        "exit_code": 0,
+        "results": [
+          {
+            "func": "kl_strcmp_neon_first16_tail64",
+            "spec": "strcmp",
+            "max": "induct",
+            "classes": 1,
+            "align": 0,
+            "result": "proved",
+            "paths": 191,
+            "obligations": 1155,
+            "queries": 2305,
+            "seconds": 181.6,
+            "detail": ""
+          }
+        ],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_strcmp_neon_first16_tail64",
+          "--spec",
+          "strcmp",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_strspn_neon_adaptive": {
+        "spec": "strspn",
+        "status": "unsupported",
+        "exit_code": 1,
+        "results": [],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_strspn_neon_adaptive",
+          "--spec",
+          "strspn",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_strcspn_neon_adaptive": {
+        "spec": "strcspn",
+        "status": "unsupported",
+        "exit_code": 1,
+        "results": [],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_strcspn_neon_adaptive",
+          "--spec",
+          "strcspn",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      },
+      "kl_memchr_sve_pred1": {
+        "spec": "memchr",
+        "status": "unproved",
+        "exit_code": 1,
+        "results": [],
+        "command": [
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+          "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/dev/proof/prove.py",
+          "--arch",
+          "aarch64",
+          "--elf",
+          ".build/object-proofs/fixed/kernels.elf",
+          "--sve-vl",
+          "16",
+          "--func",
+          "kl_memchr_sve_pred1",
+          "--spec",
+          "memchr",
+          "--classes",
+          "1",
+          "--workers",
+          "2",
+          "--verbose",
+          "--induct"
+        ]
+      }
+    },
+    "complete_selected_kernel_coverage": false,
+    "full_library_certified": false
+  },
+  "fixed_build": {
+    "architecture": "aarch64-linux-gnu",
+    "reference": {
+      "repository": "https://github.com/ARM-software/optimized-routines",
+      "commit": "20859d3fd9e797dde592c489c8ef7d383f778620",
+      "sha256": {
+        "string/aarch64/memcpy.S": "b79242d0829ac31b502b5c15d3843a5c0bdceb8016a383765cb5bdc04584dd36",
+        "string/aarch64/memcpy-advsimd.S": "5e39aaddfc7e3e4f2e4f26169597ff0c86ce0d91e1830ca99b93778f4c974b3c",
+        "string/aarch64/memset.S": "b1f98d9fe76987757ac4640e2df52c158f9a64041caa7136fec48f2c2d47cd30",
+        "string/aarch64/memset-scalar.S": "0293a6efa218bb7ab8779523ad653bb8087418b54d29e96e7aa68bcda1c7e3e9",
+        "string/aarch64/memcmp.S": "31e726a8f9002353e4b42b5f0bb2b9ce0a10d65bc0e4af3cd996ba55db279059",
+        "string/aarch64/strlen.S": "49ada8b95569d0501539de234d33a879dd79eb1beb87156714488f998b30bff6",
+        "string/aarch64/strlen-mte.S": "acfc367827cf030f5d93587a73daff5428e6fe68ca202f191810d1bba11b4f51",
+        "string/aarch64/memchr.S": "c73139a81e16172db0ac807162ecfeff3e7c711babcbeb5e7ff9bbdb0435f3c3",
+        "string/aarch64/memchr-scalar.S": "2ce06767b787c8d343d28173d3466afa623d66dcb7a7506884302560d4855192",
+        "string/aarch64/memchr-mte.S": "a455b5bb352c8b21ff790773f535b1c5ab59087cf7417f77e314d02f65f25f98",
+        "string/aarch64/strcmp.S": "11acc3dc966fd98411d46b07abeaea8c53b37c1d6eae2c4792265d9dd574431b",
+        "string/aarch64/strcpy.S": "b6e4de34dc77cb2af14d36a9e15298a46c1405408e1a4e6c2551fef472e38505",
+        "string/aarch64/asmdefs.h": "1a4c0fe4a0a20fe1f2de1b9ad4e5b1463594175e436f9e183db39eb02c9dd62a"
+      }
+    },
+    "libstr_sha256": "b7534a52b6c8a28cd11f6cccf89e2350bf550f98b1dc9068dbc998862f6adb63",
+    "experiments": [
+      {
+        "source": "dev/lab/kernels/aarch64_neon_bulk.c",
+        "sha256": "310cbe08ecd77938a80c7a9e3ba394aaa7d8f8867eb2b2e762a29dcb7175cec9",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_neon_extra.c",
+        "sha256": "44d88a114fb44bb27eee110f5ebdd1a83373185fb8daff4b769d50947b2e5a60",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_neon_length.c",
+        "sha256": "a13db34bc964355a4a8d6aa607d33534e4de700143c2c50ee1cabe9f7128bb6d",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_neon_membership.c",
+        "sha256": "81532a9a3b4b4f9050847b72c0b3bf10f663862269b77f346fa8e2b907ac2bdc",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_neon_memory.c",
+        "sha256": "7875d702ef705f30cf6afa61e9ff514367ec9aa796997b473b49d8f6e41b2226",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_neon_strings.c",
+        "sha256": "f170fa9f9701f2cd26c1b5a3f7cf1b4429a92538619741c35ad542e4c80586ee",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_sve_bulk.c",
+        "sha256": "708f4e8fcdf3f37bb52837e0cfd817683951f881ad82bea93f1de4b673f82bd0",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer",
+          "-march=armv8-a+sve"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_sve_extra.c",
+        "sha256": "0e2265252ccd1e2d553e268aede3ba0ae2947edbf7f15a5c63d2ecd642871c73",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer",
+          "-march=armv8-a+sve"
+        ]
+      },
+      {
+        "source": "dev/lab/kernels/aarch64_sve_predicate.c",
+        "sha256": "920a68e2e66a2d0c4b1185011d12d9005f0f366be015237141101a99029608b8",
+        "flags": [
+          "-fno-omit-frame-pointer",
+          "-mno-omit-leaf-frame-pointer",
+          "-march=armv8-a+sve"
+        ]
+      }
+    ],
+    "experiment_headers": {
+      "dev/lab/kernels/aarch64_helpers.h": "9b3ed1347a7c56a74776d9ebf318eb7b6381a8ca414dad54639ed9c6ed4e6a64"
+    },
+    "entry_phase": 0,
+    "omit_experiment_frames": false,
+    "binary_sha256": "f75c302facfc5005d6386765893d8e55aad3a887aae2001e5f241fd5e85f55e7",
+    "reference_primitives": [
+      "memchr",
+      "memcmp",
+      "memcpy",
+      "memmove",
+      "memset",
+      "strcmp",
+      "strcpy",
+      "strlen"
+    ],
+    "definitions": 101,
+    "slots": 40,
+    "compiler": "Ubuntu clang version 21.1.8 (++20251221032842+2078da43e25a-1~exp1~20251221153008.77)",
+    "flags": [
+      "--target=aarch64-linux-gnu",
+      "--no-default-config",
+      "-O3",
+      "-fPIC",
+      "-fno-builtin",
+      "-ffunction-sections",
+      "-falign-functions=64",
+      "-march=armv8-a+simd"
+    ],
+    "ldflags": []
+  },
+  "fixed_native_validation": {
+    "kernels": 143,
+    "valid": 143,
+    "invalid": 0,
+    "new_case": "early memchr match with count beyond readable array,1..128 suffix bytes,including SIZE_MAX"
+  },
+  "native_reproduction": {
+    "original": "glibc: exit=0 signal=0\nmeasured_candidate: exit=-1 signal=11\n",
+    "fixed": "glibc: exit=0 signal=0\nmeasured_candidate: exit=0 signal=0\n"
+  },
+  "native_replay": {
+    "kl_memcpy_sve_bulk128": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_memcpy_sve_bulk128",
+        "--spec",
+        "memcpy",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_memmove_sve_bulk64": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_memmove_sve_bulk64",
+        "--spec",
+        "memmove",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_memset_sve_bulk128": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_memset_sve_bulk128",
+        "--spec",
+        "memset",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_memcmp_neon_words": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_memcmp_neon_words",
+        "--spec",
+        "memcmp",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_strlen_neon_prefix32_tail128": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_strlen_neon_prefix32_tail128",
+        "--spec",
+        "strlen",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_strcpy_sve_split64": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_strcpy_sve_split64",
+        "--spec",
+        "strcpy",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_strcat_sve_split64": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_strcat_sve_split64",
+        "--spec",
+        "strcat",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_strcmp_neon_first16_tail64": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_strcmp_neon_first16_tail64",
+        "--spec",
+        "strcmp",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_strspn_neon_adaptive": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_strspn_neon_adaptive",
+        "--spec",
+        "strspn",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_strcspn_neon_adaptive": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_strcspn_neon_adaptive",
+        "--spec",
+        "strcspn",
+        "--n",
+        "100"
+      ]
+    },
+    "kl_memchr_sve_pred1": {
+      "exit_code": 0,
+      "inputs": 100,
+      "command": [
+        "/Users/qoega/github/clickhouse/tmp/pg83-str/arm/.build/proof-venv/bin/python",
+        "dev/proof/replay.py",
+        "--arch",
+        "aarch64",
+        "--sve-vl",
+        "16",
+        "--elf",
+        ".build/object-proofs/fixed/kernels.elf",
+        "--oracle",
+        "/home/ubuntu/clickhouse/tmp/pg83-str-arm-tuning-2026-11-06/src/.build/object-proofs/fixed/oracle",
+        "--runner",
+        "ssh -T -o BatchMode=yes dev",
+        "--func",
+        "kl_memchr_sve_pred1",
+        "--spec",
+        "memchr",
+        "--n",
+        "100"
+      ]
+    }
+  },
+  "copy_mutation_gates": [
+    {
+      "name": "original",
+      "sha256": "8ece707433500ccef2ab628ea4aa88a3eef36a558c1aaa23eb835a38749e83be",
+      "patch_offset": null,
+      "replacement": null,
+      "passed_gate": true,
+      "status": "proved_in_model",
+      "records": [
+        {
+          "func": "kl_memcpy_sve_bulk128",
+          "spec": "memcpy",
+          "max": "induct",
+          "classes": 1,
+          "align": 0,
+          "result": "proved",
+          "paths": 7,
+          "obligations": 48,
+          "queries": 183,
+          "seconds": 49.9,
+          "detail": ""
+        }
+      ]
+    },
+    {
+      "name": "omit-first-store",
+      "sha256": "9950edf7cd89156939476ebdfe7ec248d0eb1b09e021eb3e28d20e38e2de67a4",
+      "patch_offset": 5704,
+      "replacement": 3573751839,
+      "passed_gate": true,
+      "status": "counterexample_or_failed_invariant",
+      "records": [
+        {
+          "func": "kl_memcpy_sve_bulk128",
+          "spec": "memcpy",
+          "max": 4,
+          "classes": 1,
+          "align": 0,
+          "result": "fail",
+          "paths": 1,
+          "obligations": 2,
+          "queries": 23,
+          "seconds": 0.2,
+          "detail": "every byte of the object written; branches at 0x21161c; ((d_hi #x00007ffdffffffff) (s_hi #x00000000ffffffff) (n #x0000000000000001) (i #x0000000000000000))"
+        }
+      ]
+    },
+    {
+      "name": "read-destination",
+      "sha256": "c6a88a3ec5a1090277cc26eca0f50884b125de259f9dd9944b39fe4fcd9a16d0",
+      "patch_offset": 5684,
+      "replacement": 2751504384,
+      "passed_gate": true,
+      "status": "counterexample_or_failed_invariant",
+      "records": [
+        {
+          "func": "kl_memcpy_sve_bulk128",
+          "spec": "memcpy",
+          "max": 4,
+          "classes": 1,
+          "align": 0,
+          "result": "fail",
+          "paths": 0,
+          "obligations": 0,
+          "queries": 5,
+          "seconds": 0.0,
+          "detail": "the load at 0x211634 reaches past what the object allows; branches at 0x21161c; ((d_hi #x00002011fffffffe) (s_hi #x00002011fffff00c) (n #x0000000000000004) (i #x0000000000000000))"
+        }
+      ]
+    },
+    {
+      "name": "write-source",
+      "sha256": "ee957cf104d98f357858d24998ed6f653aa12ae725751a86093c7a8bbaf7cbf2",
+      "patch_offset": 5704,
+      "replacement": 3825262624,
+      "passed_gate": true,
+      "status": "counterexample_or_failed_invariant",
+      "records": [
+        {
+          "func": "kl_memcpy_sve_bulk128",
+          "spec": "memcpy",
+          "max": 4,
+          "classes": 1,
+          "align": 0,
+          "result": "fail",
+          "paths": 0,
+          "obligations": 0,
+          "queries": 18,
+          "seconds": 0.1,
+          "detail": "the store at 0x211648 lands outside the object; branches at 0x21161c; ((d_hi #x00000fc7fffffffc) (s_hi #x00000ffffffffffc) (n #x0000000000000004) (i #x0000000000000000))"
+        }
+      ]
+    },
+    {
+      "name": "empty-first-predicate",
+      "sha256": "4e7290ffe6f37aec8e499fa42ed624d87d53bb82fcb6e5f4200843ccf637681d",
+      "patch_offset": 5672,
+      "replacement": 622992448,
+      "passed_gate": true,
+      "status": "counterexample_or_failed_invariant",
+      "records": [
+        {
+          "func": "kl_memcpy_sve_bulk128",
+          "spec": "memcpy",
+          "max": 4,
+          "classes": 1,
+          "align": 0,
+          "result": "fail",
+          "paths": 1,
+          "obligations": 2,
+          "queries": 26,
+          "seconds": 0.1,
+          "detail": "every byte of the object written; branches at 0x21161c; ((d_hi #x00007ffdffffffff) (s_hi #x00000000ffffffff) (n #x0000000000000001) (i #x0000000000000000))"
+        }
+      ]
+    }
+  ],
+  "fixed_performance": {
+    "reference": "glibc/dispatch",
+    "definition": "net_min = table min_ns - same-run noop min_ns",
+    "runs": [
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed1_stand0_run1.log",
+        "sha256": "f62afaac5f38086ab07bb82d40db48c0d2b57c5a3460e731ac0b4659d2ba9e2d",
+        "noop": {
+          "gross_min_ns": 7.6977,
+          "gross_median_ns": 7.7267
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 35.7444,
+            "gross_median_ns": 36.8844,
+            "net_min_ns": 28.046699999999998,
+            "net_median_ns": 29.1577,
+            "gross_median_ratio": 1.7464535313168812,
+            "net_min_ratio": 2.1595648022668477,
+            "net_median_ratio": 2.1771012999425072
+          },
+          "ours/neon": {
+            "gross_min_ns": 28.3455,
+            "gross_median_ns": 28.9505,
+            "net_min_ns": 20.6478,
+            "net_median_ns": 21.2238,
+            "gross_median_ratio": 1.3707882725051612,
+            "net_min_ratio": 1.589857706049033,
+            "net_median_ratio": 1.5847053289429478
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 20.6849,
+            "gross_median_ns": 21.1196,
+            "net_min_ns": 12.987199999999998,
+            "net_median_ns": 13.392899999999997,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 16.7277,
+            "gross_median_ns": 16.9913,
+            "net_min_ns": 9.029999999999998,
+            "net_median_ns": 9.264599999999998,
+            "gross_median_ratio": 0.8045275478702248,
+            "net_min_ratio": 0.6952999876801773,
+            "net_median_ratio": 0.6917545863853235
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed1_stand0_run2.log",
+        "sha256": "be6d88e1aeca02fa3789cb8f07bbeb368ff910d2d62b68d958591131b886c1f7",
+        "noop": {
+          "gross_min_ns": 7.7123,
+          "gross_median_ns": 7.7299
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 33.8571,
+            "gross_median_ns": 34.5592,
+            "net_min_ns": 26.144800000000004,
+            "net_median_ns": 26.829299999999996,
+            "gross_median_ratio": 1.7192434357805921,
+            "net_min_ratio": 2.183482407569798,
+            "net_median_ratio": 2.168637594471163
+          },
+          "ours/neon": {
+            "gross_min_ns": 27.145,
+            "gross_median_ns": 27.8223,
+            "net_min_ns": 19.4327,
+            "net_median_ns": 20.092399999999998,
+            "gross_median_ratio": 1.3840976250410417,
+            "net_min_ratio": 1.622921520974787,
+            "net_median_ratio": 1.6240876207412194
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 19.6862,
+            "gross_median_ns": 20.1014,
+            "net_min_ns": 11.9739,
+            "net_median_ns": 12.371500000000001,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 15.9422,
+            "gross_median_ns": 16.301,
+            "net_min_ns": 8.2299,
+            "net_median_ns": 8.571099999999998,
+            "gross_median_ratio": 0.8109385415941177,
+            "net_min_ratio": 0.6873199208278005,
+            "net_median_ratio": 0.6928100877015719
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed1_stand3_run1.log",
+        "sha256": "5a7ceb3237ebf242b2f7012056faee40df89010c44718256a421c0752ab41970",
+        "noop": {
+          "gross_min_ns": 7.6735,
+          "gross_median_ns": 7.6856
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 33.8391,
+            "gross_median_ns": 34.3954,
+            "net_min_ns": 26.1656,
+            "net_median_ns": 26.7098,
+            "gross_median_ratio": 1.7116652649703654,
+            "net_min_ratio": 2.133877018430925,
+            "net_median_ratio": 2.1524365183615255
+          },
+          "ours/neon": {
+            "gross_min_ns": 27.1746,
+            "gross_median_ns": 27.7056,
+            "net_min_ns": 19.5011,
+            "net_median_ns": 20.02,
+            "gross_median_ratio": 1.3787516111213405,
+            "net_min_ratio": 1.590368618496167,
+            "net_median_ratio": 1.6133321514050174
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 19.9355,
+            "gross_median_ns": 20.0947,
+            "net_min_ns": 12.262,
+            "net_median_ns": 12.409099999999999,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 16.1863,
+            "gross_median_ns": 16.2508,
+            "net_min_ns": 8.512799999999999,
+            "net_median_ns": 8.5652,
+            "gross_median_ratio": 0.8087107545770776,
+            "net_min_ratio": 0.6942423748165062,
+            "net_median_ratio": 0.6902353917689439
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed1_stand3_run2.log",
+        "sha256": "2eb21913634d08d30dbc76cf5d869ef47210ddde1ba5c70107b44f4b31eae58a",
+        "noop": {
+          "gross_min_ns": 7.6465,
+          "gross_median_ns": 7.6993
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 34.0567,
+            "gross_median_ns": 35.0297,
+            "net_min_ns": 26.4102,
+            "net_median_ns": 27.330399999999997,
+            "gross_median_ratio": 1.722224407319639,
+            "net_min_ratio": 2.160202195357359,
+            "net_median_ratio": 2.1621296625924606
+          },
+          "ours/neon": {
+            "gross_min_ns": 27.2013,
+            "gross_median_ns": 28.2746,
+            "net_min_ns": 19.5548,
+            "net_median_ns": 20.5753,
+            "gross_median_ratio": 1.3901119971681137,
+            "net_min_ratio": 1.5994699733350783,
+            "net_median_ratio": 1.6277283335311103
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 19.8723,
+            "gross_median_ns": 20.3398,
+            "net_min_ns": 12.2258,
+            "net_median_ns": 12.6405,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 16.1193,
+            "gross_median_ns": 16.532,
+            "net_min_ns": 8.4728,
+            "net_median_ns": 8.832699999999999,
+            "gross_median_ratio": 0.8127906862407693,
+            "net_min_ratio": 0.6930262232328355,
+            "net_median_ratio": 0.6987619160634468
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed2_stand0_run1.log",
+        "sha256": "c4446832c41d7e9da6021e320683a8671153a660b05a599ee38d26db5f361421",
+        "noop": {
+          "gross_min_ns": 7.7161,
+          "gross_median_ns": 7.7272
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 34.2611,
+            "gross_median_ns": 34.9318,
+            "net_min_ns": 26.544999999999998,
+            "net_median_ns": 27.204600000000003,
+            "gross_median_ratio": 1.7310194797793845,
+            "net_min_ratio": 2.1963247035851103,
+            "net_median_ratio": 2.184634657544147
+          },
+          "ours/neon": {
+            "gross_min_ns": 27.1894,
+            "gross_median_ns": 27.8402,
+            "net_min_ns": 19.4733,
+            "net_median_ns": 20.113,
+            "gross_median_ratio": 1.379600493560424,
+            "net_min_ratio": 1.6112145357063072,
+            "net_median_ratio": 1.6151517341620691
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 19.8022,
+            "gross_median_ns": 20.1799,
+            "net_min_ns": 12.086099999999998,
+            "net_median_ns": 12.4527,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 15.9403,
+            "gross_median_ns": 16.2184,
+            "net_min_ns": 8.2242,
+            "net_median_ns": 8.4912,
+            "gross_median_ratio": 0.8036908012428208,
+            "net_min_ratio": 0.6804676446496389,
+            "net_median_ratio": 0.6818762196150232
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed2_stand0_run2.log",
+        "sha256": "d156b93da0b52f984187a714d8704b8366c28864e59466e8a2738ce20f134b48",
+        "noop": {
+          "gross_min_ns": 7.7125,
+          "gross_median_ns": 7.7352
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 33.9512,
+            "gross_median_ns": 34.1681,
+            "net_min_ns": 26.2387,
+            "net_median_ns": 26.432900000000004,
+            "gross_median_ratio": 1.7118715398682334,
+            "net_min_ratio": 2.182992778461846,
+            "net_median_ratio": 2.1623242230638975
+          },
+          "ours/neon": {
+            "gross_min_ns": 26.9543,
+            "gross_median_ns": 27.3427,
+            "net_min_ns": 19.241799999999998,
+            "net_median_ns": 19.6075,
+            "gross_median_ratio": 1.3699090658583633,
+            "net_min_ratio": 1.600868581317182,
+            "net_median_ratio": 1.6039773238549448
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 19.7321,
+            "gross_median_ns": 19.9595,
+            "net_min_ns": 12.019599999999999,
+            "net_median_ns": 12.2243,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 15.9608,
+            "gross_median_ns": 16.0776,
+            "net_min_ns": 8.2483,
+            "net_median_ns": 8.342400000000001,
+            "gross_median_ratio": 0.805511160099201,
+            "net_min_ratio": 0.6862374787846518,
+            "net_median_ratio": 0.6824439845226313
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed2_stand3_run1.log",
+        "sha256": "e6806f1c8860bcf9b1a2e0fe0acc7926c0b817d506676d91c3164fa575a46210",
+        "noop": {
+          "gross_min_ns": 7.6808,
+          "gross_median_ns": 7.6944
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 34.4857,
+            "gross_median_ns": 34.8016,
+            "net_min_ns": 26.804900000000004,
+            "net_median_ns": 27.1072,
+            "gross_median_ratio": 1.722612707149504,
+            "net_min_ratio": 2.2060375122420934,
+            "net_median_ratio": 2.1671196955645806
+          },
+          "ours/neon": {
+            "gross_min_ns": 27.3499,
+            "gross_median_ns": 27.9616,
+            "net_min_ns": 19.6691,
+            "net_median_ns": 20.267200000000003,
+            "gross_median_ratio": 1.3840457758330529,
+            "net_min_ratio": 1.61876270502934,
+            "net_median_ratio": 1.6202871670237602
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 19.8315,
+            "gross_median_ns": 20.2028,
+            "net_min_ns": 12.150699999999999,
+            "net_median_ns": 12.5084,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 16.1415,
+            "gross_median_ns": 16.3811,
+            "net_min_ns": 8.460700000000001,
+            "net_median_ns": 8.6867,
+            "gross_median_ratio": 0.810833151840339,
+            "net_min_ratio": 0.6963137926210015,
+            "net_median_ratio": 0.6944693166192318
+          }
+        }
+      },
+      {
+        "path": ".build/object-proofs/fixed/perf/perf_seed2_stand3_run2.log",
+        "sha256": "1c60ae8ea59899ce299a047406b360bcdb6567cc4efbc3b25d059d217640c55b",
+        "noop": {
+          "gross_min_ns": 7.6642,
+          "gross_median_ns": 7.697
+        },
+        "tables": {
+          "ours/scalar": {
+            "gross_min_ns": 33.9182,
+            "gross_median_ns": 34.5969,
+            "net_min_ns": 26.253999999999998,
+            "net_median_ns": 26.8999,
+            "gross_median_ratio": 1.729282983030515,
+            "net_min_ratio": 2.1631196908651984,
+            "net_median_ratio": 2.1852959096632683
+          },
+          "ours/neon": {
+            "gross_min_ns": 27.1101,
+            "gross_median_ns": 27.6147,
+            "net_min_ns": 19.445899999999998,
+            "net_median_ns": 19.9177,
+            "gross_median_ratio": 1.3802864069177518,
+            "net_min_ratio": 1.6021866838042034,
+            "net_median_ratio": 1.6180754701653195
+          },
+          "glibc/dispatch": {
+            "gross_min_ns": 19.8013,
+            "gross_median_ns": 20.0065,
+            "net_min_ns": 12.1371,
+            "net_median_ns": 12.3095,
+            "gross_median_ratio": 1.0,
+            "net_min_ratio": 1.0,
+            "net_median_ratio": 1.0
+          },
+          "ours/target_split": {
+            "gross_min_ns": 15.9375,
+            "gross_median_ns": 16.0409,
+            "net_min_ns": 8.273299999999999,
+            "net_median_ns": 8.343900000000001,
+            "gross_median_ratio": 0.8017844200634794,
+            "net_min_ratio": 0.6816537723179342,
+            "net_median_ratio": 0.677842316909704
+          }
+        }
+      }
+    ],
+    "summary": {
+      "glibc/dispatch": {
+        "gross_median_ratio": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "below_0_70": 0
+        },
+        "net_min_ratio": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "below_0_70": 0
+        },
+        "net_median_ratio": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "below_0_70": 0
+        },
+        "upstream_best_across_runs_ratio": 1.0
+      },
+      "ours/neon": {
+        "gross_median_ratio": {
+          "median": 1.379943450239088,
+          "min": 1.3699090658583633,
+          "max": 1.3901119971681137,
+          "below_0_70": 0
+        },
+        "net_min_ratio": {
+          "median": 1.6015276325606926,
+          "min": 1.589857706049033,
+          "max": 1.622921520974787,
+          "below_0_70": 0
+        },
+        "net_median_ratio": {
+          "median": 1.6166136021636943,
+          "min": 1.5847053289429478,
+          "max": 1.6277283335311103,
+          "below_0_70": 0
+        },
+        "upstream_best_across_runs_ratio": 1.6069785115960544
+      },
+      "ours/scalar": {
+        "gross_median_ratio": {
+          "median": 1.7224185572345716,
+          "min": 1.7116652649703654,
+          "max": 1.7464535313168812,
+          "below_0_70": 0
+        },
+        "net_min_ratio": {
+          "median": 2.1730562346635223,
+          "min": 2.133877018430925,
+          "max": 2.2060375122420934,
+          "below_0_70": 0
+        },
+        "net_median_ratio": {
+          "median": 2.167878645017872,
+          "min": 2.1524365183615255,
+          "max": 2.1852959096632683,
+          "below_0_70": 0
+        },
+        "upstream_best_across_runs_ratio": 2.183482407569798
+      },
+      "ours/target_split": {
+        "gross_median_ratio": {
+          "median": 0.8071109573381393,
+          "min": 0.8017844200634794,
+          "max": 0.8127906862407693,
+          "below_0_70": 0
+        },
+        "net_min_ratio": {
+          "median": 0.690173072030318,
+          "min": 0.6804676446496389,
+          "max": 0.6963137926210015,
+          "below_0_70": 8
+        },
+        "net_median_ratio": {
+          "median": 0.6909949890771336,
+          "min": 0.677842316909704,
+          "max": 0.6987619160634468,
+          "below_0_70": 8
+        },
+        "upstream_best_across_runs_ratio": 0.6868438854508556
+      }
+    }
+  },
+  "auxiliary_checks": {
+    "x86": "strlen_sse2 proved unbounded",
+    "original_arm": "memcpy_scalar proved unbounded",
+    "object_mutation": "changed nonrelocation instruction rejected"
+  },
+  "proof_driver_sha256": "024df4da1c567fd95b1f034ffca7ad0e8fed4ddd3927a9794b0dd3b79ac9e379",
+  "elf_reader_sha256": "5fcf461bbb91039d170fb262552adfd60def7f1e5b54eb29c0fdebb3c88267fd",
+  "full_library_certified": false
+}

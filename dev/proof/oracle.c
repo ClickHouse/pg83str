@@ -9,6 +9,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#if defined(__aarch64__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#endif
 
 struct oracle_fn {
     const char *name;
@@ -32,7 +37,19 @@ int main(void) {
 
     unsigned char *data = m + 4096;
     static char line[1 << 16];
-    printf("base %llx\n", (unsigned long long)(uintptr_t)data);
+    printf("base %llx", (unsigned long long)(uintptr_t)data);
+#if defined(__aarch64__)
+    if (getauxval(AT_HWCAP) & HWCAP_SVE) {
+        int vl = prctl(PR_SVE_GET_VL);
+
+        if (vl < 0) {
+            return 2;
+        }
+
+        printf(" sve_vl %d", vl & PR_SVE_VL_LEN_MASK);
+    }
+#endif
+    printf("\n");
     fflush(stdout);
 
     while (fgets(line, sizeof line, stdin)) {
