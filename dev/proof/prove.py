@@ -1245,6 +1245,90 @@ class Span(Scan):
     def tbyte(self, j):
         return S.select(self.T, S.add(S.sub(self.t, self.tbase), j))
 
+    def lane_facts(self, prover, st):
+        """A byte b of s the path tests by a computation of b alone (truffle:
+        a nibble table's lane, the high nibble's bit) has a term c(b) of one
+        bit: with c at a free byte x proved, once, to say x is in the set (or
+        is not) whatever x, the fact c(b) = member(b) for each such b. The
+        obligations meet the path's terms through those, not by matching
+        the table against the set for every byte (strspn avx2 past 2048
+        bytes: 466 s locally, unknown under load). For checks: sound, an
+        instance of what was proved for every x."""
+        if type(self).member is not Span.member:  # SpanLong's member is its mask M's
+            return []
+        if not hasattr(self, 'lanes'):
+            self.lanes = {'one': {}, 'cands': {}, 'node': {}, 'lemma': {}, 'f': {}, 'x': var('lane_x', 8)}
+        L = self.lanes
+        found = set()
+        for c in st.pc:
+            got = L['cands'].get(c.id)
+            if got is None:
+                got = L['cands'][c.id] = self.lane_scan(c)
+            found |= got
+        if not found:
+            return []
+        setpc = None  # the path's conditions on the set (a table built under them): when what holds for every path does not
+        out = []
+        for n in found:
+            node, b = L['node'][n], L['node'][L['one'][n]]
+            f = L['f'].get(n)
+            if f is None:
+                f = L['f'][n] = S.subst(node, b, L['x'])
+            sign = L['lemma'].get(f.id)
+            if sign is None:
+                sign = L['lemma'][f.id] = self.lane_lemma(prover, f, [])
+            if sign == 0:
+                if setpc is None:
+                    setpc = [c for c in st.pc if 's_mem' not in S.variables(c)]
+                key = (f.id,) + tuple(c.id for c in setpc)
+                sign = L['lemma'].get(key)
+                if sign is None:
+                    sign = L['lemma'][key] = self.lane_lemma(prover, f, setpc)
+            if sign:
+                out.append(S.eq(self.lane_bool(node), self.member(b) if sign > 0 else S.not_(self.member(b))))
+        return out
+
+    @staticmethod
+    def lane_bool(t):
+        return t if t.w == S.BOOL else S.eq(t, const(1, 1))
+
+    def lane_lemma(self, prover, f, given):
+        """+1 when f(x) says x is in the set for every x, -1 when it says x is
+        not, 0 when neither is proved (soon)."""
+        x, fb = self.lanes['x'], self.lane_bool(f)
+        for sign, m in ((1, self.member(x)), (-1, S.not_(self.member(x)))):
+            if prover.solver.check(*given, S.not_(S.eq(fb, m)), timeout=AUX) == 'unsat':
+                return sign
+        return 0
+
+    def lane_scan(self, root):
+        """The largest terms under root that read one byte of s and no other,
+        those of one bit: their ids (the byte's in lanes['one'])."""
+        L = self.lanes
+        one, node, out, seen, stack = L['one'], L['node'], set(), set(), [root]
+        while stack:
+            t = stack[-1]
+            if t.id in one:
+                stack.pop()
+                if t.id not in seen:
+                    seen.add(t.id)
+                    if one[t.id] == -1:  # more than one byte: the largest ones of one are below
+                        stack.extend(y for y in t.args if isinstance(y, S.T) and y.id not in seen)
+                    elif one[t.id] is not None and one[t.id] != t.id and t.w in (S.BOOL, 1) and not S.is_const(t):
+                        out.add(t.id)
+                continue
+            kids = [y for y in t.args if isinstance(y, S.T) and y.id not in one]
+            if kids:
+                stack.extend(kids)
+                continue
+            if t.op == 'select' and t.args[0] is self.S:
+                b = t.id
+            else:
+                bs = {one[y.id] for y in t.args if isinstance(y, S.T)} - {None}
+                b = -1 if -1 in bs or len(bs) > 1 else next(iter(bs)) if bs else None
+            one[t.id], node[t.id] = b, t
+        return frozenset(out)
+
     def member(self, b):
         """b one of the set's bytes before its NUL: written as the machine's
         pcmpistri writes it (a set byte valid when no NUL is at or before
@@ -1667,9 +1751,13 @@ class Prover:
         """A check that does not steer the walk (a return's obligations, an
         access's bounds, a loop's base and step cases): with checking
         threads, on a copy of the state in one of them, the walk going on."""
+        facts = self.spec.lane_facts(self, st) if hasattr(self.spec, 'lane_facts') else []
+        if facts:
+            st = st.copy()
+            st.pc = st.pc + facts
         if self.pool is None:
             return check(st, *args, **kw)
-        self.pool.submit(check, st.copy(), args, kw)
+        self.pool.submit(check, st if facts else st.copy(), args, kw)
 
     def plain(self, st):
         """The assumptions and the path's conditions that read no memory."""

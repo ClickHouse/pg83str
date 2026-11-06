@@ -58,6 +58,21 @@ is a bit of M, 256 bits defined by one axiom; past the loop (the first load
 of s) the invariant, its count L, is the table holding M, written out as 256
 facts without a quantifier: the scan's queries go to bitwuzla.
 
+strspn's and strcspn's sets of up to 32 bytes: a byte in the set when it
+equals one of them, written as pcmpistri computes it, so that those paths'
+terms and the spec's are the same. Past 2048 bytes the avx2 and evex code
+tests bytes through truffle tables (a nibble's lane, the high nibble's
+bit), terms the spec's are not: every byte matched again, 466 s an
+obligation, unknown under load. A one-bit term of the path that reads one
+byte b of s and no other, c(b), is taken at a free byte x and proved, once,
+to say x in the set (or not) for every x; each such c(b) = member(b) then
+goes with the path's checks, instances of that lemma. strspn avx2's first
+178 obligations: 3591 s to 581 s, none over 46 s. A mutant whose truffle
+table is wrong (one byte of its xor constant 0) is refuted in the loop's
+step: the lemma does not hold for it, so no fact is added. The term layer
+also keeps psrlw's bytes their own: (w >> 4) & 15 of a word's low byte no
+longer reads its high byte.
+
 The prover's Python is under 1% of a proof's time, the solvers the rest,
 and about 80% of it goes to checks that do not steer the walk: a return's
 obligations, an access's bounds, a loop's base and step cases. With

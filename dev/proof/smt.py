@@ -313,6 +313,8 @@ def band(a, b):
             if b.val == mask(j) and j <= k:
                 return const(a.w, c & b.val)  # (B + c) & (2^j - 1): c's low bits
         j = b.val.bit_length()
+        if b.val == mask(j) and a.op == 'concat':  # the parts above the mask's bits go
+            return concat(const(a.w - j, 0), extract(a, j - 1, 0))
         if b.val == mask(j):
             lb = low_bits(a, j)
             if lb is not None:
@@ -394,12 +396,27 @@ def extract(a, hi, lo):
         return const(hi - lo + 1, a.val >> lo)
     if a.op == 'extract':
         return extract(a.args[0], hi + a.args[2], lo + a.args[2])
-    if a.op == 'concat':
-        pos = a.w
-        for p in a.args:  # most significant first
+    if a.op == 'concat':  # the pieces of the parts it spans, most significant first
+        pos, pieces = a.w, []
+        for p in a.args:
             pos -= p.w
-            if lo >= pos and hi < pos + p.w:
-                return extract(p, hi - pos, lo - pos)
+            plo, phi = max(lo, pos), min(hi, pos + p.w - 1)
+            if plo <= phi:
+                pieces.append(extract(p, phi - pos, plo - pos))
+        return concat(*pieces)
+    if a.op in ('lshr', 'shl') and is_const(a.args[1]):  # a shift by a constant: the bits it moves there (psrlw's
+        x, c = a.args[0], a.args[1].val                  # bytes then each of their own byte, not of the word)
+        if a.op == 'lshr':
+            if lo + c >= a.w:
+                return const(hi - lo + 1, 0)
+            if hi + c < a.w:
+                return extract(x, hi + c, lo + c)
+            return zext(extract(x, a.w - 1, lo + c), hi - lo + 1)
+        if hi < c:
+            return const(hi - lo + 1, 0)
+        if lo >= c:
+            return extract(x, hi - c, lo - c)
+        return concat(extract(x, hi - c, 0), const(c - lo, 0))
     if a.op == 'zext':
         x = a.args[0]
         if hi < x.w:
@@ -707,6 +724,24 @@ def fill(m, lo, hi, v):
     """m with every index in [lo, hi) holding v (rep stosb)."""
     assert m.w == MEM and lo.w == hi.w == 64 and v.w == 8
     return _mk('fill', MEM, (m, lo, hi, v))
+
+
+def subst(t, old, new):
+    """t with the term old in it replaced by new, node for node (the same
+    shape: no folding, so two lanes the same code computed come out the
+    same term)."""
+    memo = {}
+
+    def go(x):
+        if x is old:
+            return new
+        r = memo.get(x.id)
+        if r is None:
+            args = tuple(go(y) if isinstance(y, T) else y for y in x.args)
+            r = x if all(a is b for a, b in zip(args, x.args)) else _mk(x.op, x.w, args, x.val)
+            memo[x.id] = r
+        return r
+    return go(t)
 
 
 _vars = {}
