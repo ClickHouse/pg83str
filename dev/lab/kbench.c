@@ -79,7 +79,7 @@ static int pin(int cpu) {
 static unsigned detect(void) {
     unsigned long hwcap = getauxval(AT_HWCAP);
     snprintf(brand, sizeof brand, "AArch64 HWCAP=%#lx", hwcap);
-    return hwcap & HWCAP_ASIMD ? F_NEON : 0;
+    return (hwcap & HWCAP_ASIMD ? F_NEON : 0) | (hwcap & HWCAP_SVE ? F_SVE : 0);
 }
 #else
 
@@ -991,7 +991,7 @@ static int validate_kernel(Kernel *k) {
     return 1;
 }
 
-static void validate_all(int jobs) {
+static int validate_all(int jobs) {
     make_vsizes();
     int running = 0, next = 0;
     pid_t *pids = calloc(NK, sizeof *pids);
@@ -1080,6 +1080,7 @@ static void validate_all(int jobs) {
     fprintf(stderr, "validation: %d valid, %d invalid, %d not for this host\n", ok, bad, skip);
     free(pids);
     free(pipes);
+    return bad;
 }
 
 /* ------------------------------------------------------------------ timing */
@@ -1487,7 +1488,7 @@ static void setup(Cell *c, const Align *al) {
 }
 
 static int want_prim[P_N];
-static int want_mixed, want_libs, no_trace, want_hybrid;
+static int want_mixed, want_libs, no_trace, want_hybrid, strict_validation;
 static const char *kfilter, *kexclude;
 
 static int kernel_wanted(const Kernel *k) {
@@ -1856,6 +1857,19 @@ static void build_tables(void) {
 
             for (unsigned j = 0; !done && slot < P_N && j < kl_ndefs; j++) {
                 if (kl_defs[j].prim == slot && !strcmp(kl_defs[j].name, e + 1)) {
+                    int validated = 0;
+
+                    for (int k = 0; k < NK; ++k) {
+                        if (K[k].prim == slot && K[k].fn == kl_defs[j].fn && K[k].status == 1) {
+                            validated = 1;
+                        }
+                    }
+
+                    if (!validated || (kl_defs[j].needs & ~host)) {
+                        fprintf(stderr, "kbench: requested table kernel is unvalidated or unsupported: %s\n", e + 1);
+                        exit(2);
+                    }
+
                     ((void **)&x->t)[slot] = kl_defs[j].fn;
                     done = 1;
                 }
@@ -1986,6 +2000,10 @@ static void tables_trace(const char *name, const Rec *recs, uint64_t count, u8x 
     for (int i = 0; i < ntables; i++) {
         if (tables[i].on && ref >= 0 && strcmp(tables[i].name, "noop") && tables[i].sum != tables[ref].sum) {
             fprintf(stderr, "TABLES %s: %s checksum %" PRIu64 " != glibc %" PRIu64 "\n", name, tables[i].name, tables[i].sum, tables[ref].sum);
+
+            if (strict_validation) {
+                exit(2);
+            }
         }
     }
 
@@ -2150,6 +2168,10 @@ static void traces(const char *path, int passes) {
         for (int i = 0; i < nk; i++) {
             if (have_want && ks[i]->sum != want) {
                 fprintf(stderr, "TRACE %s: %s checksum %" PRIu64 " != glibc %" PRIu64 "\n", name, ks[i]->name, ks[i]->sum, want);
+
+                if (strict_validation) {
+                    exit(2);
+                }
             }
         }
 
@@ -2323,7 +2345,7 @@ static void meta(const char *path) {
 static void usage(void) {
     fprintf(stderr, "kbench [--cpu N] [--samples S] [--target-us T] [--prims list] [--kernels substrings] [--exclude substrings]\n"
                     "       [--sizes quick|full|list] [--aligns2 list] [--aligns1 list] [--regimes thr,lat] [--trace FILE] [--passes P]\n"
-                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--no-matrix] [--no-trace] [--mixed|--libs [--table NAME=CONFIG:SLOT=FN,...]]\n"
+                    "       [--jobs J] [--meta FILE] [--list] [--validate-only] [--strict-validation] [--no-matrix] [--no-trace] [--mixed|--libs [--table NAME=CONFIG:SLOT=FN,...]]\n"
                     "       [--pmu cycles,instructions,branches,branch-misses,rHEX] [--stand 0..3]\n"
                     "       [--hybrid: ours with each public function glibc's, and the base revision's if linked]\n");
     exit(2);
@@ -2385,6 +2407,8 @@ int main(int argc, char **argv) {
             list = 1;
         } else if (!strcmp(a, "--validate-only")) {
             validate_only = 1;
+        } else if (!strcmp(a, "--strict-validation")) {
+            strict_validation = 1;
         } else if (!strcmp(a, "--no-matrix")) {
             no_matrix = 1;
         } else {
@@ -2454,7 +2478,11 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    validate_all(jobs);
+    int invalid = validate_all(jobs);
+
+    if (strict_validation && invalid) {
+        return 2;
+    }
 
     if (metafile) {
         meta(metafile);

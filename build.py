@@ -35,6 +35,7 @@ if build.target.split("-", 1)[0] in ("aarch64", "arm64"):
     lock = json.loads((Path(__file__).parent / 'dev/lab/aarch64.lock').read_text())
     lab_inputs = ["$(S)/dev/lab/aarch64.py", "$(S)/dev/lab/aarch64.lock", "$(S)/dev/lab/kbench.c",
                   "$(S)/dev/lab/kl.h", "$(S)/str.h"]
+    lab_inputs += build.glob("$(S)/dev/lab/kernels/aarch64_*")
     # Unrequested lab targets must not require an external checkout while a
     # native test or a host-tool graph is being constructed.
     if build.flags.aor:

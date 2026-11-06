@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -35,6 +36,10 @@ def main():
     p.add_argument('--objcopy', default=os.environ.get('OBJCOPY', 'llvm-objcopy'))
     p.add_argument('--nm', default=os.environ.get('NM', 'llvm-nm'))
     p.add_argument('--target', default='aarch64-linux-gnu')
+    p.add_argument('--entry-phase', type=int, choices=(0, 16, 32, 48), default=0,
+                   help='place experimental entry points at this offset modulo 64; no executed padding')
+    p.add_argument('--omit-experiment-frames', action='store_true',
+                   help='separate experiment: allow frame omission in lab candidates only')
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
     a.binary.parent.mkdir(parents=True, exist_ok=True)
@@ -78,6 +83,42 @@ def main():
                     defs.append(('aor', symbol, prim, 'F_NEON'))
                     break
 
+    experiments = []
+    for source in sorted((HERE / 'kernels').glob('aarch64_*.c')):
+        isa = source.stem.split('_')[1]
+        if isa not in ('neon', 'sve'):
+            raise SystemExit('unknown ARM kernel ISA: ' + source.name)
+        obj = a.work / (source.stem + '.o')
+        extra = ['-fno-omit-frame-pointer', '-mno-omit-leaf-frame-pointer']
+        if a.omit_experiment_frames:
+            extra = ['-fomit-frame-pointer', '-momit-leaf-frame-pointer']
+        if isa == 'sve':
+            extra += ['-march=armv8-a+sve']
+        compile_flags = [*cc, *flags, *extra, '-I', ROOT, '-Wall', '-Wextra', '-Werror']
+        if a.entry_phase:
+            assembly = a.work / (source.stem + '.s')
+            run([*compile_flags, '-S', source, '-o', assembly], source.stem + '-assembly')
+            text = assembly.read_text()
+            # Clang aligns each function section to 64 before the symbol.
+            # Insert bytes before the entry, outside its size and CFI range.
+            # They change placement but are never executed on entry.
+            text, count = re.subn(r'^(kl_\w+:)', '\t.space %d, 0\n\\1' % a.entry_phase,
+                                 text, flags=re.MULTILINE)
+            if not count:
+                raise SystemExit('no experimental entries found in ' + str(assembly))
+            assembly.write_text(text)
+            run([*cc, *flags, *extra, '-c', assembly, '-o', obj], source.stem)
+        else:
+            run([*compile_flags, '-c', source, '-o', obj], source.stem)
+        objs.append(obj)
+        experiments.append({'source': str(source.relative_to(ROOT)), 'sha256': digest(source), 'flags': extra})
+        for symbol in symbols(obj):
+            m = re.fullmatch(r'kl_(%s)_(neon|sve)_.+' % '|'.join(PRIMS), symbol)
+            if m:
+                if m[2] != isa:
+                    raise SystemExit('kernel ISA/name mismatch: ' + symbol)
+                defs.append(('kl', symbol, m[1], 'F_SVE' if isa == 'sve' else 'F_NEON'))
+
     slots = []
     for symbol in symbols(a.libstr):
         for suffix in ('scalar', 'neon'):
@@ -114,6 +155,10 @@ def main():
     run([*cc, *flags, *objs, a.libstr, *shlex.split(os.environ.get('LDFLAGS', '')),
          '-o', a.binary], 'link')
     metadata = {'architecture': a.target, 'reference': lock, 'libstr_sha256': digest(a.libstr),
+                'experiments': experiments,
+                'experiment_headers': {str(path.relative_to(ROOT)): digest(path)
+                                       for path in sorted((HERE / 'kernels').glob('aarch64_*.h'))},
+                'entry_phase': a.entry_phase, 'omit_experiment_frames': a.omit_experiment_frames,
                 'binary_sha256': digest(a.binary), 'reference_primitives': sorted({d[2] for d in defs if d[0] == 'aor'}),
                 'definitions': len(defs), 'slots': len(slots),
                 'compiler': subprocess.check_output([*cc, '--version'], text=True).splitlines()[0],
