@@ -2087,8 +2087,9 @@ class Prover:
                     off = S.or_(*[S.and_(lc, S.not_(S.and_(S.eq(page(la), p0), S.eq(page(last_of(la, ln)), p0)))) for la, ln, _, lc in new])
                     if self.solver.check(*self.plain(st), off, bare=True, timeout=AUX) == 'unsat':
                         # every lane it may load in lane 0's page (a mask up to the page's end): lane 0's bounds are
-                        # theirs (strcmp evex: 0.8 and 1.1 s where the lanes took 431)
-                        self.never(st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what)
+                        # theirs (strcmp evex: 0.8 and 1.1 s where the lanes took 431); one query whatever the
+                        # lanes (one at a time, each would be as long: past a loop, the bytes compared before)
+                        self.never(st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what, False)
                     else:
                         self.never(st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])], what)
                 bads = [b for b in (self.spec.early_store(e) for e in st.stores[seen_st:]) if b is not S.FALSE]
