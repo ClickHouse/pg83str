@@ -27,8 +27,9 @@ the page position is then symbolic, every place in a page at once. The
 classes are a case split, any number of them covers every pointer; one
 class, the low bits symbolic too, is every pointer in one proof: `run.py`
 tries that first (strlen sse2 in 8 s, strcmp avx2 in 1102 s, strspn
-avx2's long sets in 1079 s) and splits
-into the classes only when it does not prove in three hours. At each
+avx2's long sets in 1079 s), for three hours at most, the classes queued
+behind every such try (the slots the tries leave take them; those still
+queued when the try proves are dropped). At each
 branch z3 decides which ways are feasible; every feasible path is followed.
 
 Loops (`--induct`): the second time a path reaches a loop's head, the
