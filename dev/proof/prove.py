@@ -1249,7 +1249,9 @@ class Span(Scan):
         """A byte b of s the path tests by a computation of b alone (truffle:
         a nibble table's lane, the high nibble's bit) has a term c(b) of one
         bit: with c at a free byte x proved, once, to say x is in the set (or
-        is not) whatever x, the fact c(b) = member(b) for each such b. The
+        is not) whatever x, the fact c(b) = member(b) for each such b; when
+        no one term of b does, their disjunction (pcmpistrm on the set's two
+        halves of 16: "equals a valid byte of this half"). The
         obligations meet the path's terms through those, not by matching
         the table against the set for every byte (strspn avx2 past 2048
         bytes: 466 s locally, unknown under load). For checks: sound, an
@@ -1267,25 +1269,42 @@ class Span(Scan):
             found |= got
         if not found:
             return []
-        setpc = None  # the path's conditions on the set (a table built under them): when what holds for every path does not
-        out = []
+        setpc = []  # the path's conditions on the set (a table built under them): when what holds for every path does not
+
+        def sign_of(f):
+            sign = L['lemma'].get(f.id)
+            if sign is None:
+                sign = L['lemma'][f.id] = self.lane_lemma(prover, f, [])
+            if sign == 0:
+                if not setpc:
+                    setpc.extend(c for c in st.pc if 's_mem' not in S.variables(c))
+                key = (f.id,) + tuple(c.id for c in setpc)
+                sign = L['lemma'].get(key)
+                if sign is None:
+                    sign = L['lemma'][key] = self.lane_lemma(prover, f, setpc)
+            return sign
+
+        out, per_byte = [], {}
         for n in found:
             node, b = L['node'][n], L['node'][L['one'][n]]
             f = L['f'].get(n)
             if f is None:
                 f = L['f'][n] = S.subst(node, b, L['x'])
-            sign = L['lemma'].get(f.id)
-            if sign is None:
-                sign = L['lemma'][f.id] = self.lane_lemma(prover, f, [])
-            if sign == 0:
-                if setpc is None:
-                    setpc = [c for c in st.pc if 's_mem' not in S.variables(c)]
-                key = (f.id,) + tuple(c.id for c in setpc)
-                sign = L['lemma'].get(key)
-                if sign is None:
-                    sign = L['lemma'][key] = self.lane_lemma(prover, f, setpc)
-            if sign:
-                out.append(S.eq(self.lane_bool(node), self.member(b) if sign > 0 else S.not_(self.member(b))))
+            per_byte.setdefault(b.id, (b, []))[1].append((f, node))
+        for b, terms in per_byte.values():
+            terms.sort(key=lambda t: t[0].id)  # the same order for every byte the same code tests
+            done = False
+            for f, node in terms:
+                sign = sign_of(f)
+                if sign:
+                    out.append(S.eq(self.lane_bool(node), self.member(b) if sign > 0 else S.not_(self.member(b))))
+                    done = True
+            if not done and len(terms) > 1:  # a set in parts, each tested on its own (pcmpistrm on its two halves of 16)
+                f = S.or_(*[self.lane_bool(f) for f, _ in terms])
+                sign = sign_of(f)
+                if sign:
+                    c = S.or_(*[self.lane_bool(node) for _, node in terms])
+                    out.append(S.eq(c, self.member(b) if sign > 0 else S.not_(self.member(b))))
         return out
 
     @staticmethod

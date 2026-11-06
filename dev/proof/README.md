@@ -69,7 +69,12 @@ to say x in the set (or not) for every x; each such c(b) = member(b) then
 goes with the path's checks, instances of that lemma. strspn avx2's first
 178 obligations: 3591 s to 581 s, none over 46 s. A mutant whose truffle
 table is wrong (one byte of its xor constant 0) is refuted in the loop's
-step: the lemma does not hold for it, so no fact is added. The term layer
+step: the lemma does not hold for it, so no fact is added. A set of 17 to
+32 bytes the avx2 code tests with pcmpistrm on its two halves of 16, each a
+one-bit term of b ("equals a valid byte of this half") that is not the set
+alone: their disjunction is, proved the same way; a mutant that ors the
+halves' "not in it" masks where the code ands them is refuted there (the
+answer not a match). The term layer
 also keeps psrlw's bytes their own: (w >> 4) & 15 of a word's low byte no
 longer reads its high byte.
 
