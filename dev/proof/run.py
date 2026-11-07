@@ -113,6 +113,7 @@ def main():
     ap.add_argument('--job-timeout', type=int, default=12 * 3600, help='seconds any other job may take')
     ap.add_argument('--no-one', action='store_true', help='straight to the classes (a run whose one-class tries an earlier run made)')
     ap.add_argument('--one-only', action='store_true', help='the one-class tries alone (beside a run of the classes, for longer than its tries)')
+    ap.add_argument('--classes', type=int, help='the classes to split into, not align_of\'s (16: a shuffle by s & 15 fixed in each)')
     ap.add_argument('--job-memory', type=float, default=7, help='GB a job is given: the jobs a host runs at once (PROVE_MEMORY its solvers\' limit)')
     args = ap.parse_args()
     sys.path.insert(0, str(HERE))
@@ -134,7 +135,7 @@ def main():
             continue
         rep[key] = f
         n = prove.align_of(img, img.symbols[f])
-        k = 64 if n == 1 else n  # the classes it splits into
+        k = args.classes or (64 if n == 1 else n)  # the classes it splits into
         if args.align != 'all':  # those classes of the split (a probe of a class's time)
             jobs += [job(spec, f, a, classes=k) for a in args.align.split(',')]
             continue
