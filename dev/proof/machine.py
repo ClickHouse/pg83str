@@ -120,6 +120,7 @@ def push64(st, v):
     else:
         if not on_stack(st, rsp):
             raise Unsupported('push off the stack')
+        st.requires.append((S.sle(const(64, 0), S.sub(S.add(rsp, const(64, 7)), RSP0)), 'a push at or past the return address', st.rip))
         for i in range(8):
             write_byte(st, S.add(rsp, const(64, i)), S.extract(v, 8 * i + 7, 8 * i))
     st.gpr['rsp'] = rsp
@@ -470,7 +471,9 @@ def store_bytes(m, st, addr, lanes, rip, conds=None):
                 raise Fault('store at %#x from %#x' % (a.val, rip))
             buf[a.val - base] = b.val
         return
-    if on_stack(st, addr):  # the function's own frame: written, no obligation
+    if on_stack(st, addr):  # the function's own frame: written, nothing past it (the return address, the caller's frame)
+        last = S.sub(S.add(addr, const(64, len(lanes) - 1)), RSP0)
+        st.requires.append((S.sle(const(64, 0), last), 'a store to the stack at or past the return address', rip))
         for i, b in enumerate(lanes):
             a = S.add(addr, const(64, i))
             c = S.TRUE if conds is None else conds[i]

@@ -230,7 +230,10 @@ when the full path has not settled the bound in 60 s.
 
 Every function and configuration is also checked for: aligned accesses
 (`movaps`, `movdqa`, legacy SSE memory operands) aligned; callee-saved
-registers and `rsp` restored; rep movs with no backward overlap.
+registers and `rsp` restored; rep movs with no backward overlap; every
+store to the stack and every push below the return address (the caller's
+frame is not the function's to write: a frame that reached it was
+refuted there).
 
 ## What the proofs rest on
 
