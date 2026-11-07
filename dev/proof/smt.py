@@ -1151,7 +1151,12 @@ class Solver:
         watch = None
         if SLOW is not None:  # a query still running after SLOW seconds says where it is
             where = ' < '.join('%s:%d' % (f.name, f.lineno) for f in traceback.extract_stack()[-5:-1][::-1])
-            watch = threading.Timer(max(SLOW, 60), lambda: print('    query running for %d s: %s' % (max(SLOW, 60), where), file=sys.stderr, flush=True))
+            def running(conds=[c for c in conds if c is not TRUE] if not INCREMENTAL else []):
+                print('    query running for %d s: %s' % (max(SLOW, 60), where), file=sys.stderr, flush=True)
+                if os.environ.get('PROVE_DUMP') and conds:  # the query that is slow, while it is (PROVE_DUMP: each one standalone)
+                    self.slow += 1
+                    self.dump(conds, os.path.join(os.environ['PROVE_DUMP'], 'running-%d-%d-%d.smt2' % (os.getpid(), id(self) % 100000, self.slow)))
+            watch = threading.Timer(max(SLOW, 60), running)
             watch.daemon = True
             watch.start()
         while True:
@@ -1184,14 +1189,13 @@ class Solver:
         self.assumed.append(c)
 
     def dump(self, conds, path):
-        """The conjunction as a script of its own."""
-        lines, done, send = [], self.done, self.send
-        self.done, self.send = set(), lines.append
-        try:
-            for c in conds:
-                self.define(c)
-        finally:
-            self.done, self.send = done, send
+        """The conjunction as a script of its own (written apart from this
+        solver's session: a query may be running)."""
+        b = object.__new__(Solver)
+        lines = []
+        b.done, b.send, b.log = set(), lines.append, None
+        for c in conds:
+            b.define(c)
         with open(path, 'w') as f:
             f.write('\n'.join(lines + ['(assert %s)' % self.name(c) for c in conds] + ['(check-sat)']) + '\n')
 

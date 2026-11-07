@@ -2314,12 +2314,15 @@ class Prover:
                 self.solver.check(*plain, *recent, *flat, bare=True, timeout=6 * AUX, abstract=self.abstract) == 'unsat':  # strcpy_long's: 83 s, the path's 133
             return
         each = next((c for c in flat if c.op == 'or_b'), None) if lanes else None
+        self.solver.doing = what + ': the path'
         r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else 3 * AUX if end is not None else None, abstract=self.abstract)
         if r == 'unknown' and end is not None:  # a load past a stop the bytes compared before rule out (strcmp evex
             # past its loops: a byte at a mask's first set bit, 870 s): the stop not below its page first, by the loads
+            self.solver.doing = what + ': no stop below it'
             lemma = self.no_stop_below(st, end)
             if lemma is not None and self.solver.check(*plain, lemma, *flat, bare=True, timeout=AUX) == 'unsat':
                 return
+            self.solver.doing = what + ': the path%s' % (' and the lemma' if lemma is not None else ', no lemma')
             r = self.solver.check(*st.pc, *([lemma] if lemma is not None else []), *flat, keep=True, abstract=self.abstract)
         if r == 'unknown' and each is not None:  # strcmp evex past three loops: 431 s, a lane alone 1 or 2 s
             rest = [c for c in flat if c is not each]
