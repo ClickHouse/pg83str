@@ -48,6 +48,35 @@ def page(a):
     return S.lshr(a, const(64, 12))
 
 
+def prefix_count(lanes):
+    """A masked access whose lane i is bit i of bzhi(-1, idx), its lanes'
+    addresses the first's plus i times the lane's bytes: the count of the
+    lanes it touches, min(idx, its lanes) as 64 bits; else None. (strcmp
+    evex512: 64 lanes each its own sum and pages, more than 20 s to tell
+    they keep to lane 0's page; the count's last lane alone, at once.)"""
+    k, n, ln = None, 0, lanes[0][1]
+    for i, (la, nb, _, c) in enumerate(lanes):
+        if c is S.FALSE:  # past the mask's width
+            continue
+        if nb != ln or c.op != 'eq' or c.args[1] is not const(1, 1) or c.args[0].op != 'extract' or c.args[0].args[1:] != (i, i):
+            return None
+        if k is None:
+            k = c.args[0].args[0]
+        if c.args[0].args[0] is not k or not S.is_const(S.sub(la, lanes[0][0])) or S.sub(la, lanes[0][0]).val != i * ln:
+            return None
+        n = i + 1
+    if k is None or k.op != 'ite':
+        return None
+    big, ones, low = k.args
+    w = k.w
+    if not (S.is_const(ones) and ones.val == S.mask(w) and big.op == 'ule' and S.is_const(big.args[0]) and big.args[0].val == w):
+        return None
+    idx = big.args[1]
+    if low is not S.sub(S.shl(const(w, 1), idx), const(w, 1)) or n > w:
+        return None
+    return S.ite(S.ult(idx, const(w, n)), S.zext(idx, 64), const(64, n))
+
+
 def last_of(a, n):
     """The last byte of an access of n bytes (a number, or a term: rep movs)."""
     return S.add(a, S.sub(n, const(64, 1)) if isinstance(n, S.T) else const(64, n - 1))
@@ -2395,12 +2424,19 @@ class Prover:
                 elif new:  # a masked load's lanes
                     what = 'the load at %#x reaches past what the object allows' % new[0][2]
                     la0, p0 = new[0][0], page(new[0][0])
-                    off = S.or_(*[S.and_(lc, S.not_(S.and_(S.eq(page(la), p0), S.eq(page(last_of(la, ln)), p0)))) for la, ln, _, lc in new])
+                    cnt = prefix_count(new)
+                    if cnt is not None:  # the lanes below a count (bzhi's mask): only the last of them can leave lane 0's page
+                        some = S.ult(const(64, 0), cnt)
+                        last = S.sub(S.add(la0, S.mul(cnt, const(64, new[0][1]))), const(64, 1))
+                        off = S.and_(some, S.or_(S.not_(S.eq(page(last), p0)), S.ult(last, la0)))
+                    else:
+                        some = S.or_(*[lc for _, _, _, lc in new])
+                        off = S.or_(*[S.and_(lc, S.not_(S.and_(S.eq(page(la), p0), S.eq(page(last_of(la, ln)), p0)))) for la, ln, _, lc in new])
                     if self.solver.check(*self.plain(st), off, bare=True, timeout=AUX) == 'unsat':
                         # every lane it may load in lane 0's page (a mask up to the page's end): lane 0's bounds are
                         # theirs (strcmp evex: 0.8 and 1.1 s where the lanes took 431); one query whatever the
                         # lanes (one at a time, each would be as long: past a loop, the bytes compared before)
-                        self.later(self.never, st, [S.or_(*[lc for _, _, _, lc in new]), self.spec.early(la0, 1)], what, False, stop_end(la0, 1))
+                        self.later(self.never, st, [some, self.spec.early(la0, 1)], what, False, stop_end(la0, 1))
                     else:
                         self.later(self.never, st, [S.or_(*[S.and_(lc, self.spec.early(la, ln)) for la, ln, _, lc in new])], what)
                 bads = [b for b in (self.spec.early_store(e) for e in st.stores[seen_st:]) if b is not S.FALSE]
