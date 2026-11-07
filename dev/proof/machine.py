@@ -638,6 +638,21 @@ CC = set(x86.CC)
 MASKED = {'vmovdqu8', 'vmovdqu64', 'vmovdqu32', 'vmovdqa64', 'vmovdqa32', 'vpcmpb', 'vpcmpub', 'vpcmpeqb', 'vptestnmb', 'vptestmb'}
 
 
+def consecutive(lanes):
+    """(array, offset) when lane c is the array's byte at offset + c for
+    every c (a block loaded from one region), else None: a shuffle by an
+    index the code computes then reads its byte at offset + index, one
+    select, the same byte as the 16-way choice among the lanes."""
+    x = lanes[0]
+    if x.op != 'select':
+        return None
+    arr, off = x.args
+    for c, y in enumerate(lanes[1:], 1):
+        if y.op != 'select' or y.args[0] is not arr or S.sub(y.args[1], off) is not const(64, c):
+            return None
+    return arr, off
+
+
 def lane_conds(st, j, n):
     """A masked instruction's lane conditions, or None unmasked."""
     k = j.get('op_mask')
@@ -1212,9 +1227,13 @@ class Machine:
         for i, x in enumerate(idx):
             half = a[i // 16 * 16:i // 16 * 16 + 16]
             k = S.band(x, const(8, 15))
-            v = half[15]
-            for c in range(14, -1, -1):
-                v = S.ite(S.eq(k, const(8, c)), half[c], v)
+            run = None if S.is_const(k) else consecutive(half)
+            if run is not None:  # the half one array's 16 bytes in a row (a block loaded): the lane its byte at k
+                v = S.select(run[0], S.add(run[1], S.zext(k, 64)))
+            else:
+                v = half[15]
+                for c in range(14, -1, -1):
+                    v = S.ite(S.eq(k, const(8, c)), half[c], v)
             out.append(S.ite(S.msb(x), const(8, 0), v))
         write_vec(st, ops[0]['reg'], out, legacy)
 
