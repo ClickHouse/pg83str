@@ -2152,6 +2152,7 @@ class Prover:
                 sorted(moved), sorted(havoc), len(kept), sorted(set(g.vec) - set(vmoved)), sorted(vmoved)), flush=True)
             if side:
                 print('    side loop, kept: %s' % '; '.join(n for n, f in kept), flush=True)
+            print('    arrived by %s (%d branches, %d conditions)' % (' '.join('%#x' % x for x in s1.trace[-14:]), len(s1.trace), len(s1.pc)), flush=True)
         return g
 
     def window(self, arr, lo, hi, h):
