@@ -1313,12 +1313,19 @@ class Span(Scan):
 
     def lane_lemma(self, prover, f, given):
         """+1 when f(x) says x is in the set for every x, -1 when it says x is
-        not, 0 when neither is proved (soon)."""
-        x, fb = self.lanes['x'], self.lane_bool(f)
+        not, 0 when neither is proved (in 120 s: once a term, the tables of a
+        32-byte set take more than 20)."""
+        x, fb, t0 = self.lanes['x'], self.lane_bool(f), time.time()
+        rs = []
         for sign, m in ((1, self.member(x)), (-1, S.not_(self.member(x)))):
-            if prover.solver.check(*given, S.not_(S.eq(fb, m)), timeout=AUX) == 'unsat':
-                return sign
-        return 0
+            rs.append(prover.solver.check(*given, S.not_(S.eq(fb, m)), timeout=6 * AUX))
+            if rs[-1] == 'unsat':
+                break
+        sign = (1 if len(rs) == 1 else -1) if rs[-1] == 'unsat' else 0
+        if prover.args.verbose and (sign or 'unknown' in rs):
+            print('   lane lemma (%d variables%s): %s, %s %.1f s' % (len(S.variables(f)), ', under the path' if given else '', '/'.join(rs),
+                                                             {1: 'in the set', -1: 'not in it', 0: 'neither'}[sign], time.time() - t0), flush=True)
+        return sign
 
     def lane_scan(self, root):
         """The largest terms under root that read one byte of s and no other,
