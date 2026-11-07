@@ -205,7 +205,19 @@ first set bit past strcmp evex's loops: 870 s, unknown under load) has
 first a lemma proved the same ways: no stop below the page of its last
 byte; the bound then follows from the addresses. strcpy's last store, its
 end at the NUL a mask found, likewise: no NUL below its last byte. Both
-when the full path has not settled the bound in 60 s.
+when the full path has not settled the bound in 60 s; the lemma's ways each
+for 20 s first, then the one that did it last at that access, then the
+loads' with the full timeout (strcpy_long's last store: the loads' way more
+than 3000 s, the other less than 120; strcpy_long sse2 84 s to 39).
+
+strspn's set near its page end is loaded shuffled by set & 15; at a loop's
+first arrival a register the path proves holds the set's bytes up to its
+NUL becomes those bytes there and unknown ones past it (pcmpistri reads a
+set up to its NUL), so the loop and its exits meet the spec's terms; with
+16 classes of s (its head's shuffle by s & 15 then a constant) a class of
+strspn avx2 went from 57 paths in 240 s to 91, the one-class tries having
+failed on exactly those exits. A shuffle of a loaded block by a computed
+index is one select at the block's offset plus the index.
 
 ## The specs
 

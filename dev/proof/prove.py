@@ -2212,6 +2212,7 @@ class Prover:
         self.lost = {}     # this run's: dropped at its end
         self.widen = {}    # loop head -> registers, vectors and masks some way round changed that the general state kept
         self.best_way = {}  # an obligation written several ways -> the one that proved it last
+        self.best_stop = {}  # (an access, its ways) -> the way no_stop_below proved it by last
         self.covered = {}  # id -> a first arrival at a loop's head whose general state's subtree is explored
         self.t0 = time.time()
 
@@ -2251,23 +2252,35 @@ class Prover:
 
     def no_stop_below(self, st, end):
         """z (any stop) not in [lo, end), lo the frontier's offset: proved by
-        the span's ways, the path's loads first; as a condition, None when
-        not proved. For a load's bound or a store's (strcpy's last, its end
-        at the NUL a mask found)."""
+        the span's ways, as a condition, None when not proved. For a load's
+        bound or a store's (strcpy's last, its end at the NUL a mask found).
+        Every way for 20 s first, then the one that did it last time at this
+        access, then the path's loads' with the full timeout (on a loaded
+        host it took more than 120 s where the bound without it took 1800),
+        the others for 120 (strcpy_long's last store: the loads' way more
+        than 3000 s, the other one less than 120)."""
         spec, t0 = self.spec, time.time()
         lo = S.sub(st.front_lo, spec.s) if st.front_lo is not None else const(64, 0)
         sp = span(spec, st, lo, end, spec.at)
         ways = sp.alts if isinstance(sp, Alt) else [[sp]]
-        for k, way in enumerate(reversed(ways)):  # the loads' way first, with the full timeout: on a loaded host it
-            rs = []                                 # took more than 120 s where the bound without it took 1800
-            for part in way:
-                rs.append(self.solver.check(*st.pc, *part, timeout=None if k == 0 else 6 * AUX, abstract=self.abstract))
-                if rs[-1] != 'unsat':
+        order = list(reversed(range(len(ways))))  # the loads' way first
+        best = self.best_stop.get((st.rip, len(ways)))
+        rounds = [(k, AUX) for k in order] + ([(best, None)] if best is not None else []) + [(order[0], None)] + [(k, 6 * AUX) for k in order[1:]]
+        done = set()
+        for k, limit in rounds:
+            rs = []
+            for i, part in enumerate(ways[k]):
+                r = 'unsat' if (k, i) in done else self.solver.check(*st.pc, *part, timeout=limit, abstract=self.abstract)
+                if r == 'unsat':
+                    done.add((k, i))
+                rs.append(r)
+                if r != 'unsat':
                     break
             if self.args.verbose:
-                print('   no stop below the access before %#x: %s (way %d of %d) %.1f s' % (st.rip, '/'.join(rs), k + 1, len(ways), time.time() - t0),
-                      flush=True)
-            if len(rs) == len(way) and all(r == 'unsat' for r in rs):
+                print('   no stop below the access before %#x: %s (way %d of %d, %s s) %.1f s' % (st.rip, '/'.join(rs), k + 1, len(ways), limit or 'all',
+                                                                                          time.time() - t0), flush=True)
+            if len(rs) == len(ways[k]) and all(r == 'unsat' for r in rs):
+                self.best_stop[(st.rip, len(ways))] = k
                 return S.not_(S.and_(S.ule(lo, spec.z), S.ult(spec.z, end)))
         return None
 
