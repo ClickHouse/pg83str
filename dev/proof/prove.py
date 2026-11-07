@@ -2171,7 +2171,7 @@ class Pool:
 class Prover:
     def __init__(self, args, mach, spec, solver, a):
         self.args, self.mach, self.spec, self.main_solver, self.a = args, mach, spec, solver, a
-        self.tls, self.pool, self.works, self.status_t = threading.local(), None, [], 0
+        self.tls, self.pool, self.works, self.status_thread = threading.local(), None, [], None
         self.paths = self.proved = self.loops = 0
         self.dropped = {}  # loop head -> the invariant candidates a step did not keep
         self.lost = {}     # this run's: dropped at its end
@@ -2242,6 +2242,7 @@ class Prover:
         disjunct at a time (a load's page bounds, below and above: two
         queries of 6 and 17 s where the one took 72); a masked access's
         lanes all at once, one at a time when that does not settle soon."""
+        self.solver.doing = what
         flat = []
         for c in conds:
             flat.extend(c.args if c.op == 'and_b' else [c])
@@ -2288,6 +2289,7 @@ class Prover:
                 self.prove_alt(st, what, conds, show)
                 continue
             t1 = time.time()
+            self.solver.doing = what
             r = self.solver.check(*st.pc, *conds, keep=True)
             if self.args.verbose:
                 print('   %-50s %s %.1f s' % (what, r, time.time() - t1), flush=True)
@@ -2307,6 +2309,7 @@ class Prover:
         if best is not None:  # the way that did it last time first
             rounds.insert(0, (best, 6 * AUX))
         done = set()  # the parts proved in an earlier round
+        self.solver.doing = what
         for k, limit in rounds:
             t1 = time.time()
             rs = []
@@ -2775,21 +2778,29 @@ class Prover:
         """PROVE_STATUS=dir: a line a minute in dir/<func>-<classes>-<align>.txt
         on how far the proof is: the paths closed, the ways still to walk in
         each walk under way (the outermost first), the loops generalized,
-        where it is, the checking threads' backlog."""
-        now = time.time()
-        if now - self.status_t < 60:
-            return
-        self.status_t = now
+        where it is, the checking threads' backlog, and the queries running
+        longer than a minute, their seconds and what they are for. Written
+        by a thread of its own: the walk may wait on a full backlog."""
+        self.where = st
+        if self.status_thread is None:
+            self.status_thread = threading.Thread(target=self.status_loop, daemon=True)
+            self.status_thread.start()
+
+    def status_loop(self):
         name = '%s-%s-%s.txt' % (self.args.func, self.args.classes or self.align, self.a)
-        line = {'s': round(now - self.t0), 'paths': self.paths, 'obligations': self.proved, 'loops': self.loops,
-                'ways': [len(w) for w in self.works], 'rip': '%#x' % st.rip, 'loop': None if st.gen is None else '%#x' % st.gen['head'],
-                'queries': self.main_solver.queries + sum(x.queries for x in (self.pool.solvers if self.pool else [])),
-                'backlog': self.pool.jobs.qsize() if self.pool else 0}
-        try:
-            with open(os.path.join(os.environ['PROVE_STATUS'], name), 'a') as f:
-                f.write(json.dumps(line) + '\n')
-        except OSError:
-            pass
+        while True:
+            time.sleep(60)
+            now, st = time.time(), self.where
+            solvers = [self.main_solver] + (self.pool.solvers if self.pool else [])
+            busy = sorted(([round(now - x.since), x.doing] for x in solvers if x.since and now - x.since > 60), reverse=True)
+            line = {'s': round(now - self.t0), 'paths': self.paths, 'obligations': self.proved, 'loops': self.loops,
+                    'ways': [len(w) for w in self.works], 'rip': '%#x' % st.rip, 'loop': None if st.gen is None else '%#x' % st.gen['head'],
+                    'queries': sum(x.queries for x in solvers), 'backlog': self.pool.jobs.qsize() if self.pool else 0, 'busy': busy}
+            try:
+                with open(os.path.join(os.environ['PROVE_STATUS'], name), 'a') as f:
+                    f.write(json.dumps(line) + '\n')
+            except OSError:
+                pass
 
     def explore(self, st0):
         work = [st0]

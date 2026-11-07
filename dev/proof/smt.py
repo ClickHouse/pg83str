@@ -937,6 +937,7 @@ class Solver:
         self.log = log
         self.queries = 0
         self.assumed, self.slow = [], 0
+        self.since, self.doing = None, None  # the running query's start, and what the prover asks it for (its status lines)
         self.send('(set-option :print-success false)')
         self.send('(set-option :timeout %d)' % (TIMEOUT * 1000))
 
@@ -1110,6 +1111,7 @@ class Solver:
                 self.send('(assert %s)' % self.name(c))
         self.send('(check-sat)')
         self.p.stdin.flush()
+        self.since = time.time()
         watch = None
         if SLOW is not None:  # a query still running after SLOW seconds says where it is
             where = ' < '.join('%s:%d' % (f.name, f.lineno) for f in traceback.extract_stack()[-5:-1][::-1])
@@ -1124,6 +1126,7 @@ class Solver:
                 raise RuntimeError('%s: %s' % ('bitwuzla' if self.p is self.bp else 'z3', line))
         if watch is not None:
             watch.cancel()
+        self.since = None
         self.result = line
         if INCREMENTAL and not (keep and line == 'sat'):
             self.send('(pop 1)')
