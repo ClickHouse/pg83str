@@ -1834,6 +1834,8 @@ class Prover:
         # then with this way round's conditions on memory too (past a loop's head: the masks of the block it
         # tests, "a byte found", not the bytes the path compared before the loop): a tzcnt's index below 64
         recent = [c for c in st.pc[st.gen['pc']:] if S.has_array(c)] if st.gen is not None and 'pc' in st.gen else []
+        if recent:  # and the assumptions on memory (z a stop: the found byte's NUL against the block's masks)
+            recent = [c for c in self.solver.assumed if S.has_array(c)] + recent
         if recent and len(plain) + len(recent) < len(self.solver.assumed) + len(st.pc) and \
                 self.solver.check(*plain, *recent, *flat, bare=True, timeout=AUX) == 'unsat':
             return
