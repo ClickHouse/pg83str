@@ -6,6 +6,7 @@ first time an assertion needs them. Widths: n > 0 a bit-vector of n bits,
 0 a Bool, -1 memory (an array from 64-bit addresses to bytes).
 """
 import atexit
+import hashlib
 import os
 import shutil
 import signal
@@ -839,6 +840,62 @@ def has_array(t):
     return r
 
 
+_digests = {}
+
+
+def digest(t):
+    """A term by its structure: the same in any run, whatever its id there."""
+    stack = [t]
+    while stack:
+        x = stack[-1]
+        if x.id in _digests:
+            stack.pop()
+            continue
+        pending = [a for a in x.args if isinstance(a, T) and a.id not in _digests]
+        if pending:
+            stack.extend(pending)
+            continue
+        stack.pop()
+        word = repr((x.op, x.w, x.val, [_digests[a.id] if isinstance(a, T) else a for a in x.args]))
+        _digests[x.id] = hashlib.blake2b(word.encode(), digest_size=16).digest()
+    return _digests[t.id]
+
+
+class Answers:
+    """PROVE_CACHE=dir: what the solvers answered, by the query (the
+    structure of its conditions, in any order), kept across runs in
+    dir/answers.txt, a line each: a proof run again (a connection lost, a
+    change to the prover that leaves these queries as they were) asks the
+    solvers only what they were not asked. sat and unsat are answers to the
+    query whatever the timeout, unknown is not kept; a sat whose model is
+    wanted is asked again. Terms hold their variables' names, the
+    assumptions are among the conditions: a line says nothing beyond its
+    query, in any function, on any ELF."""
+
+    def __init__(self, path):
+        os.makedirs(path, exist_ok=True)
+        self.path = os.path.join(path, 'answers.txt')
+        self.known, self.hits = {}, 0
+        if os.path.exists(self.path):
+            with open(self.path) as f:
+                for line in f:
+                    word = line.split()
+                    if len(word) == 2 and word[1] in ('sat', 'unsat'):  # a last line cut short: nothing
+                        self.known[word[0]] = word[1]
+        self.out = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+
+    def key(self, conds):
+        return hashlib.blake2b(b''.join(sorted({digest(c) for c in conds})), digest_size=16).hexdigest()
+
+    def add(self, key, answer):
+        if answer in ('sat', 'unsat') and key not in self.known:
+            self.known[key] = answer
+            os.write(self.out, ('%s %s\n' % (key, answer)).encode())  # one write: whole among the other processes'
+
+
+ANSWERS = None  # opened with the first solver: run.py imports this for its own work, with the hosts' PROVE_CACHE
+
+
 class Solver:
     """bitwuzla, and z3 for what bitwuzla does not read (lambdas): each query
     in a context of its own (PROVE_INCREMENTAL=1: one z3 session, the
@@ -847,6 +904,9 @@ class Solver:
     it took 1.4 to 69 (PROVE_BITWUZLA: its path; without it, z3 alone)."""
 
     def __init__(self, z3='z3', log=None):
+        global ANSWERS
+        if ANSWERS is None and os.environ.get('PROVE_CACHE') and not INCREMENTAL:
+            ANSWERS = Answers(os.environ['PROVE_CACHE'])
         # a memory limit: a query that would take more answers unknown (16 parallel jobs on a lab host fit)
         self.zp = subprocess.Popen([z3, '-in', '-memory:%d' % MEMORY], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
                                    preexec_fn=_die_with_parent)
@@ -1011,6 +1071,13 @@ class Solver:
                     self.send('(assert %s)' % self.name(c))
         else:
             conds = ([] if bare else self.assumed) + [c for c in conds if c is not TRUE]  # bare: without the assumptions (fewer hypotheses: still sound)
+            if ANSWERS is not None:
+                asked = ANSWERS.key(conds)
+                known = ANSWERS.known.get(asked)
+                if known == 'unsat' or known == 'sat' and not keep:
+                    ANSWERS.hits += 1
+                    self.result = known
+                    return known
             limit = min(TIMEOUT, timeout or TIMEOUT) * 1000
             if self.bp is not None and not any(has_lambda(c) for c in conds):
                 self.p = self.bp
@@ -1047,6 +1114,8 @@ class Solver:
         self.result = line
         if INCREMENTAL and not (keep and line == 'sat'):
             self.send('(pop 1)')
+        if ANSWERS is not None:
+            ANSWERS.add(asked, line)
         dt = time.time() - t0
         if SLOW is not None and dt > SLOW:  # PROVE_SLOW=seconds: where the slow queries come from (PROVE_DUMP=dir: each one standalone)
             where = ' < '.join('%s:%d' % (f.name, f.lineno) for f in traceback.extract_stack()[-5:-1][::-1])
