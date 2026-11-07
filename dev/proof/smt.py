@@ -745,6 +745,34 @@ def subst(t, old, new):
     return go(t)
 
 
+def replace(terms, mapping):
+    """The terms with every subterm whose id mapping has replaced by its
+    term there, node for node; the same list (each term itself) when none
+    is in them."""
+    memo = {}
+    out = []
+    for t in terms:
+        stack = [t]
+        while stack:
+            x = stack[-1]
+            if x.id in memo:
+                stack.pop()
+                continue
+            if x.id in mapping:
+                memo[x.id] = mapping[x.id]
+                stack.pop()
+                continue
+            pending = [y for y in x.args if isinstance(y, T) and y.id not in memo]
+            if pending:
+                stack.extend(pending)
+                continue
+            stack.pop()
+            args = tuple(memo[y.id] if isinstance(y, T) else y for y in x.args)
+            memo[x.id] = x if all(a is b for a, b in zip(args, x.args)) else _mk(x.op, x.w, args, x.val)
+        out.append(memo[t.id])
+    return out
+
+
 _vars = {}
 
 
@@ -1051,13 +1079,21 @@ class Solver:
             return '(lambda ((x (_ BitVec 64))) (ite (and (bvule %s x) (bvult x %s)) (select %s x) (select %s x)))' % (n(a[1]), n(a[2]), n(a[3]), n(a[0]))
         raise ValueError(t.op)
 
-    def check(self, *conds, keep=False, timeout=None, bare=False, loose=False, qtimeout=QTIMEOUT):
-        """With quantifiers among the conditions (strspn's long sets): first
+    def check(self, *conds, keep=False, timeout=None, bare=False, loose=False, qtimeout=QTIMEOUT, abstract=None):
+        """abstract: {id: term}, subterms the query is first asked with
+        replaced (a spec's predicate by an uninterpreted one: any
+        interpretation, so unsat there is unsat here), the query as it is
+        only when that is not unsat. With quantifiers among the conditions (strspn's long sets): first
         without them (fewer hypotheses: unsat holds for the whole), the full
         query only when that is not unsat, for QTIMEOUT at most (z3 may never
         settle a query with quantifiers that is sat: unknown, no proof);
         loose: a sat or unknown answer need not be the full query's (a
         branch kept that might be dead)."""
+        if abstract and not INCREMENTAL:
+            allc = ([] if bare else self.assumed) + [c for c in conds if c is not TRUE]
+            new = replace(allc, abstract)
+            if any(a is not b for a, b in zip(new, allc)) and self._check(*new, timeout=timeout, bare=True) == 'unsat':
+                return 'unsat'
         if not INCREMENTAL:
             allc = ([] if bare else self.assumed) + list(conds)
             if any(has_quantifier(c) for c in allc):

@@ -1463,6 +1463,11 @@ class Span(Scan):
     spn = True
     lane_terms = True
 
+    def __init__(self, maxlen, induct):
+        Scan.__init__(self, maxlen, induct)
+        self.abstraction = {}  # member(b) -> an uninterpreted predicate's: obligations with the lane facts need no more of it
+        self.canon = 0
+
     def setup(self, a, align):
         self.base, self.s, self.S = aligned_pointer('s', a, align)
         self.tbase, self.t, self.T = aligned_pointer('set', 0, 1)
@@ -1480,6 +1485,32 @@ class Span(Scan):
 
     def tbyte(self, j):
         return S.select(self.T, S.add(S.sub(self.t, self.tbase), j))
+
+    def canonical(self, prover, st):
+        """At a loop's first arrival: a vector register holding the set
+        (16 of its bytes from j on, as loaded: shuffled near a page end by
+        set & 15) becomes, where the path proves its lanes are those bytes
+        up to the set's NUL, those bytes there and unknown bytes past L: the
+        same lanes up to the NUL, anything after it (more states: sound;
+        pcmpistri reads a set up to its NUL). The loop and its exits then
+        meet the set as the spec's terms, not the shuffle's."""
+        if not self.lane_terms:  # SpanLong's: proved as it was
+            return
+        for n, lanes in list(st.vec.items()):
+            lo = lanes[:16]
+            if not any('set_mem' in S.variables(x) for x in lo):
+                continue
+            for j in (0, 16):
+                want = [self.tbyte(const(64, j + k)) for k in range(16)]
+                if all(x is w or x.op == 'ite' and x.args[1] is w for x, w in zip(lo, want)):
+                    break  # as the spec has them already
+                bad = S.or_(*[S.and_(S.ule(const(64, j + k), self.L), S.not_(S.eq(x, w))) for k, (x, w) in enumerate(zip(lo, want))])
+                if prover.solver.check(*st.pc, bad, timeout=6 * AUX) == 'unsat':
+                    self.canon += 1
+                    st.vec[n] = [S.ite(S.ule(const(64, j + k), self.L), w, var('canon%d_%d' % (self.canon, k), 8)) for k, w in enumerate(want)] + lanes[16:]
+                    if prover.args.verbose:
+                        print('    zmm%d: the set\'s bytes from %d up to its NUL, unknown past it' % (n, j), flush=True)
+                    break
 
     def contracts(self, img, entry):
         got = named_targets(img, entry, ('truffle_scan32', 'strlen_'))
@@ -1636,7 +1667,10 @@ class Span(Scan):
         pcmpistri writes it (a set byte valid when no NUL is at or before
         it), so that the path's terms and the spec's are the same terms."""
         tb = [self.tbyte(const(64, k)) for k in range(SETMAX)]
-        return S.or_(*[S.and_(S.not_(S.or_(*[S.is_zero(x) for x in tb[:k + 1]])), S.eq(tb[k], b)) for k in range(SETMAX)])
+        m = S.or_(*[S.and_(S.not_(S.or_(*[S.is_zero(x) for x in tb[:k + 1]])), S.eq(tb[k], b)) for k in range(SETMAX)])
+        if self.lane_terms and m.id not in self.abstraction:  # what an obligation is first asked with in its place
+            self.abstraction[m.id] = S.not_(S.is_zero(S.select(S.mem_var('member_of'), S.zext(b, 64))))
+        return m
 
     def at(self, off):
         b = S.select(self.S, S.add(S.sub(self.s, self.base), off))
@@ -2171,6 +2205,7 @@ class Pool:
 class Prover:
     def __init__(self, args, mach, spec, solver, a):
         self.args, self.mach, self.spec, self.main_solver, self.a = args, mach, spec, solver, a
+        self.abstract = getattr(spec, 'abstraction', None) if os.environ.get('PROVE_ABSTRACT') != '0' else None  # the spec's terms an obligation is first asked with uninterpreted
         self.tls, self.pool, self.works, self.status_thread = threading.local(), None, [], None
         self.paths = self.proved = self.loops = 0
         self.dropped = {}  # loop head -> the invariant candidates a step did not keep
@@ -2226,7 +2261,7 @@ class Prover:
         for k, way in enumerate(reversed(ways)):  # the loads' way first, with the full timeout: on a loaded host it
             rs = []                                 # took more than 120 s where the bound without it took 1800
             for part in way:
-                rs.append(self.solver.check(*st.pc, *part, timeout=None if k == 0 else 6 * AUX))
+                rs.append(self.solver.check(*st.pc, *part, timeout=None if k == 0 else 6 * AUX, abstract=self.abstract))
                 if rs[-1] != 'unsat':
                     break
             if self.args.verbose:
@@ -2255,7 +2290,7 @@ class Prover:
         # first on what the path says of the addresses alone (fewer hypotheses: unsat holds for the whole): the
         # bytes compared before, reads at the stop's offset among them, can take the solver half an hour
         plain = self.plain(st)
-        if len(plain) < len(self.solver.assumed) + len(st.pc) and self.solver.check(*plain, *flat, bare=True, timeout=AUX) == 'unsat':
+        if len(plain) < len(self.solver.assumed) + len(st.pc) and self.solver.check(*plain, *flat, bare=True, timeout=AUX, abstract=self.abstract) == 'unsat':
             return
         # then with this way round's conditions on memory too (past a loop's head: the masks of the block it
         # tests, "a byte found", not the bytes the path compared before the loop): a tzcnt's index below 64
@@ -2263,16 +2298,16 @@ class Prover:
         if recent:  # and the assumptions on memory (z a stop: the found byte's NUL against the block's masks)
             recent = [c for c in self.solver.assumed if S.has_array(c)] + recent
         if recent and len(plain) + len(recent) < len(self.solver.assumed) + len(st.pc) and \
-                self.solver.check(*plain, *recent, *flat, bare=True, timeout=6 * AUX) == 'unsat':  # strcpy_long's: 83 s, the path's 133
+                self.solver.check(*plain, *recent, *flat, bare=True, timeout=6 * AUX, abstract=self.abstract) == 'unsat':  # strcpy_long's: 83 s, the path's 133
             return
         each = next((c for c in flat if c.op == 'or_b'), None) if lanes else None
-        r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else 3 * AUX if end is not None else None)
+        r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else 3 * AUX if end is not None else None, abstract=self.abstract)
         if r == 'unknown' and end is not None:  # a load past a stop the bytes compared before rule out (strcmp evex
             # past its loops: a byte at a mask's first set bit, 870 s): the stop not below its page first, by the loads
             lemma = self.no_stop_below(st, end)
             if lemma is not None and self.solver.check(*plain, lemma, *flat, bare=True, timeout=AUX) == 'unsat':
                 return
-            r = self.solver.check(*st.pc, *([lemma] if lemma is not None else []), *flat, keep=True)
+            r = self.solver.check(*st.pc, *([lemma] if lemma is not None else []), *flat, keep=True, abstract=self.abstract)
         if r == 'unknown' and each is not None:  # strcmp evex past three loops: 431 s, a lane alone 1 or 2 s
             rest = [c for c in flat if c is not each]
             for x in each.args:
@@ -2290,7 +2325,7 @@ class Prover:
                 continue
             t1 = time.time()
             self.solver.doing = what
-            r = self.solver.check(*st.pc, *conds, keep=True)
+            r = self.solver.check(*st.pc, *conds, keep=True, abstract=self.abstract)
             if self.args.verbose:
                 print('   %-50s %s %.1f s' % (what, r, time.time() - t1), flush=True)
             if r == 'sat':
@@ -2314,7 +2349,7 @@ class Prover:
             t1 = time.time()
             rs = []
             for i, conds in enumerate(ways[k]):
-                r = 'unsat' if (k, i) in done else self.solver.check(*st.pc, *conds, keep=True, timeout=limit)
+                r = 'unsat' if (k, i) in done else self.solver.check(*st.pc, *conds, keep=True, timeout=limit, abstract=self.abstract)
                 if r == 'unsat':
                     done.add((k, i))
                 if r == 'sat':
@@ -2826,6 +2861,8 @@ class Prover:
                     seen_n, snap = st.snaps.get(st.rip, (0, None))
                     if seen_n < self.unroll or (snap is not None and seen_n < 4 * SETMAX and hasattr(self.spec, 'keep_unrolling')
                                                 and self.spec.keep_unrolling(snap, st)):  # the first arrivals run on (a short loop runs out in them)
+                        if seen_n == 0 and hasattr(self.spec, 'canonical') and os.environ.get('PROVE_CANON') != '0':
+                            self.spec.canonical(self, st)
                         st.snaps[st.rip] = (seen_n + 1, st.copy())
                     else:
                         if id(snap) not in self.covered:  # a loop; after another one on this path, the next in a row
