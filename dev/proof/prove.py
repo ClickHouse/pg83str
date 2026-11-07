@@ -552,6 +552,18 @@ class StrCompare(Scan):
             out.append(('the frontier at or past the previous loop\'s', [S.ult(f, lo)]))
         return out
 
+    def contracts(self, img, entry):
+        return {t: self.c_tail for t in named_targets(img, entry, ('strcmp_tail_',))}
+
+    def c_tail(self, prover, st):
+        """strcmp_tail(a + F, b + F), any pointers: strcmp itself, proved as
+        such (spec strcmp_tail); with no stop in [0, F) the first stop from
+        there is this spec's, the difference there its answer, its loads in
+        the pages up to it."""
+        f = st.gpr['rdi']
+        out = [('strcmp_tail is given b as far on as a', [S.not_(S.eq(S.sub(st.gpr['rsi'], self.b), S.sub(f, self.s)))])]
+        return tail_call(self, prover, st, out + self.base_case(st, f, 'B', 1))
+
     def answer(self, st):
         """The index the answer is the difference at: of a's byte in it; for a
         constant one (0: both NUL), a witness, the offset of a byte load from
@@ -1065,8 +1077,9 @@ def contract_targets(img, entry):
 
 def named_targets(img, entry, fns):
     """{address: the function's name past its configuration} of the functions
-    of those names the code from entry reaches by a call or a jump (a tail
-    call); not followed into them."""
+    of those names (a name ending in _: any it begins) the code from entry
+    reaches by a call or a jump (a tail call), entry itself never; not
+    followed into them."""
     names = {a: n for n, a in img.symbols.items()}
     out, seen, todo = {}, set(), [entry]
     while todo:
@@ -1079,7 +1092,7 @@ def named_targets(img, entry, fns):
             tgt = j.get('branch_target')
             if tgt is not None:
                 fn = names.get(tgt, '').split('.', 1)[-1]
-                if fn in fns or any(fn.startswith(x) for x in fns if x.endswith('_')):
+                if tgt != entry and (fn in fns or any(fn.startswith(x) for x in fns if x.endswith('_'))):
                     out[tgt] = fn
                 else:
                     todo.append(tgt)
@@ -1310,13 +1323,6 @@ class Span(Scan):
             return {}
         return {t: self.c_scan32 if fn == 'truffle_scan32' else self.c_strlen for t, fn in got.items()}
 
-    def tail_call(self, prover, st, out):
-        """A jump to a callee in place of the return: its precondition and the
-        state it leaves the caller's, the rest of the path its contract."""
-        prover.later(prover.prove, st, out, self.show())
-        check_tail(st, prover.solver)
-        return True
-
     def c_scan32(self, prover, st):
         """truffle_scan32(from, s, set1, set2, count, members): its contract
         (TruffleScan, TruffleScan32) says the answer is from - s plus the
@@ -1337,7 +1343,7 @@ class Span(Scan):
         st2 = st.copy()
         st2.pc = st.pc + self.general(frm)
         prover.later(prover.prove, st2, [('truffle_scan32\'s from in user space', [S.ult(const(64, USER_HI), frm)])], self.show())
-        return self.tail_call(prover, st, out)
+        return tail_call(self, prover, st, out)
 
     def c_strlen(self, prover, st):
         """strcspn with an empty set: the first NUL of s."""
@@ -1345,7 +1351,7 @@ class Span(Scan):
                ('strlen\'s stop the spec\'s: the set empty', [self.member(var('cx', 8))])]
         if self.spn:
             raise Failure('strlen from strspn')
-        return self.tail_call(prover, st, out)
+        return tail_call(self, prover, st, out)
 
     def lane_facts(self, prover, st):
         """A byte b of s the path tests by a computation of b alone (truffle:
@@ -1859,7 +1865,7 @@ class TruffleScan32:
         return [self.count, self.members, self.r]
 
 
-SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan, 'strspn_long': SpanLong, 'strcspn_long': CspanLong, 'truffle_scan': TruffleScan, 'truffle_scan32': TruffleScan32}
+SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcmp_tail': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan, 'strspn_long': SpanLong, 'strcspn_long': CspanLong, 'truffle_scan': TruffleScan, 'truffle_scan32': TruffleScan32}
 
 
 def contract_stops(spec, img, entry):
@@ -1914,6 +1920,15 @@ def check_abi(st, solver):
             raise Failure('%s not preserved' % r)
     if st.gpr['rsp'] is not S.add(X.RSP0, const(64, 8)):
         raise Failure('rsp at the return: %r' % st.gpr['rsp'])
+
+
+def tail_call(spec, prover, st, out):
+    """A jump to a callee in place of the return: its precondition (out) and
+    the state it leaves the caller's checked, the rest of the path its
+    contract's."""
+    prover.later(prover.prove, st, out, spec.show())
+    check_tail(st, prover.solver)
+    return True
 
 
 def check_tail(st, solver):

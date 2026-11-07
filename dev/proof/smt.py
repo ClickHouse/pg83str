@@ -906,7 +906,11 @@ class Solver:
     def __init__(self, z3='z3', log=None):
         global ANSWERS
         if ANSWERS is None and os.environ.get('PROVE_CACHE') and not INCREMENTAL:
-            ANSWERS = Answers(os.environ['PROVE_CACHE'])
+            try:
+                ANSWERS = Answers(os.environ['PROVE_CACHE'])
+            except OSError as e:  # a place of no writes: every query asked
+                print('PROVE_CACHE: %s' % e, file=sys.stderr, flush=True)
+                os.environ.pop('PROVE_CACHE')
         # a memory limit: a query that would take more answers unknown (16 parallel jobs on a lab host fit)
         self.zp = subprocess.Popen([z3, '-in', '-memory:%d' % MEMORY], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
                                    preexec_fn=_die_with_parent)

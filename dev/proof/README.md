@@ -25,9 +25,10 @@ copy of each function by its spec, `<spec>_<config>` (strspn_sse2), and per
 class where the function is proved in classes, `<spec>_<config>_<k>`; a copy
 whose code is another's (by run.py's fingerprint, checked when it runs)
 takes that one's proof; strcat's node depends on the proofs of the strlen,
-strcpy and strcpy_long its contracts stand for, strspn's and strcspn's in
-the avx2 family on truffle_scan32's (and strlen's), truffle_scan32's on
-truffle_scan's, and each checks every callee is one of them. Each node is
+strcpy and strcpy_long its contracts stand for, strcmp's on its kernel
+strcmp_tail's, strspn's and strcspn's in the avx2 family on truffle_scan32's
+(and strlen's), truffle_scan32's on truffle_scan's, and each checks every
+callee is one of them. Each node is
 dev/proof/node.py; its output, under
 `.build/proof/`, the proof's RESULT line. Under `--dist` the proof nodes run
 on the hosts only (the runner's `remote` nodes: with no host connected they
@@ -122,6 +123,15 @@ path ends there. Mutants of each tier (a table's position or bit, the NUL's
 entry, a step of the scan, members or the mask's not) are refuted at the
 check they break.
 
+strcmp likewise: its first blocks hand the rest to strcmp_tail, whose
+contract (any pointers) is strcmp's own; walked as part of strcmp it was
+explored again from each way the first blocks leave (strcmp evex: 6.4
+hours, evex512's more than 13). Proved apart with the strcmp spec: avx2's
+in 72 s, evex's in 102; the first blocks then check at the jump that b
+moved as far as a, that no stop lies before, the callee-saved registers
+and rsp (avx2: 6.7 s). Mutants that move b another way, skip 16 bytes or
+round the next block wrong are refuted there.
+
 The prover's Python is under 1% of a proof's time, the solvers the rest,
 and about 80% of it goes to checks that do not steer the walk: a return's
 obligations, an access's bounds, a loop's base and step cases. With
@@ -185,7 +195,8 @@ when the full path has not settled the bound in 60 s.
 | `memcpy` | every byte of `d` the corresponding byte of `s`, nothing else written, loads in the pages of `[s, s + n)`; the objects apart |
 | `memmove` | the same with the objects overlapping in any way: one memory, every byte written the source's as it was before the call |
 | `memcmp` | the sign (in fact the value) of the first differing byte pair, 0 without one; loads in the pages of both objects |
-| `strcmp` | the difference of the first pair that differs or ends; loads of each string in its pages up to that byte |
+| `strcmp` | the difference of the first pair that differs or ends; loads of each string in its pages up to that byte; strcmp_tail by its contract |
+| `strcmp_tail` | strcmp's, for the kernel (any pointers) |
 | `strcpy` | the string with its NUL at `d`, nothing else written, the source read up to its NUL's page; the objects apart |
 | `strcpy_long` | the kernel past strcpy's short path, under its precondition (the contract strcat relies on) |
 | `strcat` | `d`'s bytes before its NUL kept, `s` with its NUL copied from there; the callees by their contracts |

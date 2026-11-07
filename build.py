@@ -211,8 +211,8 @@ def proof_node(name, out, args, deps=(), priority=0):
 
 
 proofs = {}  # (spec, config) -> the function's node
-# the specs in the order their contracts need: a callee's node before its caller's
-for spec, copies in sorted(proof_targets.FUNCS.items(), key=lambda kv: kv[0] in proof_targets.TRUFFLE_DEPS):
+for spec in proof_targets.order():  # a callee's node before its caller's
+    copies = proof_targets.FUNCS[spec]
     for config in proof_targets.configs(spec):
         func, name = copies[config], proof_targets.name(spec, config)
         out, prio = f"$(B)/proof/{name}.txt", proof_targets.priority(spec, config)

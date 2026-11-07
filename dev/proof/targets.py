@@ -46,6 +46,10 @@ FUNCS = {
 FUNCS['strspn_long'] = dict(FUNCS['strspn'])
 FUNCS['strcspn_long'] = dict(FUNCS['strcspn'])
 
+# strcmp's kernel past its first blocks, any pointers: strcmp itself, proved apart (strcmp takes it by its contract)
+FUNCS['strcmp_tail'] = {'sse2': 'sse2.strcmp_tail_sse2', 'sse42': 'sse42.strcmp_tail_sse2', 'avx2': 'avx2.strcmp_tail_avx2', 'evex': 'evex.strcmp_tail_evex',
+                        'evex512': 'evex512.strcmp_tail_evex512', 'evex512r': 'evex512r.strcmp_tail_evex512'}
+
 # the shuffle scan of the avx2 family's strspn and strcspn, proved apart: the tables' build, the scan for any tables
 TRUFFLE = ('avx2', 'evex', 'evex512', 'evex512r')
 for _fn in ('truffle_scan', 'truffle_scan32'):
@@ -61,24 +65,35 @@ SPLIT = {
 
 # (spec, config) -> the configuration whose copy has the same code
 SAME = {
-    **{(s, 'sse42'): 'sse2' for s in ('strlen', 'memchr', 'memset', 'memcpy', 'memmove', 'memcmp', 'strcmp', 'strcpy', 'strcpy_long', 'strcat')},
-    **{(s, 'evex512r'): 'evex512' for s in ('memchr', 'memcpy', 'memmove', 'memcmp', 'strcmp', 'strspn', 'strspn_long')},
+    **{(s, 'sse42'): 'sse2' for s in ('strlen', 'memchr', 'memset', 'memcpy', 'memmove', 'memcmp', 'strcmp', 'strcmp_tail', 'strcpy', 'strcpy_long',
+                                      'strcat')},
+    **{(s, 'evex512r'): 'evex512' for s in ('memchr', 'memcpy', 'memmove', 'memcmp', 'strcmp', 'strcmp_tail', 'strspn', 'strspn_long')},
     **{(s, c): 'avx2' for s in ('truffle_scan', 'truffle_scan32') for c in ('evex512', 'evex512r')},
     ('strcspn', 'evex512r'): 'evex512',  # the same past their contracts' callees
 }
 
-DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long'), 'truffle_scan32': ('truffle_scan',)}
+DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long'), 'strcmp': ('strcmp_tail',), 'truffle_scan32': ('truffle_scan',)}
 TRUFFLE_DEPS = {'strspn': ('truffle_scan32',), 'strcspn': ('truffle_scan32', 'strlen')}
 
 # the order the ready proofs start in, the longest first (hours to tens of
 # hours on the lab, the classes of a split each a part of their function's)
-SLOW = ('strspn', 'strcspn', 'strcpy_long', 'strcmp', 'strcpy', 'memchr', 'memcmp', 'strspn_long', 'strcspn_long', 'strcat',
+SLOW = ('strspn', 'strcspn', 'strcpy_long', 'strcmp_tail', 'strcmp', 'strcpy', 'memchr', 'memcmp', 'strspn_long', 'strcspn_long', 'strcat',
         'memmove', 'memcpy', 'memset', 'strlen', 'truffle_scan', 'truffle_scan32')
 
 
 def deps(spec, config):
     """The specs whose proofs this configuration's copy of spec takes its callees from."""
     return TRUFFLE_DEPS.get(spec, ()) if config in TRUFFLE and spec in TRUFFLE_DEPS else DEPS.get(spec, ())
+
+
+def order():
+    """The specs, each after those its proofs take contracts from."""
+    out, todo = [], list(FUNCS)
+    while todo:
+        spec = next(x for x in todo if all(d in out for c in configs(x) for d in deps(x, c)))
+        out.append(spec)
+        todo.remove(spec)
+    return out
 
 
 def configs(spec):
