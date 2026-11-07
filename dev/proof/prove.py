@@ -1775,7 +1775,7 @@ class Pool:
 class Prover:
     def __init__(self, args, mach, spec, solver, a):
         self.args, self.mach, self.spec, self.main_solver, self.a = args, mach, spec, solver, a
-        self.tls, self.pool = threading.local(), None
+        self.tls, self.pool, self.works, self.status_t = threading.local(), None, [], 0
         self.paths = self.proved = self.loops = 0
         self.dropped = {}  # loop head -> the invariant candidates a step did not keep
         self.lost = {}     # this run's: dropped at its end
@@ -2374,13 +2374,37 @@ class Prover:
                 print('  the loop at %#x: %d candidates not kept (%s), %s changed elsewhere; its subtree again' % (
                     s1.rip, len(lost), ', '.join(sorted(lost)[:4]), ', '.join(sorted(wider)) or 'nothing'), flush=True)
 
+    def status(self, st):
+        """PROVE_STATUS=dir: a line a minute in dir/<func>-<classes>-<align>.txt
+        on how far the proof is: the paths closed, the ways still to walk in
+        each walk under way (the outermost first), the loops generalized,
+        where it is, the checking threads' backlog."""
+        now = time.time()
+        if now - self.status_t < 60:
+            return
+        self.status_t = now
+        name = '%s-%s-%s.txt' % (self.args.func, self.args.classes or self.align, self.a)
+        line = {'s': round(now - self.t0), 'paths': self.paths, 'obligations': self.proved, 'loops': self.loops,
+                'ways': [len(w) for w in self.works], 'rip': '%#x' % st.rip, 'loop': None if st.gen is None else '%#x' % st.gen['head'],
+                'queries': self.main_solver.queries + sum(x.queries for x in (self.pool.solvers if self.pool else [])),
+                'backlog': self.pool.jobs.qsize() if self.pool else 0}
+        try:
+            with open(os.path.join(os.environ['PROVE_STATUS'], name), 'a') as f:
+                f.write(json.dumps(line) + '\n')
+        except OSError:
+            pass
+
     def explore(self, st0):
         work = [st0]
+        self.works.append(work)
         targets = self.mach.targets
+        report = 'PROVE_STATUS' in os.environ
         while work:
             st = work.pop()
             closed = False
             while not st.done:
+                if report:
+                    self.status(st)
                 if st.steps > self.args.steps:
                     raise Failure('a path past %d instructions at %#x' % (self.args.steps, st.rip))
                 if self.args.induct and st.rip in targets:
@@ -2471,6 +2495,7 @@ class Prover:
             check_abi(st, self.solver)
             obligations, show = self.spec.obligations(st)
             self.later(self.prove, st, obligations, show)
+        self.works.pop()
 
 
 def main():

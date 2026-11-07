@@ -87,6 +87,11 @@ on with its branch queries; the first failure stops the proof as before.
 8 workers: strcmp sse2 21 to 9.5 s, strlen avx2 355 to 116 s, strcmp avx2
 859 to 316 s, strcpy_long sse2 84 to 48 s.
 
+PROVE_STATUS=dir has a proof write a line a minute to
+dir/<func>-<classes>-<align>.txt: its time, the paths closed, the
+obligations, the loops generalized, the ways each walk under way has
+still to take, where it is, the checking threads' backlog.
+
 `run.py` proves a configuration's copy of a function once: the same
 instructions, branch targets, callees' names and constants read (and the
 same tzcnt) are the same machine to the prover. It hands the jobs out as
