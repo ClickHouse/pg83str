@@ -68,7 +68,7 @@ struct str_table {
     int (*memcmp_large)(const u8 *a, const u8 *b, size_t n);   /* n > 128, the first 64 bytes equal */
     size_t (*strlen_tail)(const u8 *a, const u8 *s);           /* a 16-aligned, s < a, no NUL in [s, a) */
     int (*strcmp_tail)(const u8 *a, const u8 *b);              /* any pointers */
-    void *(*strcpy_long)(u8 *d, const u8 *s, const u8 *a);     /* no NUL in [s, a), a 16-aligned and past s */
+    void *(*strcpy_long)(u8 *d, const u8 *s, const u8 *a);     /* no NUL in [s, a), a 16-aligned, past s by 1..128, by 16 at most unless 32-aligned */
     void *(*copy_huge)(u8 *d, const u8 *s, size_t n);          /* n >= REP_THRESHOLD, no backward overlap */
     void *(*fill_huge)(u8 *d, int c, size_t n);                /* n >= REP_THRESHOLD */
     void *(*memchr_large)(const u8 *s, u8 c, size_t n);        /* no match in [s, A), n > A - s, A = align_down(s, 16) + 32; aligned loads only (C11) */

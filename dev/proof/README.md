@@ -233,7 +233,7 @@ index is one select at the block's offset plus the index.
 | `strcmp_tail` | strcmp's, for the kernel (any pointers) |
 | `strlen_tail`, `memchr_large`, `fill_large`, `copy_large`, `memcmp_large` | strlen's, memchr's, memset's, memmove's and memcmp's under the kernel's precondition (str_table's, as above) |
 | `strcpy` | the string with its NUL at `d`, nothing else written, the source read up to its NUL's page; the objects apart; strcpy_long by its contract |
-| `strcpy_long` | the kernel past strcpy's short path, under its precondition (the contract strcat relies on) |
+| `strcpy_long` | the kernel past strcpy's short path, under its precondition: no NUL in [s, a), a 16-aligned and 1 to 128 past s, 16 at most unless 32-aligned (avx2's kernel copies a NUL in the 16 bytes at a by copy_small, 32 bytes at most; the table's contract said any a to 128, which that kernel does not keep: found by its proof, every caller passes one of the two) |
 | `strcat` | `d`'s bytes before its NUL kept, `s` with its NUL copied from there; the callees by their contracts |
 | `strspn`, `strcspn` | the length of the prefix in (not in) the set; sets of up to 32 bytes; in the avx2 family with truffle_scan32 and, for an empty set, strlen by their contracts |
 | `strspn_long`, `strcspn_long` | the same for sets of more than 32 bytes, any length |

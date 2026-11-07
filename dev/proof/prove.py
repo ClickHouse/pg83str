@@ -1099,7 +1099,8 @@ class StrCopy(Scan, Writer):
         out = [('strcpy_long is given d', [S.not_(S.eq(st.gpr['rdi'], self.d))]),
                ('strcpy_long is given s', [S.not_(S.eq(st.gpr['rsi'], self.s))]),
                ('strcpy_long\'s a 16-aligned', [S.not_(S.is_zero(S.band(a, const(64, 15))))]),
-               ('strcpy_long\'s a past s by 1..128', [S.not_(S.and_(S.ult(self.s, a), S.ule(a, S.add(self.s, const(64, 128)))))])]
+               ('strcpy_long\'s a past s by 1..128', [S.not_(S.and_(S.ult(self.s, a), S.ule(a, S.add(self.s, const(64, 128)))))]),
+               ('strcpy_long\'s a 32-aligned or past s by 16 at most', [S.not_(S.or_(S.is_zero(S.band(a, const(64, 31))), S.ule(S.sub(a, self.s), const(64, 16))))])]
         return tail_call(self, prover, st, out + self.base_case(st, a, 'B', 1))
 
     def at(self, off):
@@ -1205,9 +1206,12 @@ class StrCopy(Scan, Writer):
 
 class StrCopyLong(StrCopy):
     """strcpy_long(d, s, a): strcpy's kernel past its short path, the
-    contract its callers rely on: a 16-aligned, s < a <= s + 128, no NUL in
-    [s, a) (a precondition: z, any NUL, at or past a - s, and the scan's
-    frontier there from the start); then strcpy(d, s), d its answer."""
+    contract its callers rely on: a 16-aligned, s < a <= s + 128, a <= s +
+    16 unless a is 32-aligned (avx2's kernel copies a NUL in the 16 bytes
+    from a by copy_small, 32 bytes at most: every caller passes align_down(s,
+    16) + 16 or a 32-aligned a), no NUL in [s, a) (a precondition: z, any
+    NUL, at or past a - s, and the scan's frontier there from the start);
+    then strcpy(d, s), d its answer."""
 
     def contracts(self, img, entry):
         return {}
@@ -1216,7 +1220,8 @@ class StrCopyLong(StrCopy):
         params, assume = StrCopy.setup(self, a, align)
         delta = var('adelta', 64)  # a = s + delta: an address in s's region
         self.a = S.add(self.s, delta)
-        assume += [S.is_zero(S.band(self.a, const(64, 15))), S.ult(const(64, 0), delta), S.ule(delta, const(64, 128)), S.ule(delta, self.z)]
+        assume += [S.is_zero(S.band(self.a, const(64, 15))), S.ult(const(64, 0), delta), S.ule(delta, const(64, 128)), S.ule(delta, self.z),
+                   S.or_(S.is_zero(S.band(self.a, const(64, 31))), S.ule(delta, const(64, 16)))]  # past s by 16 at most unless 32-aligned
         assume += [S.or_(S.ule(delta, const(64, j)), S.not_(self.at(const(64, j)))) for j in range(128)]  # no NUL in [s, a)
         return [self.d, self.s, self.a], assume
 
@@ -1391,6 +1396,8 @@ class StrCat(Writer):
         a = st.gpr['rdx']
         prover.prove(st, [('strcpy_long\'s a 16-aligned', [S.not_(S.is_zero(S.band(a, const(64, 15))))]),
                           ('strcpy_long\'s a past s by 1..128', [S.not_(S.and_(S.ult(self.s, a), S.ule(a, S.add(self.s, const(64, 128)))))]),
+                          ('strcpy_long\'s a 32-aligned or past s by 16 at most',
+                           [S.not_(S.or_(S.is_zero(S.band(a, const(64, 31))), S.ule(S.sub(a, self.s), const(64, 16))))]),
                           ('no NUL of s before strcpy_long\'s a', span(self, st, const(64, 0), S.sub(a, self.s), self.snul))], self.show())
         L = self.copy_call(prover, st, 'strcpy_long')
         st.pc.append(S.ule(S.sub(a, self.s), L))
