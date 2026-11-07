@@ -325,16 +325,20 @@ class Scan:
         return S.ite(S.eq(self.z, self.n), S.sub(self.n, const(64, 1)), self.z) if self.bounded else self.z
 
     def stop_end(self, a, n):
-        """For a load of the scanned bytes: E, the offset of the page of its
-        last byte, so that only a stop below E puts the load past the stop's
-        page (early); None for a load whose bound is not the stop's."""
+        """For a load of the scanned bytes: ends E, so that only a stop below
+        E puts the load past the stop's page (early): its last byte's offset
+        first (a load that ends at the stop a mask found, strcpy_long's
+        nul - 31: no stop below it is what the mask says, the page's start
+        is that and arithmetic on it), then the offset of its last byte's
+        page (a load that reaches past the stop in its page); None for a
+        load whose bound is not the stop's."""
         if self.bounded:
             return None
         p = self.owner(a) if hasattr(self, 'owner') else self.s
         if p is not self.s and p is not getattr(self, 'b', None):
             return None
         start = S.shl(page(last_of(a, n)), const(64, 12))
-        return S.ite(S.ult(p, start), S.sub(start, p), const(64, 0))  # a load in p's page: past no stop at all
+        return [S.sub(last_of(a, n), p), S.ite(S.ult(p, start), S.sub(start, p), const(64, 0))]  # a load in p's page: past no stop at all
 
     def early(self, a, n):
         """A load past the last page the stop allows, or before s's page, is
@@ -2318,10 +2322,13 @@ class Prover:
         r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else 3 * AUX if end is not None else None, abstract=self.abstract)
         if r == 'unknown' and end is not None:  # a load past a stop the bytes compared before rule out (strcmp evex
             # past its loops: a byte at a mask's first set bit, 870 s): the stop not below its page first, by the loads
-            self.solver.doing = what + ': no stop below it'
-            lemma = self.no_stop_below(st, end)
-            if lemma is not None and self.solver.check(*plain, lemma, *flat, bare=True, timeout=AUX) == 'unsat':
-                return
+            lemma = None
+            for k, e in enumerate(end if isinstance(end, list) else [end]):  # the ends a lemma may take, the strongest first
+                self.solver.doing = what + ': no stop below it (%d)' % (k + 1)
+                got = self.no_stop_below(st, e)
+                if got is not None and self.solver.check(*plain, got, *flat, bare=True, timeout=AUX) == 'unsat':
+                    return
+                lemma = lemma or got
             self.solver.doing = what + ': the path%s' % (' and the lemma' if lemma is not None else ', no lemma')
             r = self.solver.check(*st.pc, *([lemma] if lemma is not None else []), *flat, keep=True, abstract=self.abstract)
         if r == 'unknown' and each is not None:  # strcmp evex past three loops: 431 s, a lane alone 1 or 2 s
