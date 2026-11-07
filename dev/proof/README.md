@@ -6,7 +6,11 @@ post pass's copies `<config>.<function>` are what each configuration runs),
 not on the C: what the compiler and the post pass made is what is checked.
 
 ```
-ix run lib/c bld/compiler -- ./build proof                 # .build/proof/libstr.elf, .build/proof/oracle
+ix run lib/c bld/compiler bin/z3 bin/bitwuzla -- ./build proof        # the whole chain: every proof below
+ix run lib/c bld/compiler bin/z3 bin/bitwuzla -- ./build --dist=lab1.mesh:20,lab2.mesh:25,lab3.mesh:18 -j 100 \
+    -Dproof_workers=4 -Dproof_timeout=5400 strspn_avx2           # one function's proof (its 16 classes) on the lab
+ix run lib/c bld/compiler bin/z3 bin/bitwuzla -- ./build strspn_avx2_3 strcat_sse2   # a class; a proof and its callees'
+ix run lib/c bld/compiler -- ./build proof_elf             # .build/proof/libstr.elf, .build/proof/oracle
 ix run bin/z3 bin/bitwuzla -- python3 dev/proof/prove.py --elf .build/proof/libstr.elf \
     --func avx2.memchr_avx2 --spec memchr --induct --align 49 [--verbose]
 dev/proof/run.py --z3 .../bin/z3 --bitwuzla .../bin/bitwuzla --func avx2.memchr_avx2,evex.memchr_evex \
@@ -15,6 +19,18 @@ dev/proof/run.py ... --func memchr:sse2.memchr_sse2,strlen:sse42.strlen_sse2 --i
 python3 dev/proof/replay.py --func avx2.strspn_avx2 --spec strspn --n 2000
 ix run bin/z3 -- python3 dev/proof/check_smt.py
 ```
+
+`./build proof` is the chain (dev/proof/targets.py): a node per configuration's
+copy of each function by its spec, `<spec>_<config>` (strspn_sse2), and per
+class where the function is proved in classes, `<spec>_<config>_<k>`; a copy
+whose code is another's (by run.py's fingerprint, checked when it runs)
+takes that one's proof; strcat's node depends on the proofs of the strlen,
+strcpy and strcpy_long its contracts stand for, and checks every callee is
+one of them. Each node is dev/proof/node.py; its output, under
+`.build/proof/`, the proof's RESULT line. Under `--dist` the proof nodes run
+on the hosts only (the runner's `remote` nodes), z3 and bitwuzla sent there
+as the proof_solvers node's outputs; -Dproof_workers, -Dproof_timeout,
+-Dproof_memory are prove.py's --workers, PROVE_TIMEOUT and PROVE_MEMORY.
 
 ## How
 

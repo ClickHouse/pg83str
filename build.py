@@ -4,6 +4,7 @@ import sys
 import build
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "dev"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "dev", "proof"))
 from units import UNITS  # noqa: E402
 
 # -fno-pic: the post passes rewrite the objects and want plain PC32/PLT32
@@ -161,4 +162,67 @@ proof_oracle = command(
     descr="LD",
     color="cyan",
 )
-group("proof", proof_elf, proof_oracle)
+
+# The proofs (dev/proof/README.md): a node per configuration's copy of each
+# function by its spec, <spec>_<config>, and per class where the function is
+# proved in classes, <spec>_<config>_<k> (dev/proof/targets.py says which,
+# which copies have another's code, and which proofs take others' as their
+# callees' contracts). ./build proof is the whole chain; hours to days of
+# solver time, so on the lab: ./build --dist=lab1.mesh:20,lab2.mesh:25 -j 100
+# proof (or a node: strspn_sse2, strspn_avx2_3), the proofs on the hosts only.
+build.flags.allow({
+    "proof_workers": {"descr": "a proof's checking threads (dev/proof/prove.py --workers)", "default": "1"},
+    "proof_timeout": {"descr": "seconds a solver query may take before it is unknown (PROVE_TIMEOUT)", "default": "1800"},
+    "proof_memory": {"descr": "megabytes a solver may take (PROVE_MEMORY)", "default": "3000"},
+})
+import targets as proof_targets  # noqa: E402
+
+# z3 and bitwuzla from PATH (ix run bin/z3 bin/bitwuzla -- ./build proof), static: what the proofs on a host run
+proof_solvers = command(
+    name="proof_solvers",
+    outputs=["$(B)/proof/bin/z3", "$(B)/proof/bin/bitwuzla"],
+    cmd=["sh", "-c", 'cp "$(command -v z3)" "$0" && cp "${PROVE_BITWUZLA:-$(command -v bitwuzla)}" "$1"', "$(B)/proof/bin/z3",
+         "$(B)/proof/bin/bitwuzla"],
+    descr="CP",
+    color="cyan",
+    local=True,
+)
+proof_inputs = [f"$(S)/dev/proof/{f}.py" for f in ("node", "prove", "machine", "smt", "run", "targets")] + ["$(S)/dev/x86.py", "$(S)/dev/elf.py"]
+proof_env = {"STR_PROOF_WORKERS": build.flags.proof_workers, "STR_PROOF_TIMEOUT": build.flags.proof_timeout,
+             "STR_PROOF_MEMORY": build.flags.proof_memory}
+
+
+def proof_node(name, out, args, deps=()):
+    return command(
+        name=name,
+        inputs=proof_inputs,
+        outputs=[out],
+        deps=[proof_elf, proof_solvers, *deps],
+        cmd=["python3", "$(S)/dev/proof/node.py", "--elf", "$(B)/proof/libstr.elf", "--bin", "$(B)/proof/bin", "--out", out, *args],
+        env=proof_env,
+        descr="PR",
+        color="light-magenta",
+        remote=True,
+    )
+
+
+proofs = {}  # (spec, config) -> the function's node
+for spec, copies in proof_targets.FUNCS.items():
+    for config in proof_targets.CONFIGS:
+        func, name = copies[config], proof_targets.name(spec, config)
+        out = f"$(B)/proof/{name}.txt"
+        base = ["--spec", spec, "--func", func]
+        if (spec, config) in proof_targets.SAME:  # the code of another configuration's copy: its proof
+            other = proof_targets.SAME[(spec, config)]
+            rep = proofs[(spec, other)]
+            node = proof_node(name, out, [*base, "--same-as", copies[other], "--of", rep.outputs[0]], [rep])
+        elif (spec, config) in proof_targets.SPLIT:  # the classes, then their sum
+            n = proof_targets.SPLIT[(spec, config)]
+            parts = [proof_node(proof_targets.name(spec, config, k), f"$(B)/proof/{name}/{k}.txt",
+                                [*base, "--classes", str(n), "--align", str(k)]) for k in range(n)]
+            node = proof_node(name, out, [*base, "--of", *[p.outputs[0] for p in parts]], parts)
+        else:
+            callees = [proofs[(dep, config)] for dep in proof_targets.DEPS.get(spec, ())]
+            node = proof_node(name, out, [*base, *(["--callee", *[c.outputs[0] for c in callees]] if callees else [])], callees)
+        proofs[(spec, config)] = node
+group("proof", proof_elf, proof_oracle, *proofs.values())

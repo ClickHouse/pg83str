@@ -214,6 +214,9 @@ class Node:
     # A local node never leaves this machine under --dist: it needs the
     # network, the real source root, or something else a remote lacks.
     local: bool = False
+    # A remote node runs only on the --dist hosts when there are any: too
+    # heavy for this machine (a proof of hours); here without --dist.
+    remote: bool = False
     uid: str | None = None
 
     def __post_init__(self) -> None:
@@ -254,6 +257,7 @@ class Target:
     linker: str | None = None
     enabled: bool = True
     local: bool = False
+    remote: bool = False
     host_deps: list["Target"] = dataclasses.field(default_factory=list)
     root: Node | None = None
     nodes: list[Node] = dataclasses.field(default_factory=list)
@@ -521,7 +525,7 @@ class BuildContext:
 
     def command(self, *, inputs=(), outputs, cmd, deps=(), name=None, cwd=B, env=None,
                 cflags=(), cxxflags=(), cppflags=(), ldflags=(), descr="GN", color="yellow",
-                local=False) -> Target:
+                local=False, remote=False) -> Target:
         commands = cmd
         if not commands or isinstance(commands[0], (str, bytes)):
             commands = [commands]
@@ -532,7 +536,7 @@ class BuildContext:
             env=dict(env or {}),
             public_cflags=_items(cflags), public_cxxflags=_items(cxxflags),
             public_cppflags=_items(cppflags), ldflags=_items(ldflags),
-            descr=str(descr), color=str(color), local=bool(local),
+            descr=str(descr), color=str(color), local=bool(local), remote=bool(remote),
         )
         self._validate_deps(target)
         self.targets.append(target)
@@ -1156,7 +1160,7 @@ class BuildContext:
                 inputs=target.inputs.copy(), outputs=target.outputs.copy(),
                 commands=[x.copy() for x in target.commands], deps=dep_nodes,
                 cwd=target.cwd, env=target.env.copy(),
-                descr=target.descr, color=target.color, local=target.local,
+                descr=target.descr, color=target.color, local=target.local, remote=target.remote,
             )
             for inp in node.inputs:
                 if inp.startswith(S + "/") or os.path.isabs(inp):
@@ -2792,7 +2796,11 @@ class Executor:
         remote = [(host.free_slots(used[host]), host) for host in self.hosts]
         best_remote = max(remote, key=lambda item: item[0], default=(0, None))
         for index, node in enumerate(ready):
-            if node.local or best_remote[0] <= 0:
+            if node.remote and self.hosts:  # the hosts only
+                if best_remote[0] <= 0:
+                    continue
+                worker = best_remote[1]
+            elif node.local or best_remote[0] <= 0:
                 if local_free <= 0:
                     continue
                 worker = None
