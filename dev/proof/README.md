@@ -7,7 +7,7 @@ not on the C: what the compiler and the post pass made is what is checked.
 
 ```
 ix run lib/c bld/compiler bin/z3 bin/bitwuzla -- ./build proof        # the whole chain: every proof below
-ix run lib/c bld/compiler bin/z3 bin/bitwuzla -- ./build --dist=lab1.mesh:20,lab2.mesh:25,lab3.mesh:18 -j 100 \
+ix run lib/c bld/compiler bin/z3 bin/bitwuzla -- ./build --dist=root@lab1.mesh:20,root@lab2.mesh:25,root@lab3.mesh:18 -j 100 \
     -Dproof_workers=4 -Dproof_timeout=5400 strspn_avx2           # one function's proof (its 16 classes) on the lab
 ix run lib/c bld/compiler bin/z3 bin/bitwuzla -- ./build strspn_avx2_3 strcat_sse2   # a class; a proof and its callees'
 ix run lib/c bld/compiler -- ./build proof_elf             # .build/proof/libstr.elf, .build/proof/oracle
@@ -28,7 +28,8 @@ takes that one's proof; strcat's node depends on the proofs of the strlen,
 strcpy and strcpy_long its contracts stand for, and checks every callee is
 one of them. Each node is dev/proof/node.py; its output, under
 `.build/proof/`, the proof's RESULT line. Under `--dist` the proof nodes run
-on the hosts only (the runner's `remote` nodes), z3 and bitwuzla sent there
+on the hosts only (the runner's `remote` nodes: with no host connected they
+wait, so a host given as `root@labN.mesh`), z3 and bitwuzla sent there
 as the proof_solvers node's outputs; -Dproof_workers, -Dproof_timeout,
 -Dproof_memory are prove.py's --workers, PROVE_TIMEOUT and PROVE_MEMORY.
 

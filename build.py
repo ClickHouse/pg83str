@@ -168,7 +168,7 @@ proof_oracle = command(
 # proved in classes, <spec>_<config>_<k> (dev/proof/targets.py says which,
 # which copies have another's code, and which proofs take others' as their
 # callees' contracts). ./build proof is the whole chain; hours to days of
-# solver time, so on the lab: ./build --dist=lab1.mesh:20,lab2.mesh:25 -j 100
+# solver time, so on the lab: ./build --dist=root@lab1.mesh:20,root@lab2.mesh:25 -j 100
 # proof (or a node: strspn_sse2, strspn_avx2_3), the proofs on the hosts only.
 build.flags.allow({
     "proof_workers": {"descr": "a proof's checking threads (dev/proof/prove.py --workers)", "default": "1"},
