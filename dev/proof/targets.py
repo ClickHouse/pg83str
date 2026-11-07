@@ -9,7 +9,9 @@ function's node stands for all of them. SAME names the copies whose code is
 another's (the post pass gives each configuration its own): their node
 checks that, by the prover's fingerprint, and takes that one's proof.
 DEPS: the specs a spec's proof takes its callees from (strcat: strlen's,
-strcpy's and strcpy_long's contracts, each proved on its own)."""
+strcpy's and strcpy_long's contracts, each proved on its own; strspn's and
+strcspn's the shuffle scan's, in the units that have it). A function not
+every configuration has (truffle_scan) has no entry for the others."""
 
 CONFIGS = ('sse2', 'sse42', 'avx2', 'evex', 'evex512', 'evex512r')
 
@@ -44,27 +46,44 @@ FUNCS = {
 FUNCS['strspn_long'] = dict(FUNCS['strspn'])
 FUNCS['strcspn_long'] = dict(FUNCS['strcspn'])
 
+# the shuffle scan of the avx2 family's strspn and strcspn, proved apart: the tables' build, the scan for any tables
+TRUFFLE = ('avx2', 'evex', 'evex512', 'evex512r')
+for _fn in ('truffle_scan', 'truffle_scan32'):
+    FUNCS[_fn] = {c: '%s.%s' % (c, _fn) for c in TRUFFLE}
+
 # (spec, config) -> classes: those not proved in one class (it did not end
 # in hours, or failed where the classes do not: a shuffle by s & 15)
 SPLIT = {
     **{('strcpy', c): 64 for c in ('avx2', 'evex', 'evex512', 'evex512r')},
     **{('memchr', c): 64 for c in ('avx2', 'evex', 'evex512')},
     **{(s, c): 16 for s in ('strspn', 'strcspn') for c in ('avx2', 'evex', 'evex512')},
-    ('strcspn', 'evex512r'): 16,
 }
 
 # (spec, config) -> the configuration whose copy has the same code
 SAME = {
     **{(s, 'sse42'): 'sse2' for s in ('strlen', 'memchr', 'memset', 'memcpy', 'memmove', 'memcmp', 'strcmp', 'strcpy', 'strcpy_long', 'strcat')},
     **{(s, 'evex512r'): 'evex512' for s in ('memchr', 'memcpy', 'memmove', 'memcmp', 'strcmp', 'strspn', 'strspn_long')},
+    **{(s, c): 'avx2' for s in ('truffle_scan', 'truffle_scan32') for c in ('evex512', 'evex512r')},
+    ('strcspn', 'evex512r'): 'evex512',  # the same past their contracts' callees
 }
 
-DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long')}
+DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long'), 'truffle_scan32': ('truffle_scan',)}
+TRUFFLE_DEPS = {'strspn': ('truffle_scan32',), 'strcspn': ('truffle_scan32', 'strlen')}
 
 # the order the ready proofs start in, the longest first (hours to tens of
 # hours on the lab, the classes of a split each a part of their function's)
 SLOW = ('strspn', 'strcspn', 'strcpy_long', 'strcmp', 'strcpy', 'memchr', 'memcmp', 'strspn_long', 'strcspn_long', 'strcat',
-        'memmove', 'memcpy', 'memset', 'strlen')
+        'memmove', 'memcpy', 'memset', 'strlen', 'truffle_scan', 'truffle_scan32')
+
+
+def deps(spec, config):
+    """The specs whose proofs this configuration's copy of spec takes its callees from."""
+    return TRUFFLE_DEPS.get(spec, ()) if config in TRUFFLE and spec in TRUFFLE_DEPS else DEPS.get(spec, ())
+
+
+def configs(spec):
+    """The configurations that have the function."""
+    return [c for c in CONFIGS if c in FUNCS[spec]]
 
 
 def priority(spec, config):

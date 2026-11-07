@@ -43,17 +43,19 @@ def ssh(host, cmd, **kw):
     return subprocess.run(['ssh', '-o', 'LogLevel=ERROR', 'root@%s.mesh' % host, cmd], **kw)
 
 
-def fingerprint(img, entry):
+def fingerprint(img, entry, stops=()):
     """The code reachable from entry (jumps and calls followed) with its
     branch targets as places in the walk (a call's with its callee's name
     past the configuration, what the specs' contracts go by) and its
     rip-relative operands as the bytes they read: two functions with the
-    same are the same machine to the prover, their addresses aside."""
+    same are the same machine to the prover, their addresses aside. stops:
+    the callees a spec takes by their contracts, not followed: their names
+    are in the walk, their code is theirs."""
     names = {a: n for n, a in img.symbols.items()}
     order, index, todo = [], {}, [entry]
     while todo:
         a = todo.pop(0)
-        while a not in index:
+        while a not in index and a not in stops:
             index[a] = len(order)
             j = img.decode(a)
             order.append(j)
@@ -70,7 +72,7 @@ def fingerprint(img, entry):
         for o in j['ops']:
             if o['kind'] == 'NearBranch':
                 tgt = j['branch_target']
-                o = ['to', index[tgt], names.get(tgt, '').split('.', 1)[-1]]
+                o = ['to', index.get(tgt, -1), names.get(tgt, '').split('.', 1)[-1]]
             elif o['kind'] == 'Memory' and o['mem'].get('rip_rel'):
                 at = j['offset'] + j['len'] + o['mem']['disp']
                 o = ['data', o['mem']['size'], [img.byte(at + i) for i in range(o['mem']['size'])]]
@@ -129,7 +131,7 @@ def main():
     jobs, same, rep, split = [], {}, {}, {}
     for item in args.func.split(','):
         spec, f = item.split(':') if ':' in item else (args.spec, item)
-        key = (spec, not f.startswith(('sse2.', 'sse42.')), fingerprint(img, img.symbols[f]))  # the prover's tzcnt is bsf for those
+        key = (spec, not f.startswith(('sse2.', 'sse42.')), fingerprint(img, img.symbols[f], prove.contract_stops(spec, img, img.symbols[f])))  # the prover's tzcnt is bsf for those
         if key in rep:
             same[(spec, f)] = rep[key]
             continue

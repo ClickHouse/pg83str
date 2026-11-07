@@ -25,8 +25,10 @@ copy of each function by its spec, `<spec>_<config>` (strspn_sse2), and per
 class where the function is proved in classes, `<spec>_<config>_<k>`; a copy
 whose code is another's (by run.py's fingerprint, checked when it runs)
 takes that one's proof; strcat's node depends on the proofs of the strlen,
-strcpy and strcpy_long its contracts stand for, and checks every callee is
-one of them. Each node is dev/proof/node.py; its output, under
+strcpy and strcpy_long its contracts stand for, strspn's and strcspn's in
+the avx2 family on truffle_scan32's (and strlen's), truffle_scan32's on
+truffle_scan's, and each checks every callee is one of them. Each node is
+dev/proof/node.py; its output, under
 `.build/proof/`, the proof's RESULT line. Under `--dist` the proof nodes run
 on the hosts only (the runner's `remote` nodes: with no host connected they
 wait, so a host given as `root@labN.mesh`), z3 and bitwuzla sent there
@@ -102,6 +104,24 @@ answer not a match). The term layer
 also keeps psrlw's bytes their own: (w >> 4) & 15 of a word's low byte no
 longer reads its high byte.
 
+Past 64 bytes of text (2048 for a set of up to 16) the avx2 family hands
+the rest to truffle_scan32: walked as part of strspn, its tables' loop is a
+way per count and the scan's loop is explored again on each of them, in
+every way the code got there (strspn avx2: more than a hundred arrivals, in
+each of 16 classes; not done in days). So it is proved apart, in three
+tiers, each a node with the next one's proof behind it. truffle_scan, for
+any tables: the tables' 32 bytes unknown, a byte's bit in them what "in the
+set" means, members 0 or 1 unknown; one class, one loop by induction: 96 s.
+truffle_scan32: its 33 ways, in each the tables it hands on say of a free
+byte x exactly "x is one of the first count lanes" (or the NUL, for
+members), its other arguments passed on; 5 s. And the caller: at its jump
+to truffle_scan32, count and the two registers say of a free byte exactly
+what the spec's set does, members the spec's, no stop before from, the
+callee-saved registers as at the entry and rsp at the return address; the
+path ends there. Mutants of each tier (a table's position or bit, the NUL's
+entry, a step of the scan, members or the mask's not) are refuted at the
+check they break.
+
 The prover's Python is under 1% of a proof's time, the solvers the rest,
 and about 80% of it goes to checks that do not steer the walk: a return's
 obligations, an access's bounds, a loop's base and step cases. With
@@ -110,6 +130,14 @@ processes of its own, on a copy of the path's state, while the walk goes
 on with its branch queries; the first failure stops the proof as before.
 8 workers: strcmp sse2 21 to 9.5 s, strlen avx2 355 to 116 s, strcmp avx2
 859 to 316 s, strcpy_long sse2 84 to 48 s.
+
+PROVE_CACHE=dir keeps the solvers' answers across runs, dir/answers.txt, by
+the query's structure (ids aside, the conditions in any order, the
+assumptions among them): a proof cut off by a lost connection, or run again
+after a change to the prover that leaves its queries as they were, asks
+only what was not asked (truffle_scan again: 146 s to 0.3). `./build`'s
+nodes keep them in ~/proof-cache on the host; -Dproof_cache=0 asks every
+query, for the last word on a chain.
 
 PROVE_STATUS=dir has a proof write a line a minute to
 dir/<func>-<classes>-<align>.txt: its time, the paths closed, the
@@ -161,8 +189,10 @@ when the full path has not settled the bound in 60 s.
 | `strcpy` | the string with its NUL at `d`, nothing else written, the source read up to its NUL's page; the objects apart |
 | `strcpy_long` | the kernel past strcpy's short path, under its precondition (the contract strcat relies on) |
 | `strcat` | `d`'s bytes before its NUL kept, `s` with its NUL copied from there; the callees by their contracts |
-| `strspn`, `strcspn` | the length of the prefix in (not in) the set; sets of up to 32 bytes |
+| `strspn`, `strcspn` | the length of the prefix in (not in) the set; sets of up to 32 bytes; in the avx2 family with truffle_scan32 and, for an empty set, strlen by their contracts |
 | `strspn_long`, `strcspn_long` | the same for sets of more than 32 bytes, any length |
+| `truffle_scan` | for any two 16-byte tables and members 0 or 1, from any pointer, any stop past it: the answer `from - s` plus the offset of the first byte the tables say yes of (members) or no of; loads from from's page up to that byte's; nothing written |
+| `truffle_scan32` | count at most 32: the tables say of every byte whether it is one of the first count lanes of the two registers (or the NUL, for members), truffle_scan is handed them and from, s, members; its answer returned; nothing read but the frame |
 
 Every function and configuration is also checked for: aligned accesses
 (`movaps`, `movdqa`, legacy SSE memory operands) aligned; callee-saved

@@ -1063,6 +1063,32 @@ def contract_targets(img, entry):
     return out
 
 
+def named_targets(img, entry, fns):
+    """{address: the function's name past its configuration} of the functions
+    of those names the code from entry reaches by a call or a jump (a tail
+    call); not followed into them."""
+    names = {a: n for n, a in img.symbols.items()}
+    out, seen, todo = {}, set(), [entry]
+    while todo:
+        a = todo.pop()
+        while a not in seen:
+            seen.add(a)
+            j = img.decode(a)
+            if j['mnemonic'] == 'int3':
+                break
+            tgt = j.get('branch_target')
+            if tgt is not None:
+                fn = names.get(tgt, '').split('.', 1)[-1]
+                if fn in fns or any(fn.startswith(x) for x in fns if x.endswith('_')):
+                    out[tgt] = fn
+                else:
+                    todo.append(tgt)
+            if j['mnemonic'] in ('ret', 'jmp'):
+                break
+            a += j['len']
+    return out
+
+
 class StrCat(Writer):
     """strcat(d, s): d; s with its NUL copied over d's NUL on, nothing else
     written: d's bytes before its NUL kept, d[P + j] = s[j] for j up to s's
@@ -1252,9 +1278,13 @@ class Span(Scan):
     one in it or the NUL; the scan's obligations for the answer, s read up
     to the stop's page, the set up to its NUL's. Loops over the set and the
     stack (tables built from it) run out unrolled; the scan of s by
-    induction. s's low bits are the alignment class; set any pointer."""
+    induction. s's low bits are the alignment class; set any pointer. Where
+    the code hands the rest to truffle_scan32 (and an empty set to strlen)
+    those are taken by their contracts, proved on their own: its registers
+    and where it starts checked at the jump, the rest of the path theirs."""
     bounded = False
     spn = True
+    lane_terms = True
 
     def setup(self, a, align):
         self.base, self.s, self.S = aligned_pointer('s', a, align)
@@ -1274,6 +1304,49 @@ class Span(Scan):
     def tbyte(self, j):
         return S.select(self.T, S.add(S.sub(self.t, self.tbase), j))
 
+    def contracts(self, img, entry):
+        got = named_targets(img, entry, ('truffle_scan32', 'strlen_'))
+        if 'truffle_scan32' not in got.values():  # no shuffle scan in this unit: its code walked as it is
+            return {}
+        return {t: self.c_scan32 if fn == 'truffle_scan32' else self.c_strlen for t, fn in got.items()}
+
+    def tail_call(self, prover, st, out):
+        """A jump to a callee in place of the return: its precondition and the
+        state it leaves the caller's, the rest of the path its contract."""
+        prover.later(prover.prove, st, out, self.show())
+        check_tail(st, prover.solver)
+        return True
+
+    def c_scan32(self, prover, st):
+        """truffle_scan32(from, s, set1, set2, count, members): its contract
+        (TruffleScan, TruffleScan32) says the answer is from - s plus the
+        offset from `from` of the first byte that stops it, its loads in
+        the pages from from's up to that byte's. Here that byte stops this
+        spec too when count and the two registers are the set, for every
+        byte; and with no stop in [s, from), it is s's first: the answer
+        and the loads this spec asks for, the rest of the path."""
+        frm, x = st.gpr['rdi'], var('cx', 8)
+        lanes = X.read_vec(st, 'xmm0')[:16] + X.read_vec(st, 'xmm1')[:16]
+        count = st.gpr['rdx']
+        want = S.or_(*[S.and_(S.ult(const(64, k), count), S.eq(lanes[k], x)) for k in range(SETMAX)])
+        out = [('truffle_scan32 is given s', [S.not_(S.eq(st.gpr['rsi'], self.s))]),
+               ('truffle_scan32 stops at what the spec does', [S.not_(S.eq(S.extract(st.gpr['rcx'], 31, 0), const(32, 0 if self.spn else 1)))]),
+               ('truffle_scan32\'s count at most its two registers', [S.ult(const(64, SETMAX), count)]),
+               ('truffle_scan32\'s registers and count the set', [S.not_(S.eq(self.member(x), want))])]
+        out += self.base_case(st, frm, 'B', 1)
+        st2 = st.copy()
+        st2.pc = st.pc + self.general(frm)
+        prover.later(prover.prove, st2, [('truffle_scan32\'s from in user space', [S.ult(const(64, USER_HI), frm)])], self.show())
+        return self.tail_call(prover, st, out)
+
+    def c_strlen(self, prover, st):
+        """strcspn with an empty set: the first NUL of s."""
+        out = [('strlen is given s', [S.not_(S.eq(st.gpr['rdi'], self.s))]),
+               ('strlen\'s stop the spec\'s: the set empty', [self.member(var('cx', 8))])]
+        if self.spn:
+            raise Failure('strlen from strspn')
+        return self.tail_call(prover, st, out)
+
     def lane_facts(self, prover, st):
         """A byte b of s the path tests by a computation of b alone (truffle:
         a nibble table's lane, the high nibble's bit) has a term c(b) of one
@@ -1285,7 +1358,7 @@ class Span(Scan):
         the table against the set for every byte (strspn avx2 past 2048
         bytes: 466 s locally, unknown under load). For checks: sound, an
         instance of what was proved for every x."""
-        if type(self).member is not Span.member:  # SpanLong's member is its mask M's
+        if not self.lane_terms:  # SpanLong's member is its mask M's
             return []
         if not hasattr(self, 'lanes'):
             self.lanes = {'one': {}, 'cands': {}, 'node': {}, 'lemma': {}, 'f': {}, 'x': var('lane_x', 8)}
@@ -1326,34 +1399,38 @@ class Span(Scan):
             for f, node in terms:
                 sign = sign_of(f)
                 if sign:
-                    out.append(S.eq(self.lane_bool(node), self.member(b) if sign > 0 else S.not_(self.member(b))))
+                    out.append(S.eq(self.lane_bool(node), self.lane_forms(b)[sign - 1]))
                     done = True
             if not done and len(terms) > 1:  # a set in parts, each tested on its own (pcmpistrm on its two halves of 16)
                 f = S.or_(*[self.lane_bool(f) for f, _ in terms])
                 sign = sign_of(f)
                 if sign:
                     c = S.or_(*[self.lane_bool(node) for _, node in terms])
-                    out.append(S.eq(c, self.member(b) if sign > 0 else S.not_(self.member(b))))
+                    out.append(S.eq(c, self.lane_forms(b)[sign - 1]))
         return out
 
     @staticmethod
     def lane_bool(t):
         return t if t.w == S.BOOL else S.eq(t, const(1, 1))
 
+    def lane_forms(self, b):
+        """What a one-bit term of b may say of it, for every b."""
+        return [self.member(b), S.not_(self.member(b))]
+
     def lane_lemma(self, prover, f, given):
-        """+1 when f(x) says x is in the set for every x, -1 when it says x is
-        not, 0 when neither is proved (in 120 s: once a term, the tables of a
+        """The place in lane_forms (from 1) of what f(x) says of x for every
+        x, 0 when none is proved (in 120 s: once a term, the tables of a
         32-byte set take more than 20)."""
         x, fb, t0 = self.lanes['x'], self.lane_bool(f), time.time()
-        rs = []
-        for sign, m in ((1, self.member(x)), (-1, S.not_(self.member(x)))):
+        rs, sign = [], 0
+        for k, m in enumerate(self.lane_forms(x)):
             rs.append(prover.solver.check(*given, S.not_(S.eq(fb, m)), timeout=6 * AUX))
             if rs[-1] == 'unsat':
+                sign = k + 1
                 break
-        sign = (1 if len(rs) == 1 else -1) if rs[-1] == 'unsat' else 0
         if prover.args.verbose and (sign or 'unknown' in rs):
-            print('   lane lemma (%d variables%s): %s, %s %.1f s' % (len(S.variables(f)), ', under the path' if given else '', '/'.join(rs),
-                                                             {1: 'in the set', -1: 'not in it', 0: 'neither'}[sign], time.time() - t0), flush=True)
+            print('   lane lemma (%d variables%s): %s, form %d %.1f s' % (len(S.variables(f)), ', under the path' if given else '', '/'.join(rs), sign, time.time() - t0),
+                  flush=True)
         return sign
 
     def lane_scan(self, root):
@@ -1460,6 +1537,10 @@ class SpanLong(Span):
     load of s) the table's invariant, its frontier at L, is the table
     holding M: 256 facts without a quantifier, what the scan's lookups
     read."""
+    lane_terms = False
+
+    def contracts(self, img, entry):
+        return {}
 
     def setup(self, a, align):
         self.M = var('inset', 256)
@@ -1666,7 +1747,131 @@ class CspanLong(SpanLong):
     spn = False
 
 
-SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan, 'strspn_long': SpanLong, 'strcspn_long': CspanLong}
+def truffle_bit(lanes, x):
+    """What two 16-byte tables say of byte x: bit (x >> 4) & 7 of lane
+    (x >> 7) * 16 + (x & 15), a bit of their 256 by a permutation of x's."""
+    idx = S.concat(S.extract(x, 7, 7), S.extract(x, 3, 0), S.extract(x, 6, 4))
+    return S.eq(S.extract(S.lshr(X.to_bv(lanes), S.zext(idx, 256)), 0, 0), const(1, 1))
+
+
+def members_arg(name, members):
+    """An int argument 0 or 1, as the ABI has it: the upper half of the register unknown."""
+    return S.concat(var(name + '_hi', 32), S.zext(members, 32))
+
+
+class TruffleScan(Span):
+    """truffle_scan(from, s, low, high, members), for any two tables (a 256-bit
+    set, any) and members 0 or 1: a stop is a byte the tables say yes of
+    when members, no when not (nothing of NULs: a caller's tables have it
+    or not), and any stop z at or past from is taken to exist. The answer
+    F + r, F = from - s (any number: s is only subtracted), r the offset
+    of the first stop from `from`; its loads in from's page up to r's, no
+    stores. A byte's lane term (this code's per lane mask bit) is the
+    tables' bit by the lane lemma. from any pointer."""
+
+    def setup(self, a, align):
+        self.base, self.s, self.S = aligned_pointer('s', a, align)
+        self.regions = [(self.base, self.S)]
+        self.z, self.i, self.F, self.members = var('z', 64), var('i', 64), var('F', 64), var('members', 1)
+        self.tables = [var('init_zmm0_%d' % j, 8) for j in range(16)] + [var('init_zmm1_%d' % j, 8) for j in range(16)]
+        s, z, top = self.s, self.z, const(64, USER_HI)
+        assume = [S.ule(const(64, USER_LO), s), S.ule(s, top), self.at(z), S.ult(z, const(64, USER_HI - USER_LO)), S.ule(S.add(s, z), top)]
+        return [s, S.sub(s, self.F), members_arg('members', self.members)], assume
+
+    def member(self, b):
+        return truffle_bit(self.tables, b)
+
+    def stop(self, b):
+        return S.eq(S.bit(self.member(b)), self.members)
+
+    def lane_forms(self, b):
+        return [self.member(b), S.not_(self.member(b)), self.stop(b), S.not_(self.stop(b))]
+
+    def at(self, off):
+        return self.stop(S.select(self.S, S.add(S.sub(self.s, self.base), off)))
+
+    def owner(self, addr):
+        return owner(addr, ((self.s, self.base),))
+
+    def answer(self, st):
+        return S.TRUE, S.sub(st.gpr['rax'], self.F)
+
+    def contracts(self, img, entry):
+        return {}
+
+    def keep_unrolling(self, prev, now):
+        return False
+
+    def show(self):
+        return [self.s, self.F, self.members, self.z, self.i]
+
+
+class TruffleScan32:
+    """truffle_scan32(from, s, set1, set2, count, members), count at most 32,
+    the set the first count of the two registers' lanes, members 0 or 1: the
+    tables it builds on its stack say of every byte whether it is one of
+    them (members: or the NUL), and it hands truffle_scan its from, s and
+    members and those tables; its answer that one's. truffle_scan by its
+    contract. It reads nothing but its frame. The loop it builds them in runs
+    out unrolled, a way per count."""
+
+    def __init__(self, maxlen, induct):
+        pass
+
+    def setup(self, a, align):
+        self.regions = []
+        self.frm, self.sp = var('from', 64), var('s', 64)
+        self.count, self.members, self.r = var('count', 64), var('members', 1), var('scan_r', 64)
+        self.set = [var('init_zmm0_%d' % j, 8) for j in range(16)] + [var('init_zmm1_%d' % j, 8) for j in range(16)]
+        return [self.frm, self.sp, self.count, members_arg('members', self.members)], [S.ule(self.count, const(64, SETMAX))]
+
+    def want(self, x):
+        """x one of the first count lanes, or the NUL for members."""
+        return S.or_(S.and_(S.eq(self.members, const(1, 1)), S.is_zero(x)),
+                     *[S.and_(S.ult(const(64, k), self.count), S.eq(self.set[k], x)) for k in range(SETMAX)])
+
+    def contracts(self, img, entry):
+        return {t: self.c_scan for t in named_targets(img, entry, ('truffle_scan',))}
+
+    def c_scan(self, prover, st):
+        x = var('cx', 8)
+        tables = X.read_vec(st, 'xmm0')[:16] + X.read_vec(st, 'xmm1')[:16]
+        prover.later(prover.prove, st, [('truffle_scan is given from', [S.not_(S.eq(st.gpr['rdi'], self.frm))]),
+                                        ('truffle_scan is given s', [S.not_(S.eq(st.gpr['rsi'], self.sp))]),
+                                        ('truffle_scan is given members', [S.not_(S.eq(S.extract(st.gpr['rdx'], 31, 0), S.zext(self.members, 32)))]),
+                                        ('the stack aligned at the call', [S.not_(S.eq(S.band(st.gpr['rsp'], const(64, 15)), const(64, 8)))]),
+                                        ('the tables say which bytes are in the set', [S.not_(S.eq(truffle_bit(tables, x), self.want(x)))])], self.show())
+        X.call_return(st, self.r, 'c_')
+
+    def early(self, a, n):
+        return nonempty(n)  # nothing but the frame
+
+    def early_store(self, e):
+        return e[3]
+
+    def keep_unrolling(self, prev, now):
+        return True
+
+    def obligations(self, st):
+        return [('the answer truffle_scan\'s', [S.not_(S.eq(st.gpr['rax'], self.r))])], self.show()
+
+    def show(self):
+        return [self.count, self.members, self.r]
+
+
+SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan, 'strspn_long': SpanLong, 'strcspn_long': CspanLong, 'truffle_scan': TruffleScan, 'truffle_scan32': TruffleScan32}
+
+
+def contract_stops(spec, img, entry):
+    """The callees this spec takes by their contracts, in the code from entry."""
+    x = SPECS[spec](0, True)
+    return set(x.contracts(img, entry)) if hasattr(x, 'contracts') else set()
+
+
+def contract_callees(spec, img, entry):
+    """The callees whose proofs this function's rests on: strcat's every call
+    (nothing of it walked as if it were strcat's); else those it takes by contract."""
+    return contract_stops(spec, img, entry) | (contract_targets(img, entry) if spec == 'strcat' else set())
 
 
 def moved_by(v, d, step, k):
@@ -1709,6 +1914,17 @@ def check_abi(st, solver):
             raise Failure('%s not preserved' % r)
     if st.gpr['rsp'] is not S.add(X.RSP0, const(64, 8)):
         raise Failure('rsp at the return: %r' % st.gpr['rsp'])
+
+
+def check_tail(st, solver):
+    """A jump to a callee as the return: the callee-saved registers as at the
+    entry (the callee keeps them, by its contract), rsp at the return address."""
+    for r in X.CALLEE_SAVED:
+        v, v0 = st.gpr[r], var('init_' + r, 64)
+        if v is not v0 and solver.check(*st.pc, S.not_(S.eq(v, v0))) != 'unsat':
+            raise Failure('%s not preserved at the tail call' % r)
+    if st.gpr['rsp'] is not X.RSP0 or X.pop64(st.copy()) is not const(64, X.RET_MARK):
+        raise Failure('a tail call with rsp at %r' % st.gpr['rsp'])
 
 
 class Pool:
@@ -2430,7 +2646,9 @@ class Prover:
                         break
                 contract = self.contracts.get(st.rip)
                 if contract is not None:  # a callee the spec takes by its contract (proved on its own)
-                    contract(self, st)
+                    if contract(self, st):  # a tail call: the path ends with it
+                        closed = True
+                        break
                     continue
                 seen, seen_st, seen_al, seen_rq = len(st.loads), len(st.stores), len(st.aligned), len(st.requires)
                 succ = self.mach.step(st)

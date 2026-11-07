@@ -9,11 +9,12 @@ is another's.
     node.py --elf E --spec S --func F --out O --same-as F2 --of O2  another copy's proof
 
 --callee: the outputs of the proofs whose contracts the spec takes for the
-function's callees (strcat): each callee must be one of them, proved. The
-solvers: --bin, a directory with z3 and bitwuzla (the proof_solvers node's).
+function's callees (strcat, strspn's shuffle scan): each callee must be one
+of them, proved, whichever way this node goes. The solvers: --bin, a directory with z3 and bitwuzla (the proof_solvers node's).
 STR_PROOF_WORKERS, STR_PROOF_TIMEOUT, STR_PROOF_MEMORY (build.py sets them
 from -D) go to prove.py; STR_PROOF_NODE_TIMEOUT, seconds, ends a proof that
-takes longer (a failure). While it runs, prove.py's line a minute on how
+takes longer (a failure). The solvers' answers are kept in ~/proof-cache on
+the host (PROVE_CACHE; STR_PROOF_CACHE=0: every query asked). While it runs, prove.py's line a minute on how
 far it is goes to ~/proof-status/ on the host it runs on (PROVE_STATUS:
 <func>-<classes>-<align>.txt), to see from outside where a proof of hours
 is. The output: the RESULT line and how the proof ended; the node fails
@@ -61,10 +62,23 @@ def main():
     import run
     img = X.Image(args.elf)
 
+    # every callee the spec takes by its contract proved on its own
+    if not args.of or args.same_as:
+        proved = {}
+        for o in args.callee:
+            r = result_of(o)
+            if r and r.get('result') == 'proved':
+                proved[r['func']] = r
+        names = {a: n for n, a in img.symbols.items()}
+        need = prove.contract_callees(args.spec, img, img.symbols[args.func])
+        missing = [names.get(t, hex(t)) for t in need if names.get(t) not in proved]
+        if missing:
+            sys.exit('%s: callees without a proof among the dependencies: %s' % (args.func, ', '.join(missing)))
+
     if args.same_as:  # the same code, checked the way run.py groups copies (sse2 and sse42 decode tzcnt as bsf)
         bmi = lambda f: not f.startswith(('sse2.', 'sse42.'))  # noqa: E731
-        if bmi(args.func) != bmi(args.same_as) or \
-                run.fingerprint(img, img.symbols[args.func]) != run.fingerprint(img, img.symbols[args.same_as]):
+        if bmi(args.func) != bmi(args.same_as) or run.fingerprint(img, img.symbols[args.func], prove.contract_stops(args.spec, img, img.symbols[args.func])) != \
+                run.fingerprint(img, img.symbols[args.same_as], prove.contract_stops(args.spec, img, img.symbols[args.same_as])):
             sys.exit('%s: its code is not %s\'s any more: targets.SAME is stale' % (args.func, args.same_as))
         r = result_of(args.of[0])
         if not r or r.get('result') != 'proved':
@@ -82,17 +96,6 @@ def main():
                          'seconds': round(sum(r['seconds'] for r in rs), 1)})
         return
 
-    if args.callee:  # every callee taken by its contract proved on its own
-        proved = {}
-        for o in args.callee:
-            r = result_of(o)
-            if r and r.get('result') == 'proved':
-                proved[r['func']] = r
-        names = {a: n for n, a in img.symbols.items()}
-        missing = [names.get(t, hex(t)) for t in prove.contract_targets(img, img.symbols[args.func]) if names.get(t) not in proved]
-        if missing:
-            sys.exit('%s: callees without a proof among the dependencies: %s' % (args.func, ', '.join(missing)))
-
     env = dict(os.environ, PROVE_TIMEOUT=os.environ.get('STR_PROOF_TIMEOUT', '1800'), PROVE_MEMORY=os.environ.get('STR_PROOF_MEMORY', '3000'))
     status = Path.home() / 'proof-status'
     try:
@@ -100,6 +103,13 @@ def main():
         env['PROVE_STATUS'] = str(status)
     except OSError:  # a home of no writes (a sandbox): no status lines
         pass
+    if os.environ.get('STR_PROOF_CACHE', '1') != '0':
+        try:
+            cache = Path.home() / 'proof-cache'
+            cache.mkdir(exist_ok=True)
+            env['PROVE_CACHE'] = str(cache)
+        except OSError:  # as for the status lines
+            pass
     if args.bin:
         env['PATH'] = str(Path(args.bin).resolve()) + os.pathsep + env.get('PATH', '')
         if (Path(args.bin) / 'bitwuzla').exists():

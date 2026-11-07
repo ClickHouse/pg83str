@@ -175,6 +175,7 @@ build.flags.allow({
     "proof_timeout": {"descr": "seconds a solver query may take before it is unknown (PROVE_TIMEOUT)", "default": "1800"},
     "proof_memory": {"descr": "megabytes a solver may take (PROVE_MEMORY)", "default": "3000"},
     "proof_node_timeout": {"descr": "seconds a proof node may take before it fails (0: no limit)", "default": "0"},
+    "proof_cache": {"descr": "keep the solvers' answers in ~/proof-cache on the host (0: every query asked)", "default": "1"},
 })
 import targets as proof_targets  # noqa: E402
 
@@ -190,7 +191,8 @@ proof_solvers = command(
 )
 proof_inputs = [f"$(S)/dev/proof/{f}.py" for f in ("node", "prove", "machine", "smt", "run", "targets")] + ["$(S)/dev/x86.py", "$(S)/dev/elf.py"]
 proof_env = {"STR_PROOF_WORKERS": build.flags.proof_workers, "STR_PROOF_TIMEOUT": build.flags.proof_timeout,
-             "STR_PROOF_MEMORY": build.flags.proof_memory, "STR_PROOF_NODE_TIMEOUT": build.flags.proof_node_timeout}
+             "STR_PROOF_MEMORY": build.flags.proof_memory, "STR_PROOF_NODE_TIMEOUT": build.flags.proof_node_timeout,
+             "STR_PROOF_CACHE": build.flags.proof_cache}
 
 
 def proof_node(name, out, args, deps=(), priority=0):
@@ -209,22 +211,24 @@ def proof_node(name, out, args, deps=(), priority=0):
 
 
 proofs = {}  # (spec, config) -> the function's node
-for spec, copies in proof_targets.FUNCS.items():
-    for config in proof_targets.CONFIGS:
+# the specs in the order their contracts need: a callee's node before its caller's
+for spec, copies in sorted(proof_targets.FUNCS.items(), key=lambda kv: kv[0] in proof_targets.TRUFFLE_DEPS):
+    for config in proof_targets.configs(spec):
         func, name = copies[config], proof_targets.name(spec, config)
         out, prio = f"$(B)/proof/{name}.txt", proof_targets.priority(spec, config)
         base = ["--spec", spec, "--func", func]
+        callees = [proofs[(dep, config)] for dep in proof_targets.deps(spec, config)]
+        contract = ["--callee", *[c.outputs[0] for c in callees]] if callees else []
         if (spec, config) in proof_targets.SAME:  # the code of another configuration's copy: its proof
             other = proof_targets.SAME[(spec, config)]
             rep = proofs[(spec, other)]
-            node = proof_node(name, out, [*base, "--same-as", copies[other], "--of", rep.outputs[0]], [rep])
+            node = proof_node(name, out, [*base, "--same-as", copies[other], "--of", rep.outputs[0], *contract], [rep, *callees])
         elif (spec, config) in proof_targets.SPLIT:  # the classes, then their sum
             n = proof_targets.SPLIT[(spec, config)]
             parts = [proof_node(proof_targets.name(spec, config, k), f"$(B)/proof/{name}/{k}.txt",
-                                [*base, "--classes", str(n), "--align", str(k)], priority=prio) for k in range(n)]
+                                [*base, "--classes", str(n), "--align", str(k), *contract], callees, prio) for k in range(n)]
             node = proof_node(name, out, [*base, "--of", *[p.outputs[0] for p in parts]], parts)
         else:
-            callees = [proofs[(dep, config)] for dep in proof_targets.DEPS.get(spec, ())]
-            node = proof_node(name, out, [*base, *(["--callee", *[c.outputs[0] for c in callees]] if callees else [])], callees, prio)
+            node = proof_node(name, out, [*base, *contract], callees, prio)
         proofs[(spec, config)] = node
 group("proof", proof_elf, proof_oracle, *proofs.values())

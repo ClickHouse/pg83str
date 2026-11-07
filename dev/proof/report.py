@@ -33,7 +33,7 @@ def main():
     out = Path(args.build) / 'proof'
     done, missing = [], []
     for spec in targets.FUNCS:
-        for config in targets.CONFIGS:
+        for config in targets.configs(spec):
             name = targets.name(spec, config)
             r = result_of(out / (name + '.txt'))
             if r and r.get('result') == 'proved':
