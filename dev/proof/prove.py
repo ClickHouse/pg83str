@@ -1866,7 +1866,7 @@ class Prover:
         if recent:  # and the assumptions on memory (z a stop: the found byte's NUL against the block's masks)
             recent = [c for c in self.solver.assumed if S.has_array(c)] + recent
         if recent and len(plain) + len(recent) < len(self.solver.assumed) + len(st.pc) and \
-                self.solver.check(*plain, *recent, *flat, bare=True, timeout=AUX) == 'unsat':
+                self.solver.check(*plain, *recent, *flat, bare=True, timeout=6 * AUX) == 'unsat':  # strcpy_long's: 83 s, the path's 133
             return
         each = next((c for c in flat if c.op == 'or_b'), None) if lanes else None
         r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else 3 * AUX if end is not None else None)
