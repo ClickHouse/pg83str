@@ -61,6 +61,17 @@ SAME = {
 
 DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long')}
 
+# the order the ready proofs start in, the longest first (hours to tens of
+# hours on the lab, the classes of a split each a part of their function's)
+SLOW = ('strspn', 'strcspn', 'strcpy_long', 'strcmp', 'strcpy', 'memchr', 'memcmp', 'strspn_long', 'strcspn_long', 'strcat',
+        'memmove', 'memcpy', 'memset', 'strlen')
+
+
+def priority(spec, config):
+    """Higher first: by spec, the wider configurations (more lanes, more
+    paths) ahead within one."""
+    return 10 * (len(SLOW) - SLOW.index(spec)) + CONFIGS.index(config)
+
 
 def name(spec, config, k=None):
     return '%s_%s' % (spec, config) if k is None else '%s_%s_%d' % (spec, config, k)

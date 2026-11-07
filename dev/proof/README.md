@@ -31,7 +31,14 @@ one of them. Each node is dev/proof/node.py; its output, under
 on the hosts only (the runner's `remote` nodes: with no host connected they
 wait, so a host given as `root@labN.mesh`), z3 and bitwuzla sent there
 as the proof_solvers node's outputs; -Dproof_workers, -Dproof_timeout,
--Dproof_memory are prove.py's --workers, PROVE_TIMEOUT and PROVE_MEMORY.
+-Dproof_memory are prove.py's --workers, PROVE_TIMEOUT and PROVE_MEMORY,
+-Dproof_node_timeout the seconds a node may take before it fails. A host's
+`:N` is how many proofs it runs at once, each of them -Dproof_workers + 1
+solvers busy: lab1's 88 cores with 4 workers, `root@lab1.mesh:17`. The
+longest proofs start first (targets.priority). Each running proof writes a
+line a minute to ~/proof-status/<func>-<classes>-<align>.txt on its host
+(PROVE_STATUS); dev/proof/report.py lists what .build/proof/ holds proved
+and what not yet.
 
 ## How
 

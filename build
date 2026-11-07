@@ -217,6 +217,8 @@ class Node:
     # A remote node runs only on the --dist hosts when there are any: too
     # heavy for this machine (a proof of hours); here without --dist.
     remote: bool = False
+    # Of the ready nodes the higher first: the longest ones started early.
+    priority: int = 0
     uid: str | None = None
 
     def __post_init__(self) -> None:
@@ -258,6 +260,7 @@ class Target:
     enabled: bool = True
     local: bool = False
     remote: bool = False
+    priority: int = 0
     host_deps: list["Target"] = dataclasses.field(default_factory=list)
     root: Node | None = None
     nodes: list[Node] = dataclasses.field(default_factory=list)
@@ -525,7 +528,7 @@ class BuildContext:
 
     def command(self, *, inputs=(), outputs, cmd, deps=(), name=None, cwd=B, env=None,
                 cflags=(), cxxflags=(), cppflags=(), ldflags=(), descr="GN", color="yellow",
-                local=False, remote=False) -> Target:
+                local=False, remote=False, priority=0) -> Target:
         commands = cmd
         if not commands or isinstance(commands[0], (str, bytes)):
             commands = [commands]
@@ -536,7 +539,7 @@ class BuildContext:
             env=dict(env or {}),
             public_cflags=_items(cflags), public_cxxflags=_items(cxxflags),
             public_cppflags=_items(cppflags), ldflags=_items(ldflags),
-            descr=str(descr), color=str(color), local=bool(local), remote=bool(remote),
+            descr=str(descr), color=str(color), local=bool(local), remote=bool(remote), priority=int(priority),
         )
         self._validate_deps(target)
         self.targets.append(target)
@@ -1160,7 +1163,7 @@ class BuildContext:
                 inputs=target.inputs.copy(), outputs=target.outputs.copy(),
                 commands=[x.copy() for x in target.commands], deps=dep_nodes,
                 cwd=target.cwd, env=target.env.copy(),
-                descr=target.descr, color=target.color, local=target.local, remote=target.remote,
+                descr=target.descr, color=target.color, local=target.local, remote=target.remote, priority=target.priority,
             )
             for inp in node.inputs:
                 if inp.startswith(S + "/") or os.path.isabs(inp):
@@ -2795,7 +2798,7 @@ class Executor:
         local_free = self.jobs - used[None]
         remote = [(host.free_slots(used[host]), host) for host in self.hosts]
         best_remote = max(remote, key=lambda item: item[0], default=(0, None))
-        for index, node in enumerate(ready):
+        for index, node in sorted(enumerate(ready), key=lambda item: -item[1].priority):
             if node.remote and self.hosts:  # the hosts only
                 if best_remote[0] <= 0:
                     continue

@@ -12,8 +12,12 @@ is another's.
 function's callees (strcat): each callee must be one of them, proved. The
 solvers: --bin, a directory with z3 and bitwuzla (the proof_solvers node's).
 STR_PROOF_WORKERS, STR_PROOF_TIMEOUT, STR_PROOF_MEMORY (build.py sets them
-from -D) go to prove.py. The output: the RESULT line and how the proof
-ended; the node fails unless proved."""
+from -D) go to prove.py; STR_PROOF_NODE_TIMEOUT, seconds, ends a proof that
+takes longer (a failure). While it runs, prove.py's line a minute on how
+far it is goes to ~/proof-status/ on the host it runs on (PROVE_STATUS:
+<func>-<classes>-<align>.txt), to see from outside where a proof of hours
+is. The output: the RESULT line and how the proof ended; the node fails
+unless proved."""
 import argparse
 import json
 import os
@@ -90,14 +94,26 @@ def main():
             sys.exit('%s: callees without a proof among the dependencies: %s' % (args.func, ', '.join(missing)))
 
     env = dict(os.environ, PROVE_TIMEOUT=os.environ.get('STR_PROOF_TIMEOUT', '1800'), PROVE_MEMORY=os.environ.get('STR_PROOF_MEMORY', '3000'))
+    status = Path.home() / 'proof-status'
+    try:
+        status.mkdir(exist_ok=True)
+        env['PROVE_STATUS'] = str(status)
+    except OSError:  # a home of no writes (a sandbox): no status lines
+        pass
     if args.bin:
         env['PATH'] = str(Path(args.bin).resolve()) + os.pathsep + env.get('PATH', '')
         if (Path(args.bin) / 'bitwuzla').exists():
             env['PROVE_BITWUZLA'] = str((Path(args.bin) / 'bitwuzla').resolve())
     cmd = [sys.executable, str(HERE / 'prove.py'), '--elf', args.elf, '--func', args.func, '--spec', args.spec, '--induct',
            '--classes', str(args.classes or 1), '--align', str(args.align), '--workers', os.environ.get('STR_PROOF_WORKERS', '1')]
-    p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    lines = p.stdout.splitlines()
+    limit = int(os.environ.get('STR_PROOF_NODE_TIMEOUT') or 0) or None
+    p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        out = p.communicate(timeout=limit)[0]
+    except subprocess.TimeoutExpired:
+        p.terminate()  # SIGTERM: prove.py takes its solvers down
+        out = p.communicate()[0] + '\nkilled after %d s' % limit
+    lines = out.splitlines()
     r = next((json.loads(x[7:]) for x in lines if x.startswith('RESULT ')), None)
     tail = '\n'.join(x for x in lines[-20:] if not x.startswith('RESULT ')) + '\n'
     if r is None:
@@ -106,7 +122,7 @@ def main():
     write(args.out, r, tail)
     print('%s %s class %s/%s: %s' % (args.spec, args.func, args.align, args.classes or 1, r['result']), flush=True)
     if r['result'] != 'proved':
-        sys.exit(1)
+        sys.exit('%s %s class %s/%s: %s' % (args.spec, args.func, args.align, args.classes or 1, r.get('detail', '')[:300]))
 
 
 if __name__ == '__main__':
