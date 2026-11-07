@@ -937,6 +937,21 @@ class StrCopy(Scan, Writer):
     def params(self):
         return [self.d, self.s]
 
+    def contracts(self, img, entry):
+        return {t: self.c_long for t in named_targets(img, entry, ('strcpy_long_',))}
+
+    def c_long(self, prover, st):
+        """strcpy_long(d, s, a), proved on its own (StrCopyLong): under its
+        precondition it is strcpy(d, s), the whole copy its own, d its
+        answer; the stores before it s's bytes within the copy (checked as
+        they ran, and here their values)."""
+        a = st.gpr['rdx']
+        out = [('strcpy_long is given d', [S.not_(S.eq(st.gpr['rdi'], self.d))]),
+               ('strcpy_long is given s', [S.not_(S.eq(st.gpr['rsi'], self.s))]),
+               ('strcpy_long\'s a 16-aligned', [S.not_(S.is_zero(S.band(a, const(64, 15))))]),
+               ('strcpy_long\'s a past s by 1..128', [S.not_(S.and_(S.ult(self.s, a), S.ule(a, S.add(self.s, const(64, 128)))))])]
+        return tail_call(self, prover, st, out + self.base_case(st, a, 'B', 1))
+
     def at(self, off):
         return S.is_zero(S.select(self.src, S.add(S.sub(self.s, self.base), off)))
 
@@ -1043,6 +1058,9 @@ class StrCopyLong(StrCopy):
     contract its callers rely on: a 16-aligned, s < a <= s + 128, no NUL in
     [s, a) (a precondition: z, any NUL, at or past a - s, and the scan's
     frontier there from the start); then strcpy(d, s), d its answer."""
+
+    def contracts(self, img, entry):
+        return {}
 
     def setup(self, a, align):
         params, assume = StrCopy.setup(self, a, align)

@@ -58,7 +58,6 @@ for _fn in ('truffle_scan', 'truffle_scan32'):
 # (spec, config) -> classes: those not proved in one class (it did not end
 # in hours, or failed where the classes do not: a shuffle by s & 15)
 SPLIT = {
-    **{('strcpy', c): 64 for c in ('avx2', 'evex', 'evex512', 'evex512r')},
     **{('memchr', c): 64 for c in ('avx2', 'evex', 'evex512')},
     **{(s, c): 16 for s in ('strspn', 'strcspn') for c in ('avx2', 'evex', 'evex512')},
 }
@@ -70,9 +69,10 @@ SAME = {
     **{(s, 'evex512r'): 'evex512' for s in ('memchr', 'memcpy', 'memmove', 'memcmp', 'strcmp', 'strcmp_tail', 'strspn', 'strspn_long')},
     **{(s, c): 'avx2' for s in ('truffle_scan', 'truffle_scan32') for c in ('evex512', 'evex512r')},
     ('strcspn', 'evex512r'): 'evex512',  # the same past their contracts' callees
+    ('strcat', 'evex512r'): 'evex512',
 }
 
-DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long'), 'strcmp': ('strcmp_tail',), 'truffle_scan32': ('truffle_scan',)}
+DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long'), 'strcmp': ('strcmp_tail',), 'strcpy': ('strcpy_long',), 'truffle_scan32': ('truffle_scan',)}
 TRUFFLE_DEPS = {'strspn': ('truffle_scan32',), 'strcspn': ('truffle_scan32', 'strlen')}
 
 # the order the ready proofs start in, the longest first (hours to tens of
