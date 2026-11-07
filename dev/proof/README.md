@@ -25,8 +25,9 @@ copy of each function by its spec, `<spec>_<config>` (strspn_sse2), and per
 class where the function is proved in classes, `<spec>_<config>_<k>`; a copy
 whose code is another's (by run.py's fingerprint, checked when it runs)
 takes that one's proof; strcat's node depends on the proofs of the strlen,
-strcpy and strcpy_long its contracts stand for, strcpy's on strcpy_long's,
-strcmp's on its kernel strcmp_tail's, strspn's and strcspn's in the avx2 family on truffle_scan32's
+strcpy and strcpy_long its contracts stand for, every public function's on
+its kernel's (str_table's: strlen_tail, memchr_large, fill_large,
+copy_large, memcmp_large, strcmp_tail, strcpy_long), strspn's and strcspn's in the avx2 family on truffle_scan32's
 (and strlen's), truffle_scan32's on truffle_scan's, and each checks every
 callee is one of them. Each node is
 dev/proof/node.py; its output, under
@@ -132,6 +133,20 @@ moved as far as a, that no stop lies before, the callee-saved registers
 and rsp (avx2: 6.7 s). Mutants that move b another way, skip 16 bytes or
 round the next block wrong are refuted there.
 
+The other kernels likewise, each under its contract's precondition, the
+first blocks checking it at the jump: strlen_tail (a 16-aligned, s < a, no
+NUL in [s, a); the table said s <= a, no caller passes a = s, and the
+loop's frontier past s is what the proof has), memchr_large (no match in
+[s, A), n > A - s, A s's 16-byte block plus 32: what sse2's first blocks
+give, from 18 bytes on; the table said n > 32 and 32 bytes, which they do
+not), fill_large (n > 128), copy_large (n > 64, any overlap: memmove's spec;
+memmove writes nothing before it), memcmp_large (n > 128, the first 64
+bytes equal). The first blocks are then one class of seconds to minutes
+(memchr avx2: 64 classes of an hour each, now 202 s), the kernels one of
+seconds to minutes. Mutants: a size test moved (memset 112, memmove 48,
+memcmp 112), strlen's a off its 16-byte boundary, memchr's n not less
+what it scanned.
+
 strcpy hands a string past its first blocks to strcpy_long, whose
 contract (no NUL in [s, a), a 16-aligned and 1 to 128 past s: then strcpy
 itself) strcat already took: at the jump d, s and a are checked against it
@@ -204,6 +219,7 @@ when the full path has not settled the bound in 60 s.
 | `memcmp` | the sign (in fact the value) of the first differing byte pair, 0 without one; loads in the pages of both objects |
 | `strcmp` | the difference of the first pair that differs or ends; loads of each string in its pages up to that byte; strcmp_tail by its contract |
 | `strcmp_tail` | strcmp's, for the kernel (any pointers) |
+| `strlen_tail`, `memchr_large`, `fill_large`, `copy_large`, `memcmp_large` | strlen's, memchr's, memset's, memmove's and memcmp's under the kernel's precondition (str_table's, as above) |
 | `strcpy` | the string with its NUL at `d`, nothing else written, the source read up to its NUL's page; the objects apart; strcpy_long by its contract |
 | `strcpy_long` | the kernel past strcpy's short path, under its precondition (the contract strcat relies on) |
 | `strcat` | `d`'s bytes before its NUL kept, `s` with its NUL copied from there; the callees by their contracts |

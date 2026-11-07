@@ -46,6 +46,21 @@ FUNCS = {
 FUNCS['strspn_long'] = dict(FUNCS['strspn'])
 FUNCS['strcspn_long'] = dict(FUNCS['strcspn'])
 
+# the kernels the public functions hand their long cases to (str_table's), each proved apart under its contract's
+# precondition, the caller taking it by that contract
+_K = {'strlen_tail': ('strlen_tail_sse2', 'strlen_tail_avx2', 'strlen_tail_evex512'), 'memchr_large': ('memchr_large_sse2', 'memchr_large_avx2'),
+      'fill_large': ('fill_large_sse2', 'fill_large_avx2', 'fill_large_evex512'), 'copy_large': ('copy_large_sse2', 'copy_large_avx2'),
+      'memcmp_large': ('memcmp_large_sse2', 'memcmp_large_avx2')}
+_KCONF = {'sse2': 0, 'sse42': 0, 'avx2': 1, 'evex': 1, 'evex512': -1, 'evex512r': -1}  # which of a kernel's copies each configuration names
+for _spec, _fns in _K.items():
+    FUNCS[_spec] = {c: '%s.%s' % (c, _fns[i] if i >= 0 else _fns[-1]) for c, i in _KCONF.items()}
+FUNCS['copy_large']['evex512'] = 'evex512.copy_large_avx2'
+FUNCS['copy_large']['evex512r'] = 'evex512r.copy_large_avx2'
+FUNCS['memchr_large']['evex512'] = 'evex512.memchr_large_avx2'
+FUNCS['memchr_large']['evex512r'] = 'evex512r.memchr_large_avx2'
+FUNCS['memcmp_large']['evex512'] = 'evex512.memcmp_large_avx2'
+FUNCS['memcmp_large']['evex512r'] = 'evex512r.memcmp_large_avx2'
+
 # strcmp's kernel past its first blocks, any pointers: strcmp itself, proved apart (strcmp takes it by its contract)
 FUNCS['strcmp_tail'] = {'sse2': 'sse2.strcmp_tail_sse2', 'sse42': 'sse42.strcmp_tail_sse2', 'avx2': 'avx2.strcmp_tail_avx2', 'evex': 'evex.strcmp_tail_evex',
                         'evex512': 'evex512.strcmp_tail_evex512', 'evex512r': 'evex512r.strcmp_tail_evex512'}
@@ -58,7 +73,6 @@ for _fn in ('truffle_scan', 'truffle_scan32'):
 # (spec, config) -> classes: those not proved in one class (it did not end
 # in hours, or failed where the classes do not: a shuffle by s & 15)
 SPLIT = {
-    **{('memchr', c): 64 for c in ('avx2', 'evex', 'evex512')},
     **{(s, c): 16 for s in ('strspn', 'strcspn') for c in ('avx2', 'evex', 'evex512')},
 }
 
@@ -70,20 +84,30 @@ SAME = {
     **{(s, c): 'avx2' for s in ('truffle_scan', 'truffle_scan32') for c in ('evex512', 'evex512r')},
     ('strcspn', 'evex512r'): 'evex512',  # the same past their contracts' callees
     ('strcat', 'evex512r'): 'evex512',
+    **{(s, 'sse42'): 'sse2' for s in _K},
+    **{(s, c): 'evex' for s in ('memcpy', 'memmove', 'memcmp') for c in ('evex512', 'evex512r')},
+    ('memchr_large', 'evex512'): 'avx2', ('memchr_large', 'evex512r'): 'avx2', ('memcmp_large', 'evex512'): 'avx2', ('memcmp_large', 'evex512r'): 'avx2',
+    ('fill_large', 'evex'): 'avx2', ('fill_large', 'evex512r'): 'evex512', ('copy_large', 'evex512r'): 'evex512',
 }
 
-DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long'), 'strcmp': ('strcmp_tail',), 'strcpy': ('strcpy_long',), 'truffle_scan32': ('truffle_scan',)}
+DEPS = {'strcat': ('strlen', 'strcpy', 'strcpy_long'), 'strcmp': ('strcmp_tail',), 'strcpy': ('strcpy_long',), 'truffle_scan32': ('truffle_scan',),
+        'strlen': ('strlen_tail',), 'memchr': ('memchr_large',), 'memset': ('fill_large',), 'memcpy': ('copy_large',), 'memmove': ('copy_large',),
+        'memcmp': ('memcmp_large',)}
+NO_KERNEL = {('memset', 'evex512r')}  # memset_rep: rep stosb, no kernel
 TRUFFLE_DEPS = {'strspn': ('truffle_scan32',), 'strcspn': ('truffle_scan32', 'strlen')}
 
 # the order the ready proofs start in, the longest first (hours to tens of
 # hours on the lab, the classes of a split each a part of their function's)
 SLOW = ('strspn', 'strcspn', 'strcpy_long', 'strcmp_tail', 'strcmp', 'strcpy', 'memchr', 'memcmp', 'strspn_long', 'strcspn_long', 'strcat',
-        'memmove', 'memcpy', 'memset', 'strlen', 'truffle_scan', 'truffle_scan32')
+        'memmove', 'memcpy', 'memset', 'strlen', 'truffle_scan', 'truffle_scan32', 'memchr_large', 'memcmp_large', 'copy_large', 'strlen_tail',
+        'fill_large')
 
 
 def deps(spec, config):
     """The specs whose proofs this configuration's copy of spec takes its callees from."""
-    return TRUFFLE_DEPS.get(spec, ()) if config in TRUFFLE and spec in TRUFFLE_DEPS else DEPS.get(spec, ())
+    if config in TRUFFLE and spec in TRUFFLE_DEPS:
+        return TRUFFLE_DEPS[spec]
+    return () if (spec, config) in NO_KERNEL else DEPS.get(spec, ())
 
 
 def order():

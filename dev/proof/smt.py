@@ -867,7 +867,9 @@ class Answers:
     dir/answers.txt, a line each: a proof run again (a connection lost, a
     change to the prover that leaves these queries as they were) asks the
     solvers only what they were not asked. sat and unsat are answers to the
-    query whatever the timeout, unknown is not kept; a sat whose model is
+    query whatever the timeout; unknown with the seconds it was given, the
+    answer again to a query given no more (a run again does not wait out
+    each way that did not settle the first time); a sat whose model is
     wanted is asked again. Terms hold their variables' names, the
     assumptions are among the conditions: a line says nothing beyond its
     query, in any function, on any ELF."""
@@ -882,13 +884,20 @@ class Answers:
                     word = line.split()
                     if len(word) == 2 and word[1] in ('sat', 'unsat'):  # a last line cut short: nothing
                         self.known[word[0]] = word[1]
+                    elif len(word) == 3 and word[1] == 'unknown' and word[2].isdigit() and self.known.get(word[0], 'unknown').startswith('unknown'):
+                        self.known[word[0]] = 'unknown %s' % max(int(word[2]), int(self.known.get(word[0], 'unknown 0').split()[1]))
         self.out = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
 
     def key(self, conds):
         return hashlib.blake2b(b''.join(sorted({digest(c) for c in conds})), digest_size=16).hexdigest()
 
-    def add(self, key, answer):
-        if answer in ('sat', 'unsat') and key not in self.known:
+    def add(self, key, answer, limit):
+        if answer == 'unknown':
+            old = self.known.get(key)
+            if old is None or old.startswith('unknown') and int(old.split()[1]) < limit:
+                self.known[key] = 'unknown %d' % limit
+                os.write(self.out, ('%s unknown %d\n' % (key, limit)).encode())
+        elif answer in ('sat', 'unsat') and self.known.get(key, 'unknown').startswith('unknown'):
             self.known[key] = answer
             os.write(self.out, ('%s %s\n' % (key, answer)).encode())  # one write: whole among the other processes'
 
@@ -1075,14 +1084,14 @@ class Solver:
                     self.send('(assert %s)' % self.name(c))
         else:
             conds = ([] if bare else self.assumed) + [c for c in conds if c is not TRUE]  # bare: without the assumptions (fewer hypotheses: still sound)
+            limit = min(TIMEOUT, timeout or TIMEOUT) * 1000
             if ANSWERS is not None:
                 asked = ANSWERS.key(conds)
-                known = ANSWERS.known.get(asked)
-                if known == 'unsat' or known == 'sat' and not keep:
+                known = ANSWERS.known.get(asked, '')
+                if known == 'unsat' or known == 'sat' and not keep or known.startswith('unknown') and int(known.split()[1]) >= limit // 1000:
                     ANSWERS.hits += 1
-                    self.result = known
-                    return known
-            limit = min(TIMEOUT, timeout or TIMEOUT) * 1000
+                    self.result = known.split()[0]
+                    return self.result
             if self.bp is not None and not any(has_lambda(c) for c in conds):
                 self.p = self.bp
                 self.send('(reset)')
@@ -1119,7 +1128,7 @@ class Solver:
         if INCREMENTAL and not (keep and line == 'sat'):
             self.send('(pop 1)')
         if ANSWERS is not None:
-            ANSWERS.add(asked, line)
+            ANSWERS.add(asked, line, limit // 1000)
         dt = time.time() - t0
         if SLOW is not None and dt > SLOW:  # PROVE_SLOW=seconds: where the slow queries come from (PROVE_DUMP=dir: each one standalone)
             where = ' < '.join('%s:%d' % (f.name, f.lineno) for f in traceback.extract_stack()[-5:-1][::-1])

@@ -468,6 +468,35 @@ class Strlen(Scan):
     def answer(self, st):
         return S.TRUE, st.gpr['rax']
 
+    def contracts(self, img, entry):
+        return {t: self.c_tail for t in named_targets(img, entry, ('strlen_tail_',))}
+
+    def c_tail(self, prover, st):
+        """strlen_tail(a, s), proved on its own (StrlenTail): under its
+        precondition (a 16-aligned, s < a, no NUL in [s, a)) strlen(s)."""
+        a = st.gpr['rdi']
+        lo = S.sub(st.front_lo, self.s) if st.front_lo is not None else const(64, 0)
+        out = [('strlen_tail is given s', [S.not_(S.eq(st.gpr['rsi'], self.s))]),
+               ('strlen_tail\'s a 16-aligned', [S.not_(S.is_zero(S.band(a, const(64, 15))))]),
+               ('strlen_tail\'s a past s', [S.ule(a, self.s)]),
+               ('no NUL before strlen_tail\'s a', self.some_match(lo, S.sub(a, self.s), st))]
+        return tail_call(self, prover, st, out)
+
+
+class StrlenTail(Strlen):
+    """strlen_tail(a, s): strlen's kernel, under its contract's precondition
+    (a 16-aligned, s < a, no NUL in [s, a)): strlen(s). Its frontier a
+    from the start (z, any NUL, at or past it)."""
+
+    def setup(self, al, align):
+        params, assume = Strlen.setup(self, al, align)
+        delta = var('adelta', 64)
+        self.a = self.front0 = S.add(self.s, delta)
+        return [self.a, self.s], assume + [S.is_zero(S.band(self.a, const(64, 15))), S.ult(const(64, 0), delta), S.ule(delta, self.z)]
+
+    def contracts(self, img, entry):
+        return {}
+
 
 class Memchr(Scan):
     """memchr(s, c, n): s + r for the first r < n with s[r] == (u8)c, else
@@ -485,6 +514,45 @@ class Memchr(Scan):
     def answer(self, st):
         r = st.gpr['rax']
         return S.not_(S.is_zero(r)), S.sub(r, self.s)
+
+    def contracts(self, img, entry):
+        return {t: self.c_large for t in named_targets(img, entry, ('memchr_large_',))}
+
+    def c_large(self, prover, st):
+        """memchr_large(from, c, n - F), F = from - s, proved on its own
+        (MemchrLarge): under its precondition (no match in [from, A), A =
+        from's 16-byte block plus 32, the n bytes past A) memchr itself from
+        from on; with no match in [s, from) either its answer and loads are
+        this spec's."""
+        frm = st.gpr['rdi']
+        f, d = S.sub(frm, self.s), large_head(frm)
+        out = [('memchr_large is given a pointer at or past s', [S.ult(frm, self.s)]),
+               ('memchr_large is given c', [S.not_(S.eq(S.extract(st.gpr['rsi'], 7, 0), S.extract(self.c, 7, 0)))]),
+               ('memchr_large is given the rest of n', [S.not_(S.eq(st.gpr['rdx'], S.sub(self.n, f)))]),
+               ('memchr_large\'s n past its head', [S.ule(st.gpr['rdx'], d)])]
+        lo = S.sub(st.front_lo, self.s) if st.front_lo is not None else const(64, 0)
+        out.append(('no match before memchr_large\'s head ends', self.some_match(lo, S.add(f, d), st)))
+        return tail_call(self, prover, st, out)
+
+
+def large_head(s):
+    """The bytes memchr_large's caller has checked: to its 16-byte block plus 32 (17 to 32 of them)."""
+    return S.sub(const(64, 32), S.band(s, const(64, 15)))
+
+
+class MemchrLarge(Memchr):
+    """memchr_large(s, c, n): memchr's kernel, under the precondition its
+    callers meet (no match in [s, A), A the 16-byte block of s plus 32, n
+    past A): memchr itself. The scan's loads in the pages up to the match
+    or of the n bytes, as memchr's: C11 lets the object end at the match."""
+
+    def setup(self, a, align):
+        params, assume = Memchr.setup(self, a, align)
+        d = large_head(self.s)
+        return params, assume + [S.ult(d, self.n)] + [S.or_(S.ule(d, const(64, j)), S.not_(self.at(const(64, j)))) for j in range(32)]
+
+    def contracts(self, img, entry):
+        return {}
 
 
 class StrCompare(Scan):
@@ -706,6 +774,19 @@ class Fill(Writer):
     def expected_at(self, idx):
         return S.extract(self.c, 7, 0)
 
+    def contracts(self, img, entry):
+        return {t: self.c_large for t in named_targets(img, entry, ('fill_large_',))}
+
+    def c_large(self, prover, st):
+        """fill_large(d, c, n), proved on its own (FillLarge): for n past 128
+        memset itself, every one of the n bytes its store (any before it
+        within them, checked as they ran)."""
+        out = [('fill_large is given d', [S.not_(S.eq(st.gpr['rdi'], self.d))]),
+               ('fill_large is given c', [S.not_(S.eq(S.extract(st.gpr['rsi'], 7, 0), S.extract(self.c, 7, 0)))]),
+               ('fill_large is given n', [S.not_(S.eq(st.gpr['rdx'], self.n))]),
+               ('fill_large\'s n past 128', [S.ule(self.n, const(64, 128))])]
+        return tail_call(self, prover, st, out)
+
     def movs_wrong(self, idx, count, src, arr, off):
         return S.TRUE
 
@@ -714,6 +795,17 @@ class Fill(Writer):
 
     def show(self):
         return [self.d, self.n, self.c, self.i]
+
+
+class FillLarge(Fill):
+    """fill_large(d, c, n): memset's kernel, n > 128: memset itself."""
+
+    def setup(self, a, align):
+        params, assume = Fill.setup(self, a, align)
+        return params, assume + [S.ult(const(64, 128), self.n)]
+
+    def contracts(self, img, entry):
+        return {}
 
 
 class Copy(Writer):
@@ -737,6 +829,22 @@ class Copy(Writer):
 
     def expected_at(self, idx):
         return S.select(self.src, S.add(S.sub(self.s, self.sbase), idx))
+
+    def contracts(self, img, entry):
+        return {t: self.c_large for t in named_targets(img, entry, ('copy_large_',))}
+
+    def c_large(self, prover, st):
+        """copy_large(d, s, n), proved on its own (CopyLarge, memmove's
+        spec): for n past 64 the copy itself, with the objects overlapping
+        or not, from the source as the kernel finds it: for memmove nothing
+        written before it."""
+        if getattr(self, 'window', False) and st.stores:
+            raise Failure('stores before copy_large: the source it copies may have changed')
+        out = [('copy_large is given d', [S.not_(S.eq(st.gpr['rdi'], self.d))]),
+               ('copy_large is given s', [S.not_(S.eq(st.gpr['rsi'], self.s))]),
+               ('copy_large is given n', [S.not_(S.eq(st.gpr['rdx'], self.n))]),
+               ('copy_large\'s n past 64', [S.ule(self.n, const(64, 64))])]
+        return tail_call(self, prover, st, out)
 
     def movs_wrong(self, idx, count, src, arr, off):
         """The source's region is never written (the stores stay in d's)."""
@@ -782,6 +890,18 @@ class Move(Copy):
         j = var('j', 64)
         return S.or_(S.not_(S.eq(idx, S.sub(src, self.s))),
                      S.and_(S.ult(j, count), S.not_(S.eq(S.select(arr, S.add(off, j)), S.select(self.src, S.add(off, j))))))
+
+
+class CopyLarge(Move):
+    """copy_large(d, s, n): memcpy's and memmove's kernel, n > 64, any
+    overlap: memmove itself."""
+
+    def setup(self, a, align):
+        params, assume = Move.setup(self, a, align)
+        return params, assume + [S.ult(const(64, 64), self.n)]
+
+    def contracts(self, img, entry):
+        return {}
 
 
 def selects(t, out=None, seen=None):
@@ -856,6 +976,20 @@ class Compare:
     def early_store(self, e):
         return e[3]
 
+    def contracts(self, img, entry):
+        return {t: self.c_large for t in named_targets(img, entry, ('memcmp_large_',))}
+
+    def c_large(self, prover, st):
+        """memcmp_large(a, b, n), proved on its own (MemcmpLarge): for n past
+        128 with the first 64 bytes equal, memcmp itself."""
+        lo = S.sub(st.front_lo, self.a) if st.front_lo is not None else const(64, 0)
+        out = [('memcmp_large is given a', [S.not_(S.eq(st.gpr['rdi'], self.a))]),
+               ('memcmp_large is given b', [S.not_(S.eq(st.gpr['rsi'], self.b))]),
+               ('memcmp_large is given n', [S.not_(S.eq(st.gpr['rdx'], self.n))]),
+               ('memcmp_large\'s n past 128', [S.ule(self.n, const(64, 128))]),
+               ('no difference in memcmp_large\'s first 64 bytes', self.some_diff(lo, const(64, 64), st))]
+        return tail_call(self, prover, st, out)
+
     def answer_index(self, r):
         """r's index into the objects, or None for a constant answer."""
         if S.is_const(r):
@@ -906,6 +1040,18 @@ class Compare:
 
     def show(self):
         return [self.a, self.b, self.n, self.i, self.z]
+
+
+class MemcmpLarge(Compare):
+    """memcmp_large(a, b, n): memcmp's kernel, n > 128 and the first 64
+    bytes equal: memcmp itself."""
+
+    def setup(self, a, align):
+        params, assume = Compare.setup(self, a, align)
+        return params, assume + [S.ult(const(64, 128), self.n)] + [S.not_(self.differ(const(64, j))) for j in range(64)]
+
+    def contracts(self, img, entry):
+        return {}
 
 
 class StrCopy(Scan, Writer):
@@ -1883,7 +2029,8 @@ class TruffleScan32:
         return [self.count, self.members, self.r]
 
 
-SPECS = {'strlen': Strlen, 'memchr': Memchr, 'memset': Fill, 'memcpy': Copy, 'memmove': Move, 'memcmp': Compare, 'strcmp': StrCompare, 'strcmp_tail': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan, 'strspn_long': SpanLong, 'strcspn_long': CspanLong, 'truffle_scan': TruffleScan, 'truffle_scan32': TruffleScan32}
+SPECS = {'strlen': Strlen, 'strlen_tail': StrlenTail, 'memchr': Memchr, 'memchr_large': MemchrLarge, 'memset': Fill, 'fill_large': FillLarge, 'memcpy': Copy,
+         'memmove': Move, 'copy_large': CopyLarge, 'memcmp': Compare, 'memcmp_large': MemcmpLarge, 'strcmp': StrCompare, 'strcmp_tail': StrCompare, 'strcpy': StrCopy, 'strcpy_long': StrCopyLong, 'strcat': StrCat, 'strspn': Span, 'strcspn': Cspan, 'strspn_long': SpanLong, 'strcspn_long': CspanLong, 'truffle_scan': TruffleScan, 'truffle_scan32': TruffleScan32}
 
 
 def contract_stops(spec, img, entry):
