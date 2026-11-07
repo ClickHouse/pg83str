@@ -1831,6 +1831,12 @@ class Prover:
         plain = self.plain(st)
         if len(plain) < len(self.solver.assumed) + len(st.pc) and self.solver.check(*plain, *flat, bare=True, timeout=AUX) == 'unsat':
             return
+        # then with this way round's conditions on memory too (past a loop's head: the masks of the block it
+        # tests, "a byte found", not the bytes the path compared before the loop): a tzcnt's index below 64
+        recent = [c for c in st.pc[st.gen['pc']:] if S.has_array(c)] if st.gen is not None and 'pc' in st.gen else []
+        if recent and len(plain) + len(recent) < len(self.solver.assumed) + len(st.pc) and \
+                self.solver.check(*plain, *recent, *flat, bare=True, timeout=AUX) == 'unsat':
+            return
         each = next((c for c in flat if c.op == 'or_b'), None) if lanes else None
         r = self.solver.check(*st.pc, *flat, keep=True, timeout=AUX if each is not None else 3 * AUX if end is not None else None)
         if r == 'unknown' and end is not None:  # a load past a stop the bytes compared before rule out (strcmp evex
@@ -2105,7 +2111,7 @@ class Prover:
             g.front_lo = a
             g.front_bytes = list(s1.front_bytes) + ([a] if mode == 'A' else [])
         g.pc = list(s1.pc) + [S.ult(k, const(64, K_LIMIT))] + ([] if side else self.spec.general(a)) + [f(g, a) for n, f in kept]
-        g.gen = {'head': s1.rip, 'front': a, 'moved': moved, 'havoc': havoc, 'step': step, 'mode': mode, 'regs': dict(g.gpr),
+        g.gen = {'head': s1.rip, 'front': a, 'moved': moved, 'havoc': havoc, 'step': step, 'mode': mode, 'regs': dict(g.gpr), 'pc': len(g.pc),
                  'steps': g.steps, 'kept': kept, 'k': k, 'vec': dict(g.vec), 'vmoved': vmoved, 'kregs': dict(g.k),
                  'mem': [arr for _, arr in g.regions], 'down': down, 'a1': a1, 'windows': windows, 'parent': s1.gen, 'fresh': g.fresh, 'w': w,
                  'side': side, 'swin': swin}
