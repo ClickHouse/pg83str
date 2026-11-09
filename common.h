@@ -340,6 +340,52 @@ static inline void fill_33_64(u8 *d, __m128i v, size_t n) {
 
 /* --------------------------------------------------------- short compare */
 
+/* n <= 16. Big-endian words from both ends preserve unsigned byte ordering
+   without a masked vector load or reading beyond the object. */
+static inline int memcmp_scalar_le16(const u8 *a, const u8 *b, size_t n)
+{
+    if (n >= 8)
+    {
+        uint64_t x = __builtin_bswap64(load64(a));
+        uint64_t y = __builtin_bswap64(load64(b));
+        if (x != y)
+        {
+            return (x > y) - (x < y);
+        }
+        x = __builtin_bswap64(load64(a + n - 8));
+        y = __builtin_bswap64(load64(b + n - 8));
+        return (x > y) - (x < y);
+    }
+    if (n >= 4)
+    {
+        uint32_t x = __builtin_bswap32(load32(a));
+        uint32_t y = __builtin_bswap32(load32(b));
+        if (x != y)
+        {
+            return (x > y) - (x < y);
+        }
+        x = __builtin_bswap32(load32(a + n - 4));
+        y = __builtin_bswap32(load32(b + n - 4));
+        return (x > y) - (x < y);
+    }
+    if (n >= 2)
+    {
+        int x = __builtin_bswap16(load16b(a));
+        int y = __builtin_bswap16(load16b(b));
+        if (n == 2 || x != y)
+        {
+            return x - y;
+        }
+        return (int)a[2] - b[2];
+    }
+    if (n)
+    {
+        return (int)a[0] - b[0];
+    }
+    return 0;
+}
+
+
 /* n <= 16. A 16-byte load is taken only when both pointers have room in
    their pages; bit 16 bounds the search without a variable shift. */
 static inline int memcmp_le16(const u8 *a, const u8 *b, size_t n) {

@@ -3,8 +3,10 @@
 This fork adds a [selected Linux AArch64 provider](aarch64/selected/README.md)
 used by ClickHouse, with standalone build and contract-test targets. The
 [historical AArch64 workbench](README.aarch64.md) retains its separate scalar/NEON
-experiments and 20-slot API. Proof coverage remains partial. The x86-64 library
-and results below retain their original scope.
+experiments and 20-slot API. Proof coverage remains partial. Historical x86-64
+measurements below retain their original scope. The x86-64 `str_memcpy`,
+`str_memmove` and `str_memcmp` entries now handle sizes up to 16 before table
+dispatch; the historical numbers below predate that tuning.
 
 [![CI](https://github.com/pg83/str/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pg83/str/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -44,10 +46,12 @@ only the Skylake-SP configuration names the `_jcc` twins.
   split by the `-march` they need: x86-64, x86-64-v2 (SSE4.2), x86-64-v3
   (AVX2), x86-64-v4 at 256 bits and at 512 bits. `common.h` holds the table,
   the short paths (up to 64 bytes) and the helpers they share.
-- `dispatch.c` — the configurations, one complete table each, and `str_host()`
+- `dispatch.c` — the configurations, one complete table each, and `str_host`
   from `cpuid`; a constructor copies the host's configuration into
-  `str_table`, and the public `str_memcpy` and friends jump through it. A
-  libc build renames them: `-Dstr_memcpy=memcpy ...`.
+  `str_table`. The public `str_memcpy`, `str_memmove` and `str_memcmp` finish
+  calls up to 16 bytes locally; other calls jump through the table. Call a
+  table slot directly when benchmarking an alternate short implementation.
+  A libc build renames the entries: `-Dstr_memcpy=memcpy ...`.
 - `dev/` — the post pass, Python only: `x86.py` decodes x86-64 (legacy,
   VEX, EVEX) into structured instructions, `opt.py` rewrites them (tail and
   branch layout, mask-register and vector-register rewrites, calls through

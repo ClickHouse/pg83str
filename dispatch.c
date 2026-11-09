@@ -11,9 +11,10 @@
  * and more go to the copy_huge and fill_huge slots, rep movsb/stosb on the
  * hosts with ERMS.
  *
- * The entry points str_memcpy and so on jump through the table; they are the
- * public functions (a libc build renames them with -Dstr_memcpy=memcpy ... on
- * the command line) and the way implementations call each other.
+ * The public `str_memcpy`, `str_memmove` and `str_memcmp` entries handle
+ * sizes up to 16 with portable short paths before table dispatch. Other calls
+ * use the table. A libc build renames the entries with `-Dstr_memcpy=memcpy`
+ * and the corresponding definitions for the other primitives.
  */
 #include "common.h"
 
@@ -235,11 +236,35 @@ __attribute__((constructor)) static void select_table(void) {
     str_dispatch();
 }
 
-void *str_memcpy(void *d, const void *s, size_t n) {
+void *str_memcpy(void *d, const void *s, size_t n)
+{
+    if (n <= 16)
+    {
+        if (n == 0)
+        {
+            return d;
+        }
+
+        copy_small((u8 *)d, (const u8 *)s, n);
+        return d;
+    }
+
     return str_table.memcpy(d, s, n);
 }
 
-void *str_memmove(void *d, const void *s, size_t n) {
+void *str_memmove(void *d, const void *s, size_t n)
+{
+    if (n <= 16)
+    {
+        if (n == 0)
+        {
+            return d;
+        }
+
+        copy_small((u8 *)d, (const u8 *)s, n);
+        return d;
+    }
+
     return str_table.memmove(d, s, n);
 }
 
@@ -247,7 +272,13 @@ void *str_memset(void *d, int c, size_t n) {
     return str_table.memset(d, c, n);
 }
 
-int str_memcmp(const void *a, const void *b, size_t n) {
+int str_memcmp(const void *a, const void *b, size_t n)
+{
+    if (n <= 16)
+    {
+        return memcmp_scalar_le16((const u8 *)a, (const u8 *)b, n);
+    }
+
     return str_table.memcmp(a, b, n);
 }
 

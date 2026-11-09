@@ -205,6 +205,17 @@ void *memchr_evex512(const void *p, int c, size_t n) {
 /* ------------------------------------------------------------------ copy */
 
 static inline void *copy(u8 *d, const u8 *s, size_t n) {
+    if (n <= 16)
+    {
+        if (n == 0)
+        {
+            return d;
+        }
+
+        copy_small(d, s, n);
+        return d;
+    }
+
     /* every load happens before any store: overlap-safe, so memmove is the same code */
     if (n <= 64) {
         __mmask64 k = low_mask64(n);
@@ -320,6 +331,11 @@ void *memset_evex512(void *dst, int c, size_t n) {
 int memcmp_evex512(const void *pa, const void *pb, size_t n) {
     const u8 *a = (const u8 *)pa, *b = (const u8 *)pb;
     unsigned long long m;
+
+    if (n <= 16)
+    {
+        return memcmp_scalar_le16(a, b, n);
+    }
 
     if (n <= 64) {
         if (n == 0) {

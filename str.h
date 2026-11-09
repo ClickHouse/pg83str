@@ -22,8 +22,9 @@ typedef unsigned char u8;
 
 /* The one table of primitives: the public functions and the kernels they hand
    the long cases to. Every implementation does its own hot path and reaches
-   any other primitive only through the str_* entry points below, which jump
-   through this table, so dispatch.c can fill the
+   any other primitive only through the `str_*` entry points below. The
+   portable x86-64 short-memory paths finish there; other calls use this
+   table, so `dispatch.c` can fill the
    slots from cpuid with any mix: a 64-byte first block can continue in a
    64-byte tail on one machine and in a 32-byte one on another. */
 struct str_table {
@@ -86,8 +87,11 @@ extern const unsigned str_nconfigs;
 const struct str_config *str_choose(void);   /* the configuration for this host */
 void str_dispatch(void);                     /* str_table = str_choose()->table */
 
-/* The entry points: each jumps through its slot of the table. Implementations
-   call each other only through these. */
+/* The x86-64 `str_memcpy`, `str_memmove` and `str_memcmp` entries handle
+   sizes up to 16 before table dispatch.
+   Other calls use their configured slots. Call a slot directly when comparing
+   alternate short-path implementations. Implementations call each other only
+   through these entry points. */
 void *str_memcpy(void *, const void *, size_t);
 void *str_memmove(void *, const void *, size_t);
 void *str_memset(void *, int, size_t);
