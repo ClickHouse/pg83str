@@ -23,6 +23,29 @@ if build.target.split("-", 1)[0] in ("aarch64", "arm64"):
                      cflags=["-Wall", "-Wextra", "-Werror", *scalar_flags, "-march=armv8-a+simd"])
     group("libstr", libstr)
     install(libstr)
+    # The selected eleven-entry provider is independent of the workbench's
+    # twenty-slot table. Never combine their identically named public entries.
+    selected_inputs = ["$(S)/dev/aarch64_selected.py"]
+    selected_inputs += build.glob("$(S)/aarch64/selected/*.c")
+    selected_inputs += build.glob("$(S)/aarch64/selected/*.h")
+    selected_inputs += ["$(S)/aarch64/selected/LICENSE", "$(S)/aarch64/selected/provenance.json"]
+    selected_env = {name: os.environ.get(name, "") for name in ("CPPFLAGS", "CFLAGS", "LDFLAGS")}
+    selected_cc = os.environ.get("CC", "clang")
+    selected_ar = os.environ.get("AR", "llvm-ar")
+    selected = command(name="selected_archive", inputs=selected_inputs,
+                       outputs=["$(B)/selected/libstr-prefixed.a", "$(B)/selected/build.json",
+                                "$(B)/selected/compile_commands.json"],
+                       cmd=["python3", "$(S)/dev/aarch64_selected.py", "build",
+                            "--target", build.target, "--cc", selected_cc, "--ar", selected_ar,
+                            "--out", "$(B)/selected"], env=selected_env)
+    group("selected", selected)
+    if build.target == build.host:
+        selected_test = command(name="selected_test", inputs=["$(S)/tst/aarch64_selected.c"],
+                                outputs=["$(B)/selected/test.json"], deps=[selected],
+                                cmd=["python3", "$(S)/dev/aarch64_selected.py", "test",
+                                     "--target", build.target, "--cc", selected_cc, "--ar", selected_ar,
+                                     "--out", "$(B)/selected"], env=selected_env)
+        group("selected-test", selected_test)
     test = program(name="test", output="$(B)/test", srcs=["$(S)/tst/test.c"], includes=["$(S)"], deps=[libstr])
     # Runtime checks execute target binaries and are available only natively.
     if build.target == build.host:

@@ -1,8 +1,10 @@
 # str
 
-An experimental Linux AArch64 workbench is described in
-[README.aarch64.md](README.aarch64.md). Its scalar/NEON candidates are not yet
-tuned or fully proved; the x86-64 library and results below retain their scope.
+This fork adds a [selected Linux AArch64 provider](aarch64/selected/README.md)
+used by ClickHouse, with standalone build and contract-test targets. The
+[historical AArch64 workbench](README.aarch64.md) retains its separate scalar/NEON
+experiments and 20-slot API. Proof coverage remains partial. The x86-64 library
+and results below retain their original scope.
 
 [![CI](https://github.com/pg83/str/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pg83/str/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

@@ -5,6 +5,13 @@ This is an experimental extension of `pg83/str`, based on upstream commit
 measurement/verification machinery needed to develop an ARM implementation.
 It is not a tuned replacement for glibc or ClickHouse's existing ARM routines.
 
+The separate [selected provider](aarch64/selected/README.md) packages the
+eleven public entries measured in the later ClickHouse investigation. Build
+it explicitly with `./build selected` and validate it with
+`./build selected-test` on native Linux AArch64. Its archive is independent
+of the historical twenty-slot workbench described below: the existing
+`libstr`, `test`, `lab` and `proof` targets retain their original behavior.
+
 The [AArch64 tuning investigation](README.aarch64-tuning.md) follows pg83's
 experimental variants, adds 34 lab candidates, and records native comparisons,
 generated-code checks, rejected alternatives, and remaining proof work.
