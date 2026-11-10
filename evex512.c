@@ -302,12 +302,22 @@ void *fill_large_evex512(u8 *d, int c, size_t n) {
 
 void *memset_evex512(void *dst, int c, size_t n) {
     u8 *d = (u8 *)dst;
-    __m512i v = _mm512_set1_epi8((char)c);
 
-    if (n <= 64) {
-        mstore64(d, low_mask64(n), v);
+    if (n <= 32)
+    {
+        fill_small(d, splat16(c), c, n);
         return dst;
     }
+
+    if (n <= 64)
+    {
+        __m256i v = _mm256_set1_epi8((char)c);
+        _mm256_storeu_si256((__m256i *)d, v);
+        _mm256_storeu_si256((__m256i *)(d + n - 32), v);
+        return dst;
+    }
+
+    __m512i v = _mm512_set1_epi8((char)c);
 
     if (n <= 128) {
         store512(d, v);
