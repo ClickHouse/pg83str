@@ -122,10 +122,15 @@ int main(void)
     assert(dladdr((void *)(uintptr_t)&main, &image) != 0);
     printf("META\t%" PRIxPTR "\t%u\t%u\n", (uintptr_t)image.dli_fbase, host, str_nconfigs);
     unsigned visited = 0;
+    /* Exercise every ISA-compatible profile, including vendor/performance
+       policies this host would not choose by default, as the API suite does. */
+    const unsigned executes = STR_SSE42 | STR_AVX2 | STR_AVX512;
     for (unsigned config = 0; config < str_nconfigs; ++config)
     {
-        if ((str_configs[config].needs & host) != str_configs[config].needs)
+        if (str_configs[config].needs & executes & ~host)
+        {
             continue;
+        }
         str_select(&str_configs[config].table);
         ++visited;
         for (unsigned test = 0; test < CASES; ++test)

@@ -164,9 +164,21 @@ else:
             color="light-green",
         )
         group("cached-bulk", check_cached_bulk)
+        check_intel_zmm_cached = []
+        for profile in ["evex512i", "evex512ri"]:
+            check_intel_zmm_cached.append(command(
+                name="check_cached_bulk_" + profile,
+                outputs=["$(B)/checks/cached-bulk-" + profile + ".txt"],
+                deps=[cached_bulk],
+                cmd=["sh", "-c", '"$0" "$1" > "$2"', "$(B)/cached-bulk", profile, "$(B)/checks/cached-bulk-" + profile + ".txt"],
+                descr="CK",
+                color="light-green",
+            ))
+        group("intel-zmm-cached-bulk", *check_intel_zmm_cached)
         checks = [
             check_dispatch_threads,
             check_cached_bulk,
+            *check_intel_zmm_cached,
             command(
                 name="check_test",
                 outputs=["$(B)/checks/test.txt"],

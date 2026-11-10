@@ -62,11 +62,24 @@ constructor starts a real worker before default-priority selection. The worker
 keeps calling all eleven public APIs while the main thread publishes immutable
 one-slot mixes, with explicit observation and exit handshakes.
 
+The Intel-only `evex512i` and `evex512ri` configurations require
+`STR_INTEL_ZMM`, which is set only after the full Intel vendor match and
+existing ZMM/OS-state eligibility checks. They keep the corresponding
+`evex512` and `evex512r` choices in all nineteen other slots and use the
+existing cached `copy_huge` helper for `4096 <= n < 262144`, then REP.
+`evex512ri` preserves the FSRS `memset_rep` frontend; neither new profile
+changes huge fills. AMD/Zen and Skylake-SP keep their existing profiles.
+
 `./build cached-bulk` checks both sides of the cached-policy thresholds,
 all 64-by-64 copy alignments, protected page edges, and overlapping
 `memmove` calls through both the selected backend and public entries. It
 also checks the huge-copy slot's forward-overlap contract directly. The
 test reports an explicit skip when the host cannot execute `evex`.
+`./build intel-zmm-cached-bulk` runs the same contract suite separately for
+`evex512i` and `evex512ri`; their policy bits do not prevent an ISA-capable
+host from testing these profiles explicitly. The printed `16384` boundary
+is also a fill edge tested by the suite, not a new fill-dispatch threshold.
+The executable accepts either profile name as its optional argument.
 
 ## Layout
 

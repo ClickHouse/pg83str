@@ -31,5 +31,9 @@
 "evex512.strcpy_evex": 48,
 "evex512.strcpy_long_evex512": 48,
 "evex512.strlen_evex512": 48,
-"evex512.strlen_tail_evex512": 48
+"evex512.strlen_tail_evex512": 48,
+"evex512i.strcpy_evex": 48,
+"evex512i.strcpy_long_evex512": 48,
+"evex512i.strlen_evex512": 48,
+"evex512i.strlen_tail_evex512": 48
 }

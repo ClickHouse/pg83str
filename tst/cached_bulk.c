@@ -1,4 +1,4 @@
-/* Threshold and overlap contracts for the `evex` cached huge helpers. */
+/* Boundary and overlap contracts for cached huge-copy profiles and their fill choices. */
 #define _GNU_SOURCE
 #include "str.h"
 #include <dlfcn.h>
@@ -78,12 +78,15 @@ static void *huge_copy(void *d, const void *s, size_t n)
     return selected->copy_huge(d, s, n);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    CHECK(argc == 1 || argc == 2);
+    const char *profile = argc == 2 ? argv[1] : "evex";
+    CHECK(strcmp(profile, "evex") == 0 || strcmp(profile, "evex512i") == 0 || strcmp(profile, "evex512ri") == 0);
     const struct str_config *config = 0;
     for (unsigned i = 0; i < str_nconfigs; ++i)
     {
-        if (strcmp(str_configs[i].name, "evex") == 0)
+        if (strcmp(str_configs[i].name, profile) == 0)
         {
             config = &str_configs[i];
         }
@@ -92,7 +95,7 @@ int main(void)
     const unsigned executes = STR_SSE42 | STR_AVX2 | STR_AVX512;
     if (config->needs & executes & ~str_host())
     {
-        puts("SKIP cached-bulk: evex instructions unavailable");
+        printf("SKIP cached-bulk: %s instructions unavailable\n", profile);
         return 0;
     }
     ref_copy = (copy_fn)dlsym(RTLD_NEXT, "memcpy");
@@ -176,6 +179,10 @@ int main(void)
     }
     str_select(saved);
     CHECK(calls == 516364);
+    if (argc == 2)
+    {
+        printf("cached-bulk profile=%s\n", profile);
+    }
     printf("PASS cached-bulk calls=%zu checks=%zu thresholds=4096/16384/262144 alignments=64x64 forward=0..127 public-and-backend\n", calls, checks);
     return 0;
 }

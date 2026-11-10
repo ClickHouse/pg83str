@@ -60,8 +60,9 @@ const struct str_table *str_current(void);
 void str_select(const struct str_table *table);
 
 /* What the host runs well, as bits of str_host(); dispatch.c picks a
-   configuration from them. STR_ZMM: 512-bit registers cost nothing extra. */
-enum { STR_SSE42 = 1, STR_AVX2 = 2, STR_AVX512 = 4, STR_ZMM = 8, STR_ERMS = 16, STR_FSRS = 32, STR_NEON = 64 }; /* FSRS: a short rep stosb starts fast */
+   configuration from them. `STR_ZMM`: 512-bit registers cost nothing extra.
+   `STR_INTEL_ZMM`: Intel vendor policy, only after ZMM/OS-state eligibility. */
+enum { STR_SSE42 = 1, STR_AVX2 = 2, STR_AVX512 = 4, STR_ZMM = 8, STR_ERMS = 16, STR_FSRS = 32, STR_NEON = 64, STR_INTEL_ZMM = 128 }; /* FSRS: a short rep stosb starts fast */
 unsigned str_host(void);
 /* The decisions are pure functions of a cpuid snapshot, so that the test can
    make them for any host on the one it runs on. */
