@@ -135,6 +135,16 @@ else:
         deps=[libstr],
     )
 
+    cached_bulk = program(
+        name="cached_bulk",
+        output="$(B)/cached-bulk",
+        srcs=["$(S)/tst/cached_bulk.c"],
+        includes=["$(S)"],
+        cflags=["-Wall", "-Wextra", "-Werror"],
+        ldflags=["-no-pie", "-ldl"],
+        deps=[libstr],
+    )
+
     if build.target == build.host:
         check_dispatch_threads = command(
             name="check_dispatch_threads",
@@ -145,8 +155,18 @@ else:
             color="light-green",
         )
         group("dispatch-threads", check_dispatch_threads)
+        check_cached_bulk = command(
+            name="check_cached_bulk",
+            outputs=["$(B)/checks/cached-bulk.txt"],
+            deps=[cached_bulk],
+            cmd=["sh", "-c", '"$0" > "$1"', "$(B)/cached-bulk", "$(B)/checks/cached-bulk.txt"],
+            descr="CK",
+            color="light-green",
+        )
+        group("cached-bulk", check_cached_bulk)
         checks = [
             check_dispatch_threads,
+            check_cached_bulk,
             command(
                 name="check_test",
                 outputs=["$(B)/checks/test.txt"],

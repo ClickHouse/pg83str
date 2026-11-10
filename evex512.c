@@ -252,6 +252,51 @@ void *memmove_evex512(void *dst, const void *src, size_t n) {
 
 /* ------------------------------------------------------------------ fill */
 
+/* For `REP_THRESHOLD <= n < 262144`, use cached stores without backward overlap.
+   Save the edges before the loop and store them last, as the other forward
+   kernels do: this contract also permits overlapping ranges with d < s. */
+void *copy_huge_cached_evex512(u8 *d, const u8 *s, size_t n)
+{
+    if (n >= 262144)
+    {
+        rep_movsb(d, s, n);
+        RETURN_OPAQUE(d);
+    }
+
+    __m512i head = load512(s), tail = load512(s + n - 64);
+    size_t skew = 64 - ((uintptr_t)d & 63);
+    u8 *dp = d + skew;
+    const u8 *sp = s + skew;
+    size_t left = n - skew;
+
+    NO_UNROLL
+    while (left >= 256)
+    {
+        __m512i x0 = load512(sp), x1 = load512(sp + 64);
+        __m512i x2 = load512(sp + 128), x3 = load512(sp + 192);
+        store512a(dp, x0);
+        store512a(dp + 64, x1);
+        store512a(dp + 128, x2);
+        store512a(dp + 192, x3);
+        dp += 256;
+        sp += 256;
+        left -= 256;
+    }
+
+    NO_UNROLL
+    while (left >= 64)
+    {
+        store512a(dp, load512(sp));
+        dp += 64;
+        sp += 64;
+        left -= 64;
+    }
+
+    store512(d + n - 64, tail);
+    store512(d, head);
+    RETURN_OPAQUE(d);
+}
+
 /* n > 256. No vector argument (the library's convention: nothing vector is
    live across a call), the splat is remade. Four unaligned stores at each end,
    aligned 256-byte steps between; the loop is not unrolled (the compiler
@@ -279,6 +324,18 @@ static inline void *fill_loop(u8 *d, int c, size_t n) {
     store512(end + 128, v);
     store512(end + 192, v);
     RETURN_OPAQUE(d);
+}
+
+/* Huge-fill contract: `n >= REP_THRESHOLD`; cached stores below 16384. */
+void *fill_huge_cached_evex512(u8 *d, int c, size_t n)
+{
+    if (n >= 16384)
+    {
+        rep_stosb(d, c, n);
+        RETURN_OPAQUE(d);
+    }
+
+    return fill_loop(d, c, n);
 }
 
 /* n > 128, the slot's contract: memset_evex512 settles up to 256 bytes

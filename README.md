@@ -10,8 +10,12 @@ dispatch. The EVEX512 copy entries use ordinary head/tail loads and stores
 through 32 bytes, including short overlapping pointer spans. EVEX512
 `memset` uses ordinary scalar/XMM stores through 32 bytes and two unaligned
 256-bit stores through 64 bytes, targeting short fills that are consumed
-immediately, including AES padding. Larger fill paths retain their existing
-implementations. The historical numbers below predate this tuning.
+immediately, including AES padding. The `evex` configuration uses cached
+huge-copy stores for `4096 <= n < 262144` and cached huge-fill stores for
+`4096 <= n < 16384`, then inline REP instructions. The
+[finite cache-policy experiment](dev/lab/cached-bulk-2026-11-10.md) retains
+the adverse cases and the limits of these initial engineering cutoffs.
+The historical numbers below predate this tuning.
 
 [![CI](https://github.com/pg83/str/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pg83/str/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -57,6 +61,12 @@ The standalone contract suite and lab use this API for one-slot mixes.
 constructor starts a real worker before default-priority selection. The worker
 keeps calling all eleven public APIs while the main thread publishes immutable
 one-slot mixes, with explicit observation and exit handshakes.
+
+`./build cached-bulk` checks both sides of the cached-policy thresholds,
+all 64-by-64 copy alignments, protected page edges, and overlapping
+`memmove` calls through both the selected backend and public entries. It
+also checks the huge-copy slot's forward-overlap contract directly. The
+test reports an explicit skip when the host cannot execute `evex`.
 
 ## Layout
 

@@ -98,6 +98,8 @@ void *memchr_evex(const void *, int, size_t);
 void *memcpy_evex512(void *, const void *, size_t);
 void *memmove_evex512(void *, const void *, size_t);
 void *memset_evex512(void *, int, size_t);
+void *copy_huge_cached_evex512(u8 *d, const u8 *s, size_t n);
+void *fill_huge_cached_evex512(u8 *d, int c, size_t n);
 int memcmp_evex512(const void *, const void *, size_t);
 size_t strlen_evex512(const char *);
 void *memchr_evex512(const void *, int, size_t);
@@ -137,6 +139,8 @@ void *strcpy_long_avx2_jcc(u8 *d, const u8 *s, const u8 *a);
 void *copy_huge_rep_jcc(u8 *d, const u8 *s, size_t n);
 void *copy_huge_avx2_jcc(u8 *d, const u8 *s, size_t n);
 void *fill_huge_rep_jcc(u8 *d, int c, size_t n);
+void *copy_huge_cached_evex512_jcc(u8 *d, const u8 *s, size_t n);
+void *fill_huge_cached_evex512_jcc(u8 *d, int c, size_t n);
 
 /* -------------------------------------------------------------- basics */
 

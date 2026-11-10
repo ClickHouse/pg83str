@@ -9,7 +9,8 @@
  * are SSE4.2 (pcmpistri) on the SSE4.2 hosts and shuffle-based 32-byte scans
  * above; copies and fills of 4096 bytes
  * and more go to the copy_huge and fill_huge slots, rep movsb/stosb on the
- * hosts with ERMS.
+ * hosts with ERMS. The `evex` configuration keeps cached copies below 256 KiB
+ * and cached fills below 16 KiB, then uses REP.
  *
  * The public `str_memcpy`, `str_memmove` and `str_memcmp` entries handle
  * sizes up to 16 with portable short paths before table dispatch. Other calls
@@ -67,7 +68,7 @@ const struct str_config str_configs[] = {
         .strspn = strspn_avx2_jcc, .strcspn = strcspn_avx2_jcc,
         .copy_large = copy_large_avx2_jcc, .fill_large = fill_large_avx2_jcc, .memcmp_large = memcmp_large_avx2_jcc,
         .strlen_tail = strlen_tail_avx2_jcc, .strcmp_tail = strcmp_tail_evex_jcc, .strcpy_long = strcpy_long_avx2_jcc,
-        .copy_huge = copy_huge_rep_jcc, .fill_huge = fill_huge_rep_jcc,
+        .copy_huge = copy_huge_cached_evex512_jcc, .fill_huge = fill_huge_cached_evex512_jcc,
         .memchr = memchr_evex_jcc, .memchr_large = memchr_large_avx2_jcc,
     }},
     /* AVX-512 at 512 bits: Zen 4 and 5, Ice Lake and later. The memory functions
