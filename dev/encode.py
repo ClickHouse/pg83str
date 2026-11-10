@@ -414,6 +414,20 @@ def encode_mem(mem, disp_n, hint_disp):
     return mod, rm, sib, dbytes, X, B, dsize
 
 
+def nop_prefixes(hint, plan, ops, seg):
+    """Retain padding-prefix spelling only while its operand meaning fits."""
+    prefixes = hint.get('nop_prefixes')
+    if prefixes is None or any(p not in {0x66, *SEG_BYTE.values()} for p in prefixes):
+        return None
+    if plan.osz in (16, 32) and (0x66 in prefixes) != (plan.osz == 16):
+        return None
+    if any(o['kind'] == 'Memory' for o in ops):
+        original_seg = next((p for p in reversed(prefixes) if p in SEG_BYTE.values()), None)
+        if original_seg != (SEG_BYTE[seg] if seg else None):
+            return None
+    return bytes(prefixes)
+
+
 def try_encode(cand, j, rel, branch_size, hint):
     ops = j['ops']
     plan = Plan()
@@ -532,6 +546,12 @@ def try_encode(cand, j, rel, branch_size, hint):
         if seg:
             out.append(SEG_BYTE[seg])
         rex = (W << 3) | (R << 2) | (X << 1) | B
+        if use_hint and mnemonic == 'nop' and not j.get('lock') and not j.get('rep'):
+            padding_prefixes = nop_prefixes(hint, plan, ops, seg)
+            rex_size = int(bool(rex or plan.needs_rex or hint.get('rex')))
+            size = len(opcode_bytes) + (1 + len(tail) if modrm is not None else 0) + len(imm_bytes)
+            if padding_prefixes is not None and len(padding_prefixes) + rex_size + size <= 15:
+                out[:] = padding_prefixes
         if rex or plan.needs_rex or (use_hint and hint.get('rex')):
             if plan.no_rex:
                 raise NoMatch

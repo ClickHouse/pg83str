@@ -971,6 +971,10 @@ def finish(c, mnemonic, specs, attrs, ops):
          'form': {'map': c.map, 'opcode': c.opcode, 'pfx': c.pfx, 'W': c.W, 'L': c.L, 'vex2': c.vex2,
                   'encoding': 'EVEX' if c.evex else 'VEX' if c.vex else 'Legacy', 'imm': imm_size, 'disp': disp_size, 'rex': c.rex is not None},
          'ops': jops, 'regs': regs, 'mems': mems}
+    if mnemonic == 'nop':
+        # Compiler padding can repeat operand-size/segment prefixes. Keep
+        # their encoding provenance separately from the decoded operands.
+        j['form']['nop_prefixes'] = list(c.prefixes)
     if target is not None:
         j['branch_target'] = target
     j['gas'] = format(j)

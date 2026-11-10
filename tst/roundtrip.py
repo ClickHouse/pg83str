@@ -35,6 +35,7 @@ def main():
     p.add_argument('--cc', default=os.environ.get('CC', 'cc'))
     p.add_argument('--out', default='roundtrip')
     args = p.parse_args()
+    subprocess.run([sys.executable, str(ROOT / 'tst/encode_prefixes.py')], check=True)
     cc = [*shlex.split(args.cc), *shlex.split(os.environ.get('CPPFLAGS', '')), *shlex.split(os.environ.get('CFLAGS', ''))]
     out = Path(args.out).resolve()
     tool = objdump()

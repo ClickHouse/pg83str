@@ -178,7 +178,7 @@ else:
             # The decoder and emitter against every unit at every optimization level.
             command(
                 name="check_roundtrip",
-                inputs=[*build.glob("$(S)/dev/*.py"), "$(S)/tst/roundtrip.py", *build.glob("$(S)/*.c"), "$(S)/common.h"],
+                inputs=[*build.glob("$(S)/dev/*.py"), "$(S)/tst/roundtrip.py", "$(S)/tst/encode_prefixes.py", *build.glob("$(S)/*.c"), "$(S)/common.h"],
                 outputs=["$(B)/checks/roundtrip.txt"],
                 cmd=["sh", "-c", 'python3 "$0" --out "$1" > "$2"', "$(S)/tst/roundtrip.py", "$(B)/roundtrip", "$(B)/checks/roundtrip.txt"],
                 descr="CK",
