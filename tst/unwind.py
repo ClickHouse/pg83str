@@ -22,7 +22,7 @@ import cfg
 import layout
 import opt
 import post
-from objfile import Object, Ins
+from objfile import Object, Ins, Reloc
 import x86
 
 PASSES = 'fold,rename,tail,hot,thread,ktest,kor,kfirst,lea,copy,tramp,vzu'
@@ -112,6 +112,50 @@ def effect_trace_controls():
     ]:
         code,origins=final(sequence)
         rejected(lambda:cfi.verify_effect_traces(source,code,origins,0),name)
+    source=[Ins(j) for j in x86.decode(bytes.fromhex('554889e548895df8488b5df85dc3'))]
+    code,origins=final(source)
+    cfi.verify_effect_traces(source,code,origins,0)
+    code,origins=final([i for n,i in enumerate(source) if n!=2])
+    rejected(lambda:cfi.verify_effect_traces(source,code,origins,0),
+             'omitted stack register-save store')
+
+
+def conditional_tail_controls():
+    # Threading a conditional branch through an external tail JMP changes its
+    # relocation provenance to the JMP. Only the taken edge exits; fallthrough
+    # must retain the pre-branch frame-effect frontier.
+    def original(data):
+        code=[Ins(j) for j in x86.decode(bytes.fromhex(data))]
+        code[-1].reloc=Reloc(code[-1].offset+1,'R_X86_64_PLT32','external',-4)
+        return code
+
+    def threaded(source, fallthrough):
+        code=x86.decode(bytes.fromhex('4883f8000f8400000000c3'))
+        origins={0:(code[0]['len'],source[0]),
+                 4:(code[1]['len'],source[-1]),
+                 10:(code[2]['len'],source[fallthrough])}
+        return code,origins
+
+    source=original('4883f8007401c3e900000000')
+    code,origins=threaded(source,2)
+    cfi.verify_effect_traces(source,code,origins,0)
+
+    # The original object can itself contain a relocated conditional branch.
+    source=[Ins(j) for j in code]
+    source[1].reloc=Reloc(6,'R_X86_64_PLT32','external',-4)
+    origins={i.offset:(i.j['len'],i) for i in source}
+    cfi.verify_effect_traces(source,code,origins,0)
+
+    # Neither a conditional exit nor its fallthrough may omit stack actions.
+    source=original('4883f8007403535bc3e900000000')
+    code,origins=threaded(source,4)
+    rejected(lambda:cfi.verify_effect_traces(source,code,origins,0),
+             'conditional tail fallthrough omits push/pop')
+    source=original('534883f80074025bc3e900000000')
+    code=x86.decode(bytes.fromhex('4883f8000f8400000000c3'))
+    origins={0:(4,source[1]),4:(6,source[-1]),10:(1,source[4])}
+    rejected(lambda:cfi.verify_effect_traces(source,code,origins,0),
+             'conditional tail taken edge omits entry push')
 
 
 def main():
@@ -192,8 +236,9 @@ def main():
     rejected(lambda:cfi.program(b'\x0b',cfi.State()),'restore without remember')
     rejected(lambda:cfi.program(b'\x04\x00',cfi.State()),'truncated advance')
     effect_trace_controls()
+    conditional_tail_controls()
     assert all(sha(p)==sources[str(p)]for p in objects)
-    receipt={'status':'PASS_OFFLINE_FINAL_LAYOUT_CFI','input_objects':sources,'output_objects':records,'FDEs':total_frames,'covered_PC_bytes':total_pcs,'concrete_recovery_comparisons':concrete_checks,'code_nonCFI_relocations_symbols_identical':True,'all_rows_independently_decoded_by_LLVM':True,'negative_controls':8,'limits':['Offline compiler-row/CFG/recovery differential; no native signal-unwind or full ClickHouse profile run.','Only explicit unwind mode with frame-removal disabled; unsupported CFI/stack effects fail closed.','Compiler original unwind rules and source frame effects remain trusted; no independent proof of compiler CFI.']}
+    receipt={'status':'PASS_OFFLINE_FINAL_LAYOUT_CFI','input_objects':sources,'output_objects':records,'FDEs':total_frames,'covered_PC_bytes':total_pcs,'concrete_recovery_comparisons':concrete_checks,'code_nonCFI_relocations_symbols_identical':True,'all_rows_independently_decoded_by_LLVM':True,'negative_controls':11,'limits':['Offline compiler-row/CFG/recovery differential; no native signal-unwind or full ClickHouse profile run.','Only explicit unwind mode with frame-removal disabled; unsupported CFI/stack effects fail closed.','Compiler original unwind rules and source frame effects remain trusted; no independent proof of compiler CFI.']}
     (a.out/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt,indent=2))
 

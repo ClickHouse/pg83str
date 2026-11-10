@@ -238,6 +238,10 @@ def verify_effect_traces(source, final, provenance, entry):
             i=source_at[pc]
             if action(i.j,i.reloc is not None):
                 frontier.add(pc)
+                # A relocated conditional branch exits only when taken. Its
+                # fallthrough does not execute the external-tail action.
+                if i.flow=='ConditionalBranch' and i.reloc is not None:
+                    work.append(i.end)
             else:
                 work.extend(successors(i.j,i.reloc is not None))
         return frozenset(frontier)
@@ -250,16 +254,18 @@ def verify_effect_traces(source, final, provenance, entry):
         seen.add((pc,frontier));need(len(seen)<=100000,'effect-trace validation state budget exceeded')
         need(pc in final_at,'final effect CFG escapes FDE')
         i=final_at[pc];origin=provenance.get(pc);relocated=origin is not None and origin[1].reloc is not None
+        incoming=frontier
         if action(i,relocated):
             need(origin is not None,'frame action lacks provenance')
             original=source_at[origin[1].home]
             need(original.offset in frontier,'final path omits/reorders a compiler frame effect at %#x'%pc)
-            frontier=closure(successors(original.j,original.reloc is not None))
+            after=[exit_node] if original.flow=='ConditionalBranch' and original.reloc is not None else successors(original.j,original.reloc is not None)
+            frontier=closure(after)
         for target in successors(i,relocated):
             if target==exit_node:
                 need(exit_node in frontier,'final exit omits a compiler frame effect')
             else:
-                pending.append((target,frontier))
+                pending.append((target,incoming if relocated and i['flow']=='ConditionalBranch' else frontier))
 
 
 def final_rows(obj, source_frame, lay, start, size):

@@ -17,6 +17,10 @@ addresses; retaining the original `.eh_frame` PC advances would be incorrect.
 The final graph must also preserve an original sequence of frame effects on
 every path, including returns and tail calls. This catches omitted or reordered
 pushes/pops even where the compiler keeps the CFA on `RBP` throughout them.
+An external conditional tail branch contributes an exit action only on its
+taken edge. Its fallthrough retains the incoming frame-effect history, including
+when jump threading copies the external jump's relocation provenance onto the
+conditional branch.
 
 This mode does not modify instruction encoding, alignment, non-CFI relocations
 or function symbols. It adds regenerated `.eh_frame` contents and relocations.
