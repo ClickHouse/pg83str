@@ -756,13 +756,41 @@ static void hosts(void) {
 #define EXECUTES STR_NEON
 #endif
 
+static const struct str_table *table_for_test(int public_only, struct str_table *public_table)
+{
+    const struct str_table *selected = str_current();
+    if (!public_only)
+        return selected;
+
+    *public_table = *selected;
+    public_table->memcpy = str_memcpy;
+    public_table->memmove = str_memmove;
+    public_table->memset = str_memset;
+    public_table->memcmp = str_memcmp;
+    public_table->strlen = str_strlen;
+    public_table->strcpy = str_strcpy;
+    public_table->strcat = str_strcat;
+    public_table->strcmp = str_strcmp;
+    public_table->strspn = str_strspn;
+    public_table->strcspn = str_strcspn;
+    public_table->memchr = str_memchr;
+    /* Do not publish this adapter: public entries must dispatch to the
+       selected backend, not recursively to this same public table. */
+    return public_table;
+}
+
 int main(int argc, char **argv) {
     int full = 1;
+    int public_only = 0;
+    struct str_table public_table;
 
     if (argc == 2 && !strcmp(argv[1], "--quick")) {
         full = 0;
+    } else if (argc == 2 && !strcmp(argv[1], "--public-quick")) {
+        full = 0;
+        public_only = 1;
     } else if (argc != 1) {
-        fprintf(stderr, "usage: %s [--quick]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--quick | --public-quick]\n", argv[0]);
         return 2;
     }
 
@@ -776,8 +804,8 @@ int main(int argc, char **argv) {
         }
 
         str_select(&str_configs[i].table);
-        Table = str_current();
-        printf("%s: ", str_configs[i].name);
+        Table = table_for_test(public_only, &public_table);
+        printf("%s%s: ", public_only ? "public " : "", str_configs[i].name);
         checks = 0;
         suite(full);
 
@@ -787,14 +815,21 @@ int main(int argc, char **argv) {
     }
 
     str_dispatch();
-    Table = str_current();
-    printf("dispatched (%s): ", str_choose()->name);
+    Table = table_for_test(public_only, &public_table);
+    printf("%sdispatched (%s): ", public_only ? "public " : "", str_choose()->name);
     checks = 0;
     suite(full);
 
         if (!full) {
             printf("PASS %zu quick checks\n", checks);
         }
+
+    if (public_only)
+    {
+        checks = 0;
+        entries();
+        return 0;
+    }
 
     /* every slot of the first and of the best configuration replaced by every
        other implementation the host can run, one at a time: the quick suite */

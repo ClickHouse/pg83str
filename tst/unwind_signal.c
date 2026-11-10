@@ -126,7 +126,7 @@ int main(void)
     {
         if ((str_configs[config].needs & host) != str_configs[config].needs)
             continue;
-        str_table = str_configs[config].table;
+        str_select(&str_configs[config].table);
         ++visited;
         for (unsigned test = 0; test < CASES; ++test)
         {
