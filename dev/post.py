@@ -31,6 +31,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import cfg  # noqa: E402
+import cfi  # noqa: E402
 import elf  # noqa: E402
 import elfout  # noqa: E402
 import layout  # noqa: E402
@@ -65,7 +66,8 @@ def write(path, out, args, obj, code, clones, overrides, maps):
         new_sections.append((section, layouts[section], symname))
     remap = layout.resolve_relocs(obj, layouts)
     new = out / Path(path).name
-    elfout.write_object(path, new, layouts, remap, None, new_sections, overrides)
+    unwind = cfi.regenerate(obj, layouts, [(section, source) for section, ins, symname, jcc_cfg, source in clones]) if args.unwind else None
+    elfout.write_object(path, new, layouts, remap, None, new_sections, overrides, unwind)
     maps[new.name] = {name: {str(v): k for k, v in lay.offsets.items()} for name, lay in layouts.items()}
     out_paths = [new]
     if not args.roundtrip and unit_of(path) != 'dispatch':
@@ -76,7 +78,8 @@ def write(path, out, args, obj, code, clones, overrides, maps):
         twin_layouts = {name: layout.layout(obj, name, ins, args.func_align, jcc_align=True) for name, ins in code.items()}
         remap = layout.resolve_relocs(obj, twin_layouts)
         twin = out / ('jcc-' + Path(path).name)
-        elfout.write_object(path, twin, twin_layouts, remap, {name: name + '_jcc' for name in exported})
+        unwind = cfi.regenerate(obj, twin_layouts) if args.unwind else None
+        elfout.write_object(path, twin, twin_layouts, remap, {name: name + '_jcc' for name in exported}, unwind=unwind)
         out_paths.append(twin)
     return out_paths
 
@@ -168,6 +171,7 @@ def main():
     p.add_argument('--archive', help='also collect the new objects into this archive')
     p.add_argument('--report', help='write the pass report here (default: stdout)')
     p.add_argument('--roundtrip', action='store_true', help='no passes: decode, lay out, write')
+    p.add_argument('--unwind', action='store_true', help='regenerate verified final-layout unwind metadata; fail on unsupported CFI or frame effects')
     p.add_argument('--check', action='store_true', help='compare the result with the original')
     p.add_argument('--passes', help='comma-separated pass list (default: all), see opt.py')
     p.add_argument('--layout-map', help='write {object: {section: {new offset: original offset}}} as JSON: where each instruction came from, for reading perf samples of the result against the sources')
@@ -177,6 +181,10 @@ def main():
     args = p.parse_args()
     if args.passes:
         os.environ['POST_PASSES'] = args.passes
+    if args.unwind:
+        enabled = os.environ.get('POST_PASSES', 'fold,rename,tail,hot,thread,ktest,kor,kfirst,lea,copy,tramp,frame,vzu').split(',')
+        if not args.roundtrip and 'frame' in enabled:
+            p.error('--unwind requires an explicit pass list without frame')
     if args.roundtrip:
         os.environ['POST_JCC_ALIGN'] = '0'   # reproduce the object, do not improve its layout
         args.func_align = None

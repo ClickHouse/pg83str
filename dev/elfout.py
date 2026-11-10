@@ -9,7 +9,7 @@ import elf
 DROP = {'.eh_frame', '.llvm_addrsig', '.symtab', '.strtab', '.shstrtab'}
 
 
-def write_object(src_path, dst_path, layouts, remap, rename=None, new_sections=(), overrides=None):
+def write_object(src_path, dst_path, layouts, remap, rename=None, new_sections=(), overrides=None, unwind=None):
     """layouts: {code section name: Layout}; remap(section, old offset) -> new offset;
     rename: {symbol name: new name} for the symbols defined here and the relocations against them;
     new_sections: [(name, Layout, symbol name)] code sections that did not exist in the source, each
@@ -42,6 +42,11 @@ def write_object(src_path, dst_path, layouts, remap, rename=None, new_sections=(
         names.append(name)
         contents.append(lay.data)
         headers.append(dict(type=1, flags=0x6, link=0, info=0, align=64, entsize=0))
+    if unwind is not None:
+        new_index['.eh_frame'] = len(names)
+        names.append('.eh_frame')
+        contents.append(unwind[0])
+        headers.append(dict(type=1, flags=2, link=0, info=0, align=8, entsize=0))
     # symbols: drop the ones of dropped sections, renumber, update code values and sizes;
     # a new section gets a section symbol among the locals and its function among the globals
     symbols = []
@@ -111,6 +116,8 @@ def write_object(src_path, dst_path, layouts, remap, rename=None, new_sections=(
     for name, lay, symname in new_sections:
         if lay.relocs:
             rela[name] = list(lay.relocs)
+    if unwind is not None:
+        rela['.eh_frame'] = unwind[1]
     by_name = {}
     for n, (name, value, size, type_, bind, shndx) in enumerate(symbols):
         if type_ == 'STT_SECTION':

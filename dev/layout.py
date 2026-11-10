@@ -46,6 +46,7 @@ class Layout:
         self.offsets = {}
         self.relocs = []
         self.pending = []
+        self.instructions = []  # (final PC, encoded length, source Ins), including every tail copy
 
 
 def padding_runs(obj, section, instructions):
@@ -229,6 +230,7 @@ def layout(obj, section, instructions, func_align=None, jcc_align=None, source=N
         b, fields = encode.encode(i.j, rel, size)
         assert encoded[id(i)][0] == off, (i, encoded[id(i)][0], off)
         data += b
+        out.instructions.append((off, len(b), i))
         if i.reloc is not None:
             out.pending.append((off, len(b), fields, i))
     out.data = bytes(data)
