@@ -11,7 +11,8 @@
  * and more go to the copy_huge and fill_huge slots, rep movsb/stosb on the
  * hosts with ERMS. The `evex` configuration keeps cached copies below 256 KiB
  * and cached fills below 16 KiB, then uses REP. Intel ZMM profiles use the
- * same cached huge-copy helper without changing their other primitive choices.
+ * same cached huge-copy helper; their experimental short-copy entries use
+ * head/tail loads below 65 bytes.
  *
  * The public `str_memcpy`, `str_memmove` and `str_memcmp` entries handle
  * sizes up to 16 with portable short paths before table dispatch. Other calls
@@ -102,11 +103,11 @@ const struct str_config str_configs[] = {
         .memchr = memchr_evex512, .memchr_large = memchr_large_avx2,
     }},
     /* Intel hosts eligible for ZMM retain the matching 512-bit profile in
-       every slot except `copy_huge`: use the existing cached helper below
-       256 KiB. Keep FSRS's short `memset_rep` choice in its own profile.
+       every other slot: short-copy frontends use head/tail loads and
+       `copy_huge` uses the existing cached helper below 256 KiB. Keep FSRS's short `memset_rep` choice in its own profile.
        The preceding profiles and AMD selection remain unchanged. */
     {"evex512i", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS | STR_INTEL_ZMM, {
-        .memcpy = memcpy_evex512, .memmove = memmove_evex512, .memset = memset_evex512, .memcmp = memcmp_evex512,
+        .memcpy = memcpy_evex512_headtail, .memmove = memmove_evex512_headtail, .memset = memset_evex512, .memcmp = memcmp_evex512,
         .strlen = strlen_evex512, .strcpy = strcpy_evex, .strcat = strcat_evex, .strcmp = strcmp_evex,
         .strspn = strspn_avx2_zen, .strcspn = strcspn_avx2_zen,
         .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,
@@ -115,7 +116,7 @@ const struct str_config str_configs[] = {
         .memchr = memchr_evex512, .memchr_large = memchr_large_avx2,
     }},
     {"evex512ri", STR_SSE42 | STR_AVX2 | STR_AVX512 | STR_ZMM | STR_ERMS | STR_FSRS | STR_INTEL_ZMM, {
-        .memcpy = memcpy_evex512, .memmove = memmove_evex512, .memset = memset_rep, .memcmp = memcmp_evex512,
+        .memcpy = memcpy_evex512_headtail, .memmove = memmove_evex512_headtail, .memset = memset_rep, .memcmp = memcmp_evex512,
         .strlen = strlen_evex512, .strcpy = strcpy_evex, .strcat = strcat_evex, .strcmp = strcmp_evex,
         .strspn = strspn_avx2_zen, .strcspn = strcspn_avx2_zen,
         .copy_large = copy_large_avx2, .fill_large = fill_large_evex512, .memcmp_large = memcmp_large_avx2,

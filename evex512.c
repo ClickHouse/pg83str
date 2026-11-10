@@ -250,6 +250,43 @@ void *memmove_evex512(void *dst, const void *src, size_t n) {
     return copy((u8 *)dst, (const u8 *)src, n);
 }
 
+/* Candidate for Intel's short, frequently adjacent copies. Keep every load
+   inside the requested range and load both edges before either store so the
+   same entry also satisfies the `memmove` overlap contract. */
+static inline void *copy_headtail(u8 *d, const u8 *s, size_t n)
+{
+    if (n <= 16)
+    {
+        copy_small(d, s, n);
+        return d;
+    }
+    if (n <= 32)
+    {
+        __m128i head = load16(s), tail = load16(s + n - 16);
+        store16(d, head);
+        store16(d + n - 16, tail);
+        return d;
+    }
+    if (n <= 64)
+    {
+        __m256i head = _mm256_loadu_si256((const __m256i *)s), tail = _mm256_loadu_si256((const __m256i *)(s + n - 32));
+        _mm256_storeu_si256((__m256i *)d, head);
+        _mm256_storeu_si256((__m256i *)(d + n - 32), tail);
+        return d;
+    }
+    return copy(d, s, n);
+}
+
+void *memcpy_evex512_headtail(void *dst, const void *src, size_t n)
+{
+    return copy_headtail((u8 *)dst, (const u8 *)src, n);
+}
+
+void *memmove_evex512_headtail(void *dst, const void *src, size_t n)
+{
+    return copy_headtail((u8 *)dst, (const u8 *)src, n);
+}
+
 /* ------------------------------------------------------------------ fill */
 
 /* For `REP_THRESHOLD <= n < 262144`, use cached stores without backward overlap.
