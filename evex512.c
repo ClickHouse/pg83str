@@ -205,7 +205,7 @@ void *memchr_evex512(const void *p, int c, size_t n) {
 /* ------------------------------------------------------------------ copy */
 
 static inline void *copy(u8 *d, const u8 *s, size_t n) {
-    if (n <= 16)
+    if (n <= 32)
     {
         if (n == 0)
         {

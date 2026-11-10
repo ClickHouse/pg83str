@@ -6,7 +6,9 @@ used by ClickHouse, with standalone build and contract-test targets. The
 experiments and 20-slot API. Proof coverage remains partial. Historical x86-64
 measurements below retain their original scope. The x86-64 `str_memcpy`,
 `str_memmove` and `str_memcmp` entries now handle sizes up to 16 before table
-dispatch; the historical numbers below predate that tuning.
+dispatch. The EVEX512 copy entries use ordinary head/tail loads and stores
+through 32 bytes, including short overlapping pointer spans. The historical
+numbers below predate this tuning.
 
 [![CI](https://github.com/pg83/str/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pg83/str/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
