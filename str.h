@@ -24,8 +24,8 @@ typedef unsigned char u8;
    the long cases to. Every implementation does its own hot path and reaches
    any other primitive only through the `str_*` entry points below. The
    portable x86-64 short-memory paths finish there; other calls use this
-   table, so `dispatch.c` can fill the
-   slots from cpuid with any mix: a 64-byte first block can continue in a
+   table, so `dispatch.c` can select an immutable
+   configuration from cpuid with any mix: a 64-byte first block can continue in a
    64-byte tail on one machine and in a 32-byte one on another. */
 struct str_table {
     void *(*memcpy)(void *, const void *, size_t);
@@ -51,7 +51,13 @@ struct str_table {
     void *(*memchr_large)(const u8 *s, u8 c, size_t n);        /* n > 32, no match in the first 32 bytes; aligned loads only (C11) */
 };
 
-extern struct str_table str_table;
+/* Atomic publication of a non-null, fully initialized immutable table. Every
+   slot must satisfy its contract and be executable on the current host. The
+   caller must keep a selected table alive and unchanged until every concurrent
+   call that could use it has finished. Publication does not reclaim old tables
+   or wait for readers. */
+const struct str_table *str_current(void);
+void str_select(const struct str_table *table);
 
 /* What the host runs well, as bits of str_host(); dispatch.c picks a
    configuration from them. STR_ZMM: 512-bit registers cost nothing extra. */
@@ -85,7 +91,7 @@ struct str_config {
 extern const struct str_config str_configs[];
 extern const unsigned str_nconfigs;
 const struct str_config *str_choose(void);   /* the configuration for this host */
-void str_dispatch(void);                     /* str_table = str_choose()->table */
+void str_dispatch(void);                     /* publish str_choose()->table */
 
 /* The x86-64 `str_memcpy`, `str_memmove` and `str_memcmp` entries handle
    sizes up to 16 before table dispatch.

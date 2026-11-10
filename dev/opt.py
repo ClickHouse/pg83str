@@ -1106,8 +1106,31 @@ def trampolines_of(obj, code):
         for f in obj.functions(section):
             body = [i for i in ins if f.value <= i.offset < f.value + f.size and i.gas]
             # a frame-pointer build wraps the jump in push %rbp; mov %rsp,%rbp; ...; pop %rbp
-            if len(body) == 4 and [i.gas for i in body[:3]] == ['pushq %rbp', 'movq %rsp,%rbp', 'popq %rbp']:
-                body = body[3:]
+            if len(body) >= 4 and [i.gas for i in body[:2]] == ['pushq %rbp', 'movq %rsp,%rbp'] and body[-2].gas == 'popq %rbp':
+                body = body[2:-2] + body[-1:]
+            if f.name in exported and len(body) in (2, 3) and body[0].mnemonic == 'mov' and body[-1].mnemonic == 'jmp':
+                load, jump = body[0], body[-1]
+                ops = load.j['ops']
+                pointer = next((s for s in obj.symbols if s.name == 'str_active_table'), None)
+                r = load.reloc
+                target = None
+                if r is not None and r.type == 'R_X86_64_PC32':
+                    if r.symbol_is_section:
+                        target = (r.symbol, r.addend + load.home_end - r.offset)
+                    else:
+                        symbol = next((s for s in obj.symbols if s.name == r.symbol), None)
+                        if symbol is not None:
+                            target = (symbol.section, symbol.value + r.addend + load.home_end - r.offset)
+                if pointer is not None and pointer.size == 8 and target == (pointer.section, pointer.value) and len(ops) == 2 and ops[0]['kind'] == 'Register' and ops[0]['size'] == 64 and ops[1]['kind'] == 'Memory' and ops[1]['mem']['rip_rel']:
+                    ptr = ops[0]['reg']
+                    slotop = jump.j['ops'][0] if len(body) == 2 else body[1].j['ops'][1]
+                    if len(body) == 3 and not (body[1].mnemonic == 'mov' and body[1].j['ops'][0]['kind'] == 'Register' and jump.j['ops'][0]['kind'] == 'Register' and body[1].j['ops'][0]['reg'] == jump.j['ops'][0]['reg']):
+                        continue
+                    if slotop['kind'] == 'Memory':
+                        mem = slotop['mem']
+                        if mem['base'] == ptr and mem['index'] == 'none' and mem['size'] == 8 and not mem['rip_rel'] and 0 <= mem['disp'] < 160 and mem['disp'] % 8 == 0:
+                            out[f.name] = ('atomic-pointer', mem['disp'])
+                            continue
             if f.name in exported and len(body) == 1 and body[0].mnemonic == 'jmp' and body[0].flow == 'IndirectBranch' \
                     and body[0].reloc is not None and not body[0].reloc.symbol_is_section and body[0].reloc.type == 'R_X86_64_PC32':
                 i, r = body[0], body[0].reloc
@@ -1125,6 +1148,12 @@ def through_trampolines(fn, trampolines):
         if t is None:
             continue
         symbol, slot = t
+        if symbol == 'atomic-pointer':
+            # Keep the acquire load in the public entry for unspecialized
+            # calls. cfg.specialize resolves str_* to this configuration's
+            # backend and emits a direct call/tail jump in every clone.
+            done.append('%s: %s uses atomic dispatch; configuration clone resolves it directly' % (fn.name, i.reloc.symbol))
+            continue
         i.j['ops'] = [{'kind': 'Memory', 'mem': {'base': 'none', 'index': 'none', 'scale': 1, 'disp': 0, 'size': 8, 'rip_rel': True, 'seg': None}, 'field_pos': 2}]
         i.j['mems'] = [{'base': 'none', 'index': 'none', 'scale': 1, 'disp': 0, 'size': 8, 'access': 'Read'}]
         i.j['flow'] = 'IndirectBranch' if i.mnemonic == 'jmp' else 'IndirectCall'

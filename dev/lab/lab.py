@@ -249,7 +249,7 @@ def main():
 
     # the baseline: every symbol prefixed base_ but its calls out of the library (memcpy)
     base_lib, base_gen = [], ['const struct str_config *const kl_base_configs = 0;', 'const unsigned kl_base_nconfigs = 0;',
-                              'struct str_table *const kl_base_table = 0;', 'const char kl_base_rev[] = "";']
+                              'void (*const kl_base_select)(const struct str_table *) = 0;', 'const char kl_base_rev[] = "";']
     if args.base:
         a = work / 'base.a'
         run(['llvm-objcopy', '--prefix-symbols=base_', args.base, a], work, 'base-prefix')
@@ -258,16 +258,26 @@ def main():
         external = sorted({f[-1] for f in (line.split() for line in listing) if len(f) == 2 and f[0] == 'U'} - set(defined))
         if external:
             run(['llvm-objcopy', *['--redefine-sym=base_%s=%s' % (s, s) for s in external], a], work, 'base-externals')
-        size = {s: int(defined[s][1], 16) for s in ('str_configs', 'str_table')}
+        configs_size = int(defined['str_configs'][1], 16)
         base_lib = [a]
-        # the tables must have this revision's layout: kbench reads its configurations as ours
-        base_gen = ['extern const struct str_config base_str_configs[];', 'extern struct str_table base_str_table;',
-                    '_Static_assert(%d == sizeof(struct str_table), "the base revision\'s struct str_table differs from this one\'s");' % size['str_table'],
-                    '_Static_assert(%d %% sizeof(struct str_config) == 0, "the base revision\'s struct str_config differs from this one\'s");'
-                    % size['str_configs'],
+        # The configuration table layout is unchanged; the old revision may
+        # expose either the atomic publisher or the historical writable table.
+        base_gen = ['extern const struct str_config base_str_configs[];',
+                    '_Static_assert(%d %% sizeof(struct str_config) == 0, "the base revision table layout differs");' % configs_size,
                     'const struct str_config *const kl_base_configs = base_str_configs;',
-                    'const unsigned kl_base_nconfigs = %d / sizeof(struct str_config);' % size['str_configs'],
-                    'struct str_table *const kl_base_table = &base_str_table;', 'const char kl_base_rev[] = "%s";' % (args.base_rev_file.read_text().strip() if args.base_rev_file else '')]
+                    'const unsigned kl_base_nconfigs = %d / sizeof(struct str_config);' % configs_size,
+                    'const char kl_base_rev[] = "%s";' % (args.base_rev_file.read_text().strip() if args.base_rev_file else '')]
+        if 'str_select' in defined:
+            base_gen += ['extern void base_str_select(const struct str_table *);',
+                         'void (*const kl_base_select)(const struct str_table *) = base_str_select;']
+        else:
+            # Explicit compatibility for the single-threaded lab only. This
+            # does not make the historical revision's mutable dispatch safe.
+            table_size = int(defined['str_table'][1], 16)
+            base_gen += ['extern struct str_table base_str_table;',
+                         '_Static_assert(%d == sizeof(struct str_table), "the legacy base table layout differs");' % table_size,
+                         'static void select_legacy_base(const struct str_table *t) { base_str_table = *t; }',
+                         'void (*const kl_base_select)(const struct str_table *) = select_legacy_base;']
 
     # the registry
     defs, slots = [], []

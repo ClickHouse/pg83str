@@ -1,7 +1,7 @@
 /*
  * dispatch.c: the table of primitives, chosen from cpuid, and the public entry
- * points. str_table starts as the SSE2 set, so a call before the constructor
- * ran is correct on any x86-64. The constructor replaces it with one of the
+ * points. The initial immutable table is the SSE2 set, so a call before the
+ * constructor ran is correct on any x86-64. The constructor atomically publishes one of the
  * configurations below: each one names every slot explicitly, and they mix
  * freely, since implementations reach each other only through the table. A
  * Skylake-SP gets the 256-bit AVX-512 first blocks over the AVX2 kernels, a
@@ -19,16 +19,6 @@
 #include "common.h"
 
 /* clang-format off */
-struct str_table str_table = {
-    .memcpy = memcpy_sse2, .memmove = memmove_sse2, .memset = memset_sse2, .memcmp = memcmp_sse2,
-    .strlen = strlen_sse2, .strcpy = strcpy_sse2, .strcat = strcat_sse2, .strcmp = strcmp_sse2,
-    .strspn = strspn_sse2, .strcspn = strcspn_sse2,
-    .copy_large = copy_large_sse2, .fill_large = fill_large_sse2, .memcmp_large = memcmp_large_sse2,
-    .strlen_tail = strlen_tail_sse2, .strcmp_tail = strcmp_tail_sse2, .strcpy_long = strcpy_long_sse2,
-    .copy_huge = copy_huge_sse2, .fill_huge = fill_huge_sse2,
-    .memchr = memchr_sse2, .memchr_large = memchr_large_sse2,
-};
-
 const struct str_config str_configs[] = {
     {"sse2", 0, {
         .memcpy = memcpy_sse2, .memmove = memmove_sse2, .memset = memset_sse2, .memcmp = memcmp_sse2,
@@ -228,8 +218,29 @@ const struct str_config *str_choose(void) {
     return str_choose_for(str_host());
 }
 
+/* The selected table is immutable for the lifetime of every reader. x86-64
+   pointer loads/stores are lock-free; acquire/release also publishes a custom
+   table fully initialized by the caller. */
+static const struct str_table *str_active_table = &str_configs[0].table;
+_Static_assert(__atomic_always_lock_free(sizeof(str_active_table), 0), "dispatch requires lock-free pointers");
+
+static inline const struct str_table *current_table(void)
+{
+    return __atomic_load_n(&str_active_table, __ATOMIC_ACQUIRE);
+}
+
+const struct str_table *str_current(void)
+{
+    return current_table();
+}
+
+void str_select(const struct str_table *table)
+{
+    __atomic_store_n(&str_active_table, table, __ATOMIC_RELEASE);
+}
+
 void str_dispatch(void) {
-    str_table = str_choose()->table;
+    str_select(&str_choose()->table);
 }
 
 __attribute__((constructor)) static void select_table(void) {
@@ -249,7 +260,7 @@ void *str_memcpy(void *d, const void *s, size_t n)
         return d;
     }
 
-    return str_table.memcpy(d, s, n);
+    return current_table()->memcpy(d, s, n);
 }
 
 void *str_memmove(void *d, const void *s, size_t n)
@@ -265,11 +276,11 @@ void *str_memmove(void *d, const void *s, size_t n)
         return d;
     }
 
-    return str_table.memmove(d, s, n);
+    return current_table()->memmove(d, s, n);
 }
 
 void *str_memset(void *d, int c, size_t n) {
-    return str_table.memset(d, c, n);
+    return current_table()->memset(d, c, n);
 }
 
 int str_memcmp(const void *a, const void *b, size_t n)
@@ -279,69 +290,69 @@ int str_memcmp(const void *a, const void *b, size_t n)
         return memcmp_scalar_le16((const u8 *)a, (const u8 *)b, n);
     }
 
-    return str_table.memcmp(a, b, n);
+    return current_table()->memcmp(a, b, n);
 }
 
 size_t str_strlen(const char *s) {
-    return str_table.strlen(s);
+    return current_table()->strlen(s);
 }
 
 char *str_strcpy(char *d, const char *s) {
-    return str_table.strcpy(d, s);
+    return current_table()->strcpy(d, s);
 }
 
 char *str_strcat(char *d, const char *s) {
-    return str_table.strcat(d, s);
+    return current_table()->strcat(d, s);
 }
 
 int str_strcmp(const char *a, const char *b) {
-    return str_table.strcmp(a, b);
+    return current_table()->strcmp(a, b);
 }
 
 size_t str_strspn(const char *s, const char *set) {
-    return str_table.strspn(s, set);
+    return current_table()->strspn(s, set);
 }
 
 size_t str_strcspn(const char *s, const char *set) {
-    return str_table.strcspn(s, set);
+    return current_table()->strcspn(s, set);
 }
 
 void *str_memchr(const void *s, int c, size_t n) {
-    return str_table.memchr(s, c, n);
+    return current_table()->memchr(s, c, n);
 }
 
 void *str_copy_large(u8 *d, const u8 *s, size_t n) {
-    return str_table.copy_large(d, s, n);
+    return current_table()->copy_large(d, s, n);
 }
 
 void *str_fill_large(u8 *d, int c, size_t n) {
-    return str_table.fill_large(d, c, n);
+    return current_table()->fill_large(d, c, n);
 }
 
 int str_memcmp_large(const u8 *a, const u8 *b, size_t n) {
-    return str_table.memcmp_large(a, b, n);
+    return current_table()->memcmp_large(a, b, n);
 }
 
 size_t str_strlen_tail(const u8 *a, const u8 *s) {
-    return str_table.strlen_tail(a, s);
+    return current_table()->strlen_tail(a, s);
 }
 
 int str_strcmp_tail(const u8 *a, const u8 *b) {
-    return str_table.strcmp_tail(a, b);
+    return current_table()->strcmp_tail(a, b);
 }
 
 void *str_strcpy_long(u8 *d, const u8 *s, const u8 *a) {
-    return str_table.strcpy_long(d, s, a);
+    return current_table()->strcpy_long(d, s, a);
 }
 
 void *str_copy_huge(u8 *d, const u8 *s, size_t n) {
-    return str_table.copy_huge(d, s, n);
+    return current_table()->copy_huge(d, s, n);
 }
 
 void *str_fill_huge(u8 *d, int c, size_t n) {
-    return str_table.fill_huge(d, c, n);
+    return current_table()->fill_huge(d, c, n);
 }
 
 void *str_memchr_large(const u8 *s, u8 c, size_t n) {
-    return str_table.memchr_large(s, c, n);
+    return current_table()->memchr_large(s, c, n);
 }

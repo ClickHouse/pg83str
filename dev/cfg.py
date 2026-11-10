@@ -75,7 +75,20 @@ def read_configs(obj):
 
 def initial_table(obj):
     """The functions the initial str_table (in .data) holds, by slot."""
-    sym = next(s for s in obj.symbols if s.name == 'str_table')
+    symbols = {s.name: s for s in obj.symbols}
+    if 'str_active_table' in symbols:
+        pointer, configs = symbols['str_active_table'], symbols['str_configs']
+        if pointer.size != SLOT:
+            raise ValueError('the atomic dispatch pointer is not one pointer wide')
+        relocs = {r.offset: r for r in obj.sections[pointer.section].relocs}
+        r = relocs[pointer.value]
+        target = (r.symbol, r.addend) if r.symbol_is_section else (symbols[r.symbol].section, symbols[r.symbol].value + r.addend)
+        if r.type != 'R_X86_64_64' or target != (configs.section, configs.value + TABLE_OFFSET):
+            raise ValueError('the initial atomic pointer must name the immutable SSE2 configuration')
+        # Every str_configs table is rewritten below; its initial pointer stays
+        # valid and needs no second writable table or slot-relocation override.
+        return None
+    sym = symbols['str_table']
     sec = obj.sections[sym.section]
     relocs = {r.offset: r for r in sec.relocs}
     return [symbol_at(obj, relocs[sym.value + j * SLOT]) for j in range(len(SLOTS))]
@@ -156,7 +169,9 @@ def specialize(units_list, configs, initial):
     dispatch = next(u for u, (path, obj, code) in enumerate(units_list) if any(s.name == 'str_configs' for s in obj.symbols))
     dobj = units_list[dispatch][1]
     configs_sym = next(s for s in dobj.symbols if s.name == 'str_configs')
-    table_sym = next(s for s in dobj.symbols if s.name == 'str_table')
+    table_sym = next((s for s in dobj.symbols if s.name == 'str_table'), None)
+    if initial is not None and table_sym is None:
+        raise ValueError('missing legacy initial table')
     for ci, config in enumerate(configs):
         done = {}        # (unit, section) -> clone symbol name
         order = []
@@ -199,7 +214,7 @@ def specialize(units_list, configs, initial):
         base = configs_sym.value + ci * CONFIG_SIZE + TABLE_OFFSET
         for j, slot in enumerate(config.slots):
             overrides[(configs_sym.section, base + j * SLOT)] = (done[units.global_fn[slot]], 0)
-        if config.slots == initial:
+        if initial is not None and config.slots == initial:
             for j, slot in enumerate(config.slots):
                 overrides[(table_sym.section, table_sym.value + j * SLOT)] = (done[units.global_fn[slot]], 0)
     return clones, overrides

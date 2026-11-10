@@ -125,8 +125,28 @@ else:
         deps=[libstr],
     )
 
+    dispatch_threads = program(
+        name="dispatch_threads",
+        output="$(B)/dispatch-threads",
+        srcs=["$(S)/tst/dispatch_threads.c"],
+        includes=["$(S)"],
+        cflags=["-Wall", "-Wextra", "-Werror", "-pthread"],
+        ldflags=["-no-pie", "-pthread"],
+        deps=[libstr],
+    )
+
     if build.target == build.host:
+        check_dispatch_threads = command(
+            name="check_dispatch_threads",
+            outputs=["$(B)/checks/dispatch-threads.txt"],
+            deps=[dispatch_threads],
+            cmd=["sh", "-c", '"$0" > "$1"', "$(B)/dispatch-threads", "$(B)/checks/dispatch-threads.txt"],
+            descr="CK",
+            color="light-green",
+        )
+        group("dispatch-threads", check_dispatch_threads)
         checks = [
+            check_dispatch_threads,
             command(
                 name="check_test",
                 outputs=["$(B)/checks/test.txt"],

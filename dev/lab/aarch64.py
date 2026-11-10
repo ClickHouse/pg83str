@@ -139,7 +139,7 @@ def main():
     gen += ['};', 'const unsigned kl_nslots = %d;' % len(slots),
             'const char *const kl_jcc_configs[] = {0};',
             'const struct str_config *const kl_base_configs = 0;', 'const unsigned kl_base_nconfigs = 0;',
-            'struct str_table *const kl_base_table = 0;', 'const char kl_base_rev[] = "";',
+            'void (*const kl_base_select)(const struct str_table *) = 0;', 'const char kl_base_rev[] = "";',
             'void *resolved_glibc(void *entry) { return entry; }',
             'const char *glibc_variant(void *entry) {']
     gen += ['    if (entry == (void *)def_%d) return "%s";' % (i, symbol)

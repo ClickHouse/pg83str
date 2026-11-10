@@ -38,7 +38,7 @@ extern const char *const kl_jcc_configs[]; /* the configurations laid out with t
    configurations, the table its code calls through, the revision. None: 0. */
 extern const struct str_config *const kl_base_configs;
 extern const unsigned kl_base_nconfigs;
-extern struct str_table *const kl_base_table;
+extern void (*const kl_base_select)(const struct str_table *);
 extern const char kl_base_rev[];
 
 /* glibc's variant at an address, and the implementation its IFUNC chose for

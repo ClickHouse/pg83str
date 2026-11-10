@@ -25,7 +25,7 @@ be linked into a static libc in place of its string routines.
 
 ## Model
 
-One global `str_table` holds every primitive: the ten public functions and
+An atomically published pointer selects an immutable `str_table`: the eleven public functions and
 the kernels they hand the long cases to (`copy_large`, `fill_large`,
 `memcmp_large`, `strlen_tail`, `strcmp_tail`, `strcpy_long`). An
 implementation is a plain function named by what it does and how
@@ -45,6 +45,19 @@ boundaries for the Skylake JCC erratum (`jcc-<unit>.c.o`, functions renamed
 `name_jcc`); the padding helps Skylake-SP and costs about 5% elsewhere, so
 only the Skylake-SP configuration names the `_jcc` twins.
 
+`str_current` obtains the selected table with an acquire load. `str_select`
+publishes an already initialized table with a release store; `str_dispatch`
+publishes the host configuration. A custom table must stay alive and immutable
+until every call that could have read it has finished. Publication does not
+wait for readers or reclaim tables. The initial pointer selects immutable SSE2
+code before constructors, including when an earlier constructor starts threads.
+The standalone contract suite and lab use this API for one-slot mixes.
+
+`./build dispatch-threads` runs a focused native check: a priority-202
+constructor starts a real worker before default-priority selection. The worker
+keeps calling all eleven public APIs while the main thread publishes immutable
+one-slot mixes, with explicit observation and exit handshakes.
+
 ## Layout
 
 - `sse2.c`, `sse42.c`, `avx2.c`, `evex.c`, `evex512.c` — the implementations,
@@ -52,8 +65,8 @@ only the Skylake-SP configuration names the `_jcc` twins.
   (AVX2), x86-64-v4 at 256 bits and at 512 bits. `common.h` holds the table,
   the short paths (up to 64 bytes) and the helpers they share.
 - `dispatch.c` — the configurations, one complete table each, and `str_host`
-  from `cpuid`; a constructor copies the host's configuration into
-  `str_table`. The public `str_memcpy`, `str_memmove` and `str_memcmp` finish
+  from `cpuid`; a constructor publishes a pointer to the host's immutable
+  configuration with a release store. Public entries load it with acquire semantics. The public `str_memcpy`, `str_memmove` and `str_memcmp` finish
   calls up to 16 bytes locally; other calls jump through the table. Call a
   table slot directly when benchmarking an alternate short implementation.
   A libc build renames the entries: `-Dstr_memcpy=memcpy ...`.

@@ -775,8 +775,8 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        str_table = str_configs[i].table;
-        Table = &str_table;
+        str_select(&str_configs[i].table);
+        Table = str_current();
         printf("%s: ", str_configs[i].name);
         checks = 0;
         suite(full);
@@ -787,7 +787,7 @@ int main(int argc, char **argv) {
     }
 
     str_dispatch();
-    Table = &str_table;
+    Table = str_current();
     printf("dispatched (%s): ", str_choose()->name);
     checks = 0;
     suite(full);
@@ -802,6 +802,7 @@ int main(int argc, char **argv) {
     size_t mixes = 0;
     checks = 0;
 
+    struct str_table custom_table;
     for (int bi = 0; bi < 2; bi++) {
         void *base[NSLOTS];
         slots_of(&bases[bi]->table, base);
@@ -831,8 +832,10 @@ int main(int argc, char **argv) {
                 void *slots[NSLOTS];
                 memcpy(slots, base, sizeof slots);
                 slots[j] = other[j];
-                table_of(&str_table, slots);
-                Table = &str_table;
+                str_dispatch();
+                table_of(&custom_table, slots);
+                str_select(&custom_table);
+                Table = str_current();
                 snprintf(mix, sizeof mix, " (%s with slot %zu from %s)", bases[bi]->name, j, str_configs[k].name);
                 suite(0);
                 mixes++;
@@ -840,6 +843,8 @@ int main(int argc, char **argv) {
         }
     }
 
+    str_dispatch();
+    Table = str_current();
     mix[0] = 0;
     printf("mixes: PASS %zu checks in %zu one-slot mixes of %s and %s\n", checks, mixes, bases[0]->name, bases[1]->name);
     checks = 0;

@@ -169,7 +169,7 @@ typedef struct {
     unsigned needs;
     int ours;
     struct str_table table;
-    struct str_table *tgt; /* where installing it writes: str_table, or the base revision's (0: str_table) */
+    void (*select)(const struct str_table *); /* another revision's publisher, or ours when null */
     int status; /* 0 untested, 1 valid, -1 failed, -2 not for this host */
     char why[160];
     double est;   /* ns per call, for the batch size */
@@ -351,7 +351,7 @@ static void build_kernels(void) {
             k->prim = p;
             k->ours = 1;
             k->table = kl_base_configs[c].table;
-            k->tgt = kl_base_table;
+            k->select = kl_base_select;
             k->fn = ((void *const *)&k->table)[p];
             unsigned n = kl_base_configs[c].needs;
             k->needs = config_needs(n);
@@ -399,7 +399,7 @@ static void build_kernels(void) {
 
 static void install(const Kernel *k) {
     if (k->ours) {
-        *(k->tgt ? k->tgt : &str_table) = k->table;
+        (k->select ? k->select : str_select)(&k->table);
     }
 }
 
@@ -1653,7 +1653,7 @@ typedef struct {
     char name[64];
     struct str_table t; /* public slots only for the other libraries; a null one: the library has no such function */
     int ours;
-    struct str_table *tgt; /* as Kernel's */
+    void (*select)(const struct str_table *); /* as Kernel's */
     const struct str_table *base; /* --hybrid: the base revision's configuration, installed beside (its functions call through it) */
     int on; /* runs the current trace: has every function it calls */
     double s[64], ghz[64];
@@ -1664,10 +1664,12 @@ typedef struct {
 static Table tables[64];
 
 static void table_install(const Table *x) {
-    *(x->tgt ? x->tgt : &str_table) = x->t;
+    if (x->ours) {
+        (x->select ? x->select : str_select)(&x->t);
+    }
 
     if (x->base) {
-        *kl_base_table = *x->base;
+        kl_base_select(x->base);
     }
 }
 
@@ -1790,7 +1792,7 @@ static void build_tables(void) {
         snprintf(x->name, sizeof x->name, "base/%s", kl_base_configs[c].name);
         x->t = kl_base_configs[c].table;
         x->ours = 1;
-        x->tgt = kl_base_table;
+        x->select = kl_base_select;
 
         /* --hybrid: the host's configuration of ours with one public function the
            base revision's, for each: which of them a difference of the two on
