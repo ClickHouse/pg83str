@@ -1,6 +1,6 @@
 # Intel short-copy frontends
 
-The implementation checkpoint is `cc0d5a140ff9039444b3a2a3fe1c1f795112e6b7`,
+The initial implementation checkpoint is `cc0d5a140ff9039444b3a2a3fe1c1f795112e6b7`,
 compared with `20e32940115e018f7360a1b85cded01da55b42cc`.
 Only the `evex512i` and `evex512ri` `memcpy` and `memmove` slots change.
 For 17–64 bytes, ordinary head/tail vector loads replace the masked-copy
@@ -61,3 +61,23 @@ The caller-model analysis SHA256 is
 `88125b88eb841cce083a219e91128dd1dbe4a3acdd2417ff49a1a396e496dc51`.
 No whole-library semantic proof or new ClickHouse sampling result is claimed.
 Bulk-copy and bulk-fill regressions remain separate tuning work.
+
+## Rejected move frontend
+
+The initial eight-case PG run compared two seeds and four stands, nine
+passes per case, using the original driver and min-pass-minus-noop method.
+It did not establish a mixed-workload win. In the dedicated `memmove`
+trace, candidate/control paired net ratios had median increases of 2.706%
+for `evex512i` and 2.568% for `evex512ri`; all eight cases were adverse.
+The original PG best-profile statistic also increased by 2.360% and
+2.506% for the two profiles. These observations are descriptive and share
+the min-selection, code-layout and shared-host limitations of the method.
+
+The follow-up restores the preceding `memmove` slots and removes its
+proposed frontend, retaining the `memcpy` experiment. The initial archive
+identities, contracts and caller-model measurements above belong to the
+initial checkpoint. They do not substitute for validation of the revised
+archive. All initial results and the interrupted seventh attempt are retained;
+the distinct continuation reused six completed cases and collected only the
+two missing cases. The interrupted attempt contained 54 raw rows and no
+completed process receipt or validated CSV, so it was excluded from ratios.

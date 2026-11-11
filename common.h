@@ -97,7 +97,6 @@ void *memchr_evex(const void *, int, size_t);
 /* evex512.c: AVX-512 with 512-bit registers */
 void *memcpy_evex512(void *, const void *, size_t);
 void *memcpy_evex512_headtail(void *, const void *, size_t);
-void *memmove_evex512_headtail(void *, const void *, size_t);
 void *memmove_evex512(void *, const void *, size_t);
 void *memset_evex512(void *, int, size_t);
 void *copy_huge_cached_evex512(u8 *d, const u8 *s, size_t n);

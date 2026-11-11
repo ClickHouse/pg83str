@@ -282,11 +282,6 @@ void *memcpy_evex512_headtail(void *dst, const void *src, size_t n)
     return copy_headtail((u8 *)dst, (const u8 *)src, n);
 }
 
-void *memmove_evex512_headtail(void *dst, const void *src, size_t n)
-{
-    return copy_headtail((u8 *)dst, (const u8 *)src, n);
-}
-
 /* ------------------------------------------------------------------ fill */
 
 /* For `REP_THRESHOLD <= n < 262144`, use cached stores without backward overlap.

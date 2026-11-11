@@ -65,14 +65,14 @@ one-slot mixes, with explicit observation and exit handshakes.
 The Intel-only `evex512i` and `evex512ri` configurations require
 `STR_INTEL_ZMM`, which is set only after the full Intel vendor match and
 existing ZMM/OS-state eligibility checks. They extend the corresponding
-`evex512` and `evex512r` tables in three slots: the two short-copy
-frontends and the existing cached `copy_huge` helper for
+`evex512` and `evex512r` tables in two slots: the short-copy
+frontend and the existing cached `copy_huge` helper for
 `4096 <= n < 262144`, then REP.
-Their `memcpy` and `memmove` frontends use two ordinary unaligned head/tail
+Their `memcpy` frontends use two ordinary unaligned head/tail
 loads and stores for 17–64 bytes: 128-bit through 32 bytes and 256-bit
 through 64 bytes. Both source edges are loaded before either store, including
 for overlapping moves, and every access stays inside the requested interval.
-Larger copies retain the preceding algorithms. `evex512ri` preserves the
+`memmove` and larger copies retain the preceding algorithms. `evex512ri` preserves the
 FSRS `memset_rep` frontend; neither profile changes huge fills. AMD/Zen and
 Skylake-SP keep their existing profiles. The public up-to-16-byte router is
 unchanged. Native tests explicitly force these profiles on ISA-capable hosts;
