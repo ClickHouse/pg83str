@@ -81,6 +81,8 @@ def build_index():
                 add(Candidate(m, 1, op, '' if pfx == '*' else pfx, '*', specs, attrs, cc=True))
             continue
         add(Candidate(m, 1, op, '' if pfx == '*' else pfx, '*', specs, attrs))
+    for reg, mnemonic in enumerate(x86.PREFETCH_HINTS):
+        add(Candidate(mnemonic, 1, 0x18, '', '*', ['M'], 'acc=A nosuffix', group=reg))
     for table, map_ in ((x86.THREE8, 2), (x86.THREE_A, 3)):
         for (op, pfx), e in table.items():
             add(Candidate(e[0], map_, op, '' if pfx == '*' else pfx, '*', e[1], e[2]))

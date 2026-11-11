@@ -170,7 +170,7 @@ def two(op, pfx, mnemonic, ops, attrs=''):
 two(0x05, '*', 'syscall', [], 'nosuffix')
 two(0x0b, '*', 'ud2', [], 'nosuffix flow=Exception')
 two(0x1f, '*', 'nop', ['Ev'], 'acc=A')
-two(0x18, '*', 'prefetch', ['M'], 'acc=A nosuffix')
+PREFETCH_HINTS = ('prefetchnta', 'prefetcht0', 'prefetcht1', 'prefetcht2')
 two(0xa2, '*', 'cpuid', [], 'nosuffix regs=rax:RW,rcx:RW,rbx:W,rdx:W')
 for i in range(16):
     two(0x40 + i, '*', 'cmov', ['Gv', 'Ev'], 'cc acc=RW,R')
@@ -764,6 +764,13 @@ def lookup(c):
     pfx = mandatory_prefix(c)
     table = {1: TWO, 2: THREE8, 3: THREE_A}[c.map]
     if c.map == 1:
+        if op == 0x18:
+            mod, reg, rm = modrm_fields(c)
+            if reg >= len(PREFETCH_HINTS):
+                raise DecodeError('unsupported prefetch hint /%d' % reg)
+            if c.lock or c.rep:
+                raise DecodeError('unsupported prefetch prefix')
+            return PREFETCH_HINTS[reg], ['M'], 'acc=A nosuffix'
         if op == 0x01:
             b = c.byte()
             if b == 0xd0:
@@ -984,7 +991,7 @@ def finish(c, mnemonic, specs, attrs, ops):
 # ---------------------------------------------------------------- text
 
 NOSUFFIX = {'cbtw', 'cwtl', 'cltq', 'cwtd', 'cltd', 'cqto', 'cpuid', 'xgetbv', 'ret', 'leave', 'int3', 'ud2', 'hlt', 'syscall',
-            'endbr64', 'endbr32', 'movslq', 'prefetch', 'nop', 'pause', 'vzeroupper',
+            'endbr64', 'endbr32', 'movslq', *PREFETCH_HINTS, 'nop', 'pause', 'vzeroupper',
             'movsb', 'movsw', 'movsl', 'movsq', 'stosb', 'stosw', 'stosl', 'stosq'}
 
 
