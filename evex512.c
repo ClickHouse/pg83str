@@ -289,7 +289,7 @@ void *memcpy_evex512_headtail(void *dst, const void *src, size_t n)
    kernels do: this contract also permits overlapping ranges with d < s. */
 void *copy_huge_cached_evex512(u8 *d, const u8 *s, size_t n)
 {
-    if (n >= 8388608)
+    if (n >= 67108864)
     {
         return copy_huge_prefetch_sse2(d, s, n);
     }

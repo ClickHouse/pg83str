@@ -178,7 +178,9 @@ int main(void)
     {
         exercise_size(small[i], 1);
     }
-    const size_t large[] = {8388592, 8388607, 8388608, 8388609, 8388624, 16777216, 67108864};
+    const size_t large[] = {
+        8388592, 8388607, 8388608, 8388609, 8388624, 16777216,
+        67108848, 67108863, 67108864, 67108865, 67108880, 134217728};
     for (size_t i = 0; i < sizeof large / sizeof *large; ++i)
     {
         exercise_size(large[i], 1);
@@ -205,13 +207,13 @@ int main(void)
         {
             exercise_size(large[j], 0);
         }
-        CHECK(calls - before == 980);
+        CHECK(calls - before == 140 * (sizeof large / sizeof *large));
         ++profiles;
         printf("PROFILE prefetch-bulk %s calls=%zu\n", config->name, calls - before);
     }
     str_select(saved);
     CHECK(profiles == 3);
-    CHECK(calls == 5490);
-    printf("PASS prefetch-bulk calls=%zu checks=%zu profiles=%zu small=84 large=7 phases=4 forward=10 readonly-full-buffers-guardpages=1\n", calls, checks, profiles);
+    CHECK(calls == 7730);
+    printf("PASS prefetch-bulk calls=%zu checks=%zu profiles=%zu small=84 large=12 phases=4 forward=10 readonly-full-buffers-guardpages=1\n", calls, checks, profiles);
     return 0;
 }
