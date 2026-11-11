@@ -10,7 +10,8 @@
  * above; copies and fills of 4096 bytes
  * and more go to the copy_huge and fill_huge slots, rep movsb/stosb on the
  * hosts with ERMS. The `evex` configuration keeps cached copies below 256 KiB
- * and cached fills below 16 KiB, then uses REP. Intel ZMM profiles use the
+ * and cached fills below 16 KiB. Copies of at least 64 MiB use SSE2 with
+ * read prefetch; intermediate copies use REP. Intel ZMM profiles use the
  * same cached huge-copy helper; their short-copy entries use
  * head/tail loads below 65 bytes.
  *
