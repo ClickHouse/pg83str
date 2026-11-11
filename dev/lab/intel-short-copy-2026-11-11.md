@@ -3,8 +3,9 @@
 The initial implementation checkpoint is `cc0d5a140ff9039444b3a2a3fe1c1f795112e6b7`,
 compared with `20e32940115e018f7360a1b85cded01da55b42cc`.
 Only the `evex512i` and `evex512ri` `memcpy` and `memmove` slots change.
-For 17–64 bytes, ordinary head/tail vector loads replace the masked-copy
-path. All loads precede stores, and access only the requested interval.
+The frontend uses 128-bit head/tail copies for 17–32 bytes and replaces
+the masked 512-bit path for 33–64 bytes with 256-bit head/tail copies.
+All loads precede stores, and access only the requested interval.
 Larger-copy algorithms, huge-copy policy and the six earlier profiles retain
 their existing implementations.
 
@@ -14,6 +15,10 @@ in https://github.com/ClickHouse/ClickHouse/pull/130343.
 Its repeated 14-byte string calls `memcpy` nine times per row with sizes
 14, 14, 28, 28, 56, 56, 112, 224 and 448. This targets the copy caller;
 it changes no UTF-8 counting code.
+The original XML sets `max_block_size=1024` and `max_threads=1`, matching
+the model's row block and single execution thread. The compiled ClickHouse
+`ColumnString` representation has contiguous, non-terminated bytes, so a
+14-byte row repeated 70 times occupies 980 bytes before the next row.
 
 ## Minimized public-entry model
 
@@ -81,3 +86,99 @@ archive. All initial results and the interrupted seventh attempt are retained;
 the distinct continuation reused six completed cases and collected only the
 two missing cases. The interrupted attempt contained 54 raw rows and no
 completed process receipt or validated CSV, so it was excluded from ratios.
+
+
+## Memcpy-only native validation
+
+The revised implementation is `ec023b643455b85aa8c0c01c472d6f511fcc8412`.
+Its native validation completed on 2026-11-11. All 29 commands passed,
+including nine full API suites, 280 one-slot mixes, 46 host cases, public
+entries, three cached-boundary suites and early-constructor publication.
+The full and mixed suites completed 7,897,675,716 checks. All 5,694 observed
+provider samples recovered both the routine and standalone caller with CFI;
+the same-code control without CFI recovered neither in 5,716 observations.
+Every profile/path had at least 25 provider samples. Independent inspection
+counts 408 FDE records in eleven members, without claiming a new semantic
+CFI proof or actual ClickHouse capture.
+
+The revised prefixed archive SHA256 is
+`d0b8c304cbb1db8f2829ecfdd9708e6b68ed61378417fdb025f8756e55a46f2b`;
+the revised public archive SHA256 is
+`6435c93e9b19592158be33cbf4400d5fd767b22bb5efb1897f37b1bf0637d511`.
+
+
+## Fresh memcpy-only caller measurements
+
+The fixed caller experiment was repeated against the revised archive, with a
+freshly compiled common caller object and all sixteen fresh processes.
+The previous candidate's timings were not reused. The same CPU, profiles,
+700,000 rows, 1,024-row buffer, two warmups and nine samples per process apply.
+
+| Profile | Order | Control (ms) | Candidate (ms) | Runtime change |
+|---|---|---:|---:|---:|
+| `evex512i` | ABBA | 60.006169 | 54.310588 | -9.49% |
+| `evex512i` | BAAB | 59.792066 | 55.264608 | -7.57% |
+| `evex512ri` | ABBA | 58.771552 | 57.109773 | -2.83% |
+| `evex512ri` | BAAB | 60.330243 | 55.540273 | -7.94% |
+
+Each bracket value is the geometric mean of its two process medians.
+All 144 raw samples, sixteen output-checked processes and nineteen command receipts
+passed the actual log audit. Drift remains material: in the `evex512ri`
+ABBA bracket, the second control endpoint was 5.45% lower than the first,
+and the second candidate endpoint was 3.17% lower. These observations do
+not establish statistical significance or a ClickHouse improvement.
+The revised caller-analysis SHA256 is
+`a252b00d7f3ce9d16c6b7f05b66110e1573a855e5f0542ce662f4fce7e15bad1`.
+
+
+## Fresh memcpy-only PG comparison
+
+All eight fresh seed/stand cases completed with the original driver,
+nine passes per case, fourteen traces and eighteen timed tables. The
+actual audit checked nineteen completed commands, 2,016 finite raw-equal
+CSV rows, 1,683 strict-validation records, both full-byte fixture oracles
+and unchanged binary/archive/libc identities. There were no noop floors.
+No initial-candidate case was reused for this revised binary.
+
+| Trace | Profile | Original PG runtime change | Paired net median change |
+|---|---|---:|---:|
+| Mixed | `evex512i` | -0.0369% | +0.8783% |
+| Mixed | `evex512ri` | +1.2038% | +0.0927% |
+| Copy | `evex512i` | -0.3236% | -0.0532% |
+| Copy | `evex512ri` | -0.0302% | -0.0915% |
+| Move | `evex512i` | -0.1410% | +0.1882% |
+| Move | `evex512ri` | -0.4307% | +0.2111% |
+
+The original PG statistic takes the best net time across all eight cases
+separately for each numerator and denominator. Paired values compare each
+case directly before taking a median. Both subtract that case's noop
+minimum from its minimum pass; a 0.01 floor is specified but was never used.
+Gross ratios compare the recorded median times without noop subtraction.
+These statistics are descriptive, with different min-selection biases;
+they are not a significance test.
+
+The restored move path no longer has the previous consistent 2–3% loss.
+Its paired ranges are -0.5168%..+0.4921% for `evex512i` and
+-0.7237%..+0.5943% for `evex512ri`. There is no broad PG gain to claim.
+The `evex512ri` mixed paired result is adverse in all eight cases, with
+a +0.0927% median and +0.0437%..+1.6779% range; its gross median is
++0.1105%. This small persistent observation is retained.
+
+Controls also vary: the six unchanged profiles' mixed PG changes span
+-0.9813%..+0.7489%, paired medians -2.1360%..+0.6895% and gross medians
+-5.4382%..+0.2989%. The worst individual PG comparison is the unchanged
+`evex512r` `strlen` trace at +1.2075%. The `evex512i` `strcspn_long`
+trace, whose function was not changed, is adverse in all eight paired/gross comparisons, with +0.4842%
+paired and +0.8247% gross medians; unchanged `sse42` copy is also adverse
+in all eight, at +0.2873% paired and +0.2794% gross medians. These controls
+do not erase the candidate's adverse observations.
+
+The publication rationale is the targeted repeat-copy caller benefit,
+with the rejected move change removed and the broad observations retained.
+This benchmark forces ISA-compatible Intel profiles on Skylake-SP, calls
+backend tables directly and caps individual memory sizes at 4 KiB. It
+measures neither public dispatch overhead nor the larger map/subcolumn
+copy regressions. Those application regressions remain unresolved.
+
+The revised PG analysis SHA256 is
+`912119cce95102a6d0cad62c6068b8cd20308ba43b927aaf2fd9240d0f8c941f`.
