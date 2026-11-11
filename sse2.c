@@ -168,6 +168,47 @@ void *copy_huge_sse2(u8 *d, const u8 *s, size_t n) {
     return copy_forward(d, s, n);
 }
 
+/* Forward copies with bounded read prefetch. Load each pair before storing it
+   so the huge-copy contract still permits overlapping ranges with d <= s. */
+void *copy_huge_prefetch_sse2(u8 *d, const u8 *s, size_t n)
+{
+    u8 *destination = d;
+
+    NO_UNROLL
+    while (n >= 32)
+    {
+        if (n > 512 + 64)
+        {
+            __builtin_prefetch(s + 512, 0, 3);
+        }
+
+        __m128i a = load16(s);
+        __m128i b = load16(s + 16);
+        store16(d, a);
+        store16(d + 16, b);
+        d += 32;
+        s += 32;
+        n -= 32;
+    }
+
+    if (n >= 16)
+    {
+        store16(d, load16(s));
+        d += 16;
+        s += 16;
+        n -= 16;
+    }
+
+    volatile u8 *tail = d;
+    const volatile u8 *from = s;
+    while (n--)
+    {
+        *tail++ = *from++;
+    }
+
+    RETURN_OPAQUE(destination);
+}
+
 void *copy_huge_rep(u8 *d, const u8 *s, size_t n) {
     rep_movsb(d, s, n);
     RETURN_OPAQUE(d);

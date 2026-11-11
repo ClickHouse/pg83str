@@ -50,6 +50,7 @@ size_t strlen_tail_sse2(const u8 *a, const u8 *s);
 int strcmp_tail_sse2(const u8 *a, const u8 *b);
 void *strcpy_long_sse2(u8 *d, const u8 *s, const u8 *a);
 void *copy_huge_sse2(u8 *d, const u8 *s, size_t n);
+void *copy_huge_prefetch_sse2(u8 *d, const u8 *s, size_t n);
 void *fill_huge_sse2(u8 *d, int c, size_t n);
 void *copy_huge_rep(u8 *d, const u8 *s, size_t n);   /* rep movsb: the ERMS hosts */
 void *fill_huge_rep(u8 *d, int c, size_t n);         /* rep stosb */
