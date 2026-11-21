@@ -158,6 +158,42 @@ def conditional_tail_controls():
              'conditional tail taken edge omits entry push')
 
 
+def noreturn_call_controls():
+    # A stack failure exits with its frame allocated; other calls still return.
+    def original(data='554889e54883ec10e800000000', symbol='__stack_chk_fail',
+                 kind='R_X86_64_PLT32', relocated=True, addend=-4):
+        source=[Ins(j) for j in x86.decode(bytes.fromhex(data))]
+        if relocated:
+            source[-1].reloc=Reloc(source[-1].offset+1,kind,symbol,addend)
+        return source
+
+    def final(sequence):
+        code=[];origins={};pc=0
+        for original_ins in sequence:
+            j=copy.deepcopy(original_ins.j);j['offset']=pc
+            ins=copy.deepcopy(original_ins);ins.j['home']=original_ins.offset
+            code.append(j);origins[pc]=(j['len'],ins);pc+=j['len']
+        return code,origins
+
+    for kind in ['R_X86_64_PLT32','R_X86_64_PC32']:
+        source=original(kind=kind)
+        code,origins=final(source)
+        cfi.verify_effect_traces(source,code,origins,0)
+    for name,source in [
+        ('returning external call at FDE end',original(symbol='returning_helper')),
+        ('terminal call without relocation',original(relocated=False)),
+        ('indirect call is not known noreturn',original(data='554889e54883ec10ffd0')),
+        ('stack failure name in a non-call relocation',original(kind='R_X86_64_32')),
+        ('call shifted past the stack failure entry',original(addend=-3)),
+    ]:
+        code,origins=final(source)
+        rejected(lambda:cfi.verify_effect_traces(source,code,origins,0),name)
+    source=original()
+    code,origins=final([source[0],source[1],source[3]])
+    rejected(lambda:cfi.verify_effect_traces(source,code,origins,0),
+             'stack failure path omits compiler stack allocation')
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--objects',type=Path,nargs=6,required=True)
@@ -237,8 +273,9 @@ def main():
     rejected(lambda:cfi.program(b'\x04\x00',cfi.State()),'truncated advance')
     effect_trace_controls()
     conditional_tail_controls()
+    noreturn_call_controls()
     assert all(sha(p)==sources[str(p)]for p in objects)
-    receipt={'status':'PASS_OFFLINE_FINAL_LAYOUT_CFI','input_objects':sources,'output_objects':records,'FDEs':total_frames,'covered_PC_bytes':total_pcs,'concrete_recovery_comparisons':concrete_checks,'code_nonCFI_relocations_symbols_identical':True,'all_rows_independently_decoded_by_LLVM':True,'negative_controls':11,'limits':['Offline compiler-row/CFG/recovery differential; no native signal-unwind or full ClickHouse profile run.','Only explicit unwind mode with frame-removal disabled; unsupported CFI/stack effects fail closed.','Compiler original unwind rules and source frame effects remain trusted; no independent proof of compiler CFI.']}
+    receipt={'status':'PASS_OFFLINE_FINAL_LAYOUT_CFI','input_objects':sources,'output_objects':records,'FDEs':total_frames,'covered_PC_bytes':total_pcs,'concrete_recovery_comparisons':concrete_checks,'code_nonCFI_relocations_symbols_identical':True,'all_rows_independently_decoded_by_LLVM':True,'negative_controls':17,'limits':['Offline compiler-row/CFG/recovery differential; no native signal-unwind or full ClickHouse profile run.','Only explicit unwind mode with frame-removal disabled; unsupported CFI/stack effects fail closed.','Compiler original unwind rules and source frame effects remain trusted; no independent proof of compiler CFI.']}
     (a.out/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt,indent=2))
 

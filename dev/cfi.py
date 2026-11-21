@@ -199,6 +199,14 @@ def frame_sensitive(i):
     return any(m['base'] in ('rsp','rbp') and m['access'] in WRITES for m in i['mems'])
 
 
+def noreturn_call(i, relocation):
+    """The stack-protector runtime does not return to the next instruction."""
+    return (i['flow']=='Call' and relocation is not None
+            and not relocation.symbol_is_section
+            and relocation.type in ('R_X86_64_PLT32','R_X86_64_PC32')
+            and relocation.symbol=='__stack_chk_fail' and relocation.addend==-4)
+
+
 def verify_effect_traces(source, final, provenance, entry):
     """Every final frame-effect trace must be an original CFG trace.
 
@@ -212,18 +220,20 @@ def verify_effect_traces(source, final, provenance, entry):
     source_at = {i.offset:i for i in source}
     final_at = {i['offset']:i for i in final}
 
-    def successors(i, relocated):
+    def successors(i, relocation):
         pc = i['offset']; end = pc+i['len']; flow = i['flow']
-        if flow in ('Return','Exception','IndirectBranch'):
+        if flow in ('Return','Exception','IndirectBranch') or noreturn_call(i,relocation):
             return [exit_node]
         if flow in ('UnconditionalBranch','ConditionalBranch'):
-            targets = [exit_node if relocated else i['branch_target']]
+            targets = [exit_node if relocation is not None else i['branch_target']]
             return targets + ([end] if flow=='ConditionalBranch' else [])
         need(flow in ('Next','Call','IndirectCall'),'unsupported effect-trace control flow')
         return [end]
 
-    def action(i, relocated):
-        return frame_sensitive(i) or i['flow'] in ('Return','Exception','IndirectBranch') or (relocated and i['flow'] in ('UnconditionalBranch','ConditionalBranch'))
+    def action(i, relocation):
+        return (frame_sensitive(i) or i['flow'] in ('Return','Exception','IndirectBranch')
+                or noreturn_call(i,relocation)
+                or (relocation is not None and i['flow'] in ('UnconditionalBranch','ConditionalBranch')))
 
     def closure(starts):
         work=list(starts);seen=set();frontier=set()
@@ -236,14 +246,14 @@ def verify_effect_traces(source, final, provenance, entry):
                 frontier.add(pc);continue
             need(pc in source_at,'original CFG escapes FDE')
             i=source_at[pc]
-            if action(i.j,i.reloc is not None):
+            if action(i.j,i.reloc):
                 frontier.add(pc)
                 # A relocated conditional branch exits only when taken. Its
                 # fallthrough does not execute the external-tail action.
                 if i.flow=='ConditionalBranch' and i.reloc is not None:
                     work.append(i.end)
             else:
-                work.extend(successors(i.j,i.reloc is not None))
+                work.extend(successors(i.j,i.reloc))
         return frozenset(frontier)
 
     pending=[(entry,closure([source[0].offset]))];seen=set()
@@ -253,15 +263,17 @@ def verify_effect_traces(source, final, provenance, entry):
             continue
         seen.add((pc,frontier));need(len(seen)<=100000,'effect-trace validation state budget exceeded')
         need(pc in final_at,'final effect CFG escapes FDE')
-        i=final_at[pc];origin=provenance.get(pc);relocated=origin is not None and origin[1].reloc is not None
+        i=final_at[pc];origin=provenance.get(pc)
+        relocation=origin[1].reloc if origin is not None else None
+        relocated=relocation is not None
         incoming=frontier
-        if action(i,relocated):
+        if action(i,relocation):
             need(origin is not None,'frame action lacks provenance')
             original=source_at[origin[1].home]
             need(original.offset in frontier,'final path omits/reorders a compiler frame effect at %#x'%pc)
-            after=[exit_node] if original.flow=='ConditionalBranch' and original.reloc is not None else successors(original.j,original.reloc is not None)
+            after=[exit_node] if original.flow=='ConditionalBranch' and original.reloc is not None else successors(original.j,original.reloc)
             frontier=closure(after)
-        for target in successors(i,relocated):
+        for target in successors(i,relocation):
             if target==exit_node:
                 need(exit_node in frontier,'final exit omits a compiler frame effect')
             else:
@@ -329,6 +341,9 @@ def final_rows(obj, source_frame, lay, start, size):
                 successors.append(end)
         elif flow=='IndirectBranch':
             need(state.cfa==(7,8),'indirect tail has an unrestored stack')
+        elif flow=='Call' and noreturn_call(ins,provenance[pc][1].reloc):
+            # Preserve the compiler row at the call, with no fallthrough edge.
+            pass
         else:
             need(flow in ('Next','Call','IndirectCall'),'unsupported final control flow '+flow)
             successors.append(end)
