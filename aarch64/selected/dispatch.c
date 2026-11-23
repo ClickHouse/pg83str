@@ -38,10 +38,6 @@ char *str_strcat(char *d, const char *s)
 {
     return __atomic_load_n(&strcat_impl, __ATOMIC_RELAXED)(d, s);
 }
-int str_memcmp(const void *a, const void *b, size_t n)
-{
-    return kl_memcmp_neon_words(a, b, n);
-}
 size_t str_strlen(const char *s)
 {
     return kl_strlen_neon_prefix32_tail128(s);

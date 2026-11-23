@@ -15,10 +15,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / 'aarch64/selected'
 NEON = ['aarch64_neon_bulk', 'aarch64_neon_extra', 'aarch64_neon_length',
         'aarch64_neon_membership', 'aarch64_neon_strings', 'dispatch',
-        'memory_copy', 'memory_fill', 'memory_search']
+        'memory_compare', 'memory_copy', 'memory_fill', 'memory_search']
 SVE = ['aarch64_sve_bulk', 'aarch64_sve_extra', 'sve_dispatch',
        'tiny_copy_sve', 'memory_search_sve']
-LEAF = {'memory_copy', 'memory_fill', 'memory_search', 'tiny_copy_sve', 'memory_search_sve'}
+LEAF = {'memory_compare', 'memory_copy', 'memory_fill', 'memory_search', 'tiny_copy_sve', 'memory_search_sve'}
 COMMON = ['-std=gnu11', '-O3', '-ffreestanding', '-fno-builtin', '-fno-stack-protector',
           '-fno-lto', '-fPIC', '-ffunction-sections', '-fdata-sections',
           '-falign-functions=64', '-falign-loops=32', '-fasynchronous-unwind-tables',

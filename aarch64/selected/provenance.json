@@ -164,6 +164,17 @@
       ],
       "change": "Integration experiment: predicated alignment prefix followed by groups of at most sixteen active byte lanes. Preserve zero-length and oversized early-match page safety. Actual-object proof and performance limits are recorded separately in benchmarks/primitive-tuning-2026-11-09.md.",
       "date": "2026-11-09"
+    },
+    {
+      "path": "aarch64/selected/memory_compare.c",
+      "sha256": "2c72554c614450b98566d35c17fd6ae3c9750b4450fe77460b24f15dfac95123",
+      "functions": [
+        "compare_word",
+        "str_memcmp"
+      ],
+      "origin": "Copy the bounded short-input prefix of `kl_memcmp_neon_words`; retain the original kernel in aarch64/selected/aarch64_neon_extra.c.",
+      "change": "Keep lengths up to 16 in a separate leaf entry with compiler asynchronous unwind information. Longer inputs tail-call the unchanged comparison kernel. The ClickHouse build retains its inherited stack-protector and branch-protection flags.",
+      "date": "2026-11-23"
     }
   ],
   "fork": "https://github.com/ClickHouse/pg83str"
