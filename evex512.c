@@ -399,7 +399,14 @@ void *memset_evex512(void *dst, int c, size_t n) {
 
     if (n <= 32)
     {
-        fill_small(d, splat16(c), c, n);
+        if (n <= 16)
+        {
+            _mm_mask_storeu_epi8(d, (__mmask16)_bzhi_u32(~0u, (unsigned)n), _mm_set1_epi8((char)c));
+        }
+        else
+        {
+            fill_small(d, splat16(c), c, n);
+        }
         return dst;
     }
 
